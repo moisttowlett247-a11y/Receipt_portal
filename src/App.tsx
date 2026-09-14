@@ -41,6 +41,7 @@ import { LicenseManagerTable } from './components/LicenseManagerTable';
 import { AdminPinModal } from './components/AdminPinModal';
 import { ClientPortalView } from './components/ClientPortalView';
 import { AdminLoginView } from './components/AdminLoginView';
+import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -281,6 +282,16 @@ export default function App() {
     setGeneratedAdminKey(nextKey);
 
     showToast(`👑 Registered Non-Expiring Admin Key: ${keyToRegister} (Never Expires)`);
+
+    // Auto-sync admin key to GitHub if configured
+    const ghCfg = getStoredGitHubConfig();
+    if (ghCfg.token && ghCfg.autoSync !== false) {
+      syncSingleKeyToGitHub(newAdminRecord, 'UPSERT', ghCfg).then(res => {
+        if (res.success) {
+          showToast(`✅ Auto-synced Admin Key to GitHub`);
+        }
+      });
+    }
   };
 
   const handleQuickTestKey = (keyString: string) => {
@@ -321,38 +332,74 @@ export default function App() {
     setGeneratedKey(nextKey);
 
     showToast(`Key ${keyToRegister} added to Admin Registry for ${newRecord.clientName} (${newRecord.plan} Plan - ${getPlanDurationDays(planType)} days duration)`);
+
+    // Auto-sync generated key to GitHub if configured
+    const ghCfg = getStoredGitHubConfig();
+    if (ghCfg.token && ghCfg.autoSync !== false) {
+      syncSingleKeyToGitHub(newRecord, 'UPSERT', ghCfg).then(res => {
+        if (res.success) {
+          showToast(`✅ Auto-synced new key ${newRecord.key} to GitHub`);
+        }
+      });
+    }
   };
 
   const handleToggleStatus = (id: string) => {
-    setLicenseKeys(prev => prev.map(k => {
-      if (k.id === id) {
-        const nextStatus: LicenseStatus = k.status === 'ACTIVE' ? 'NOT ACTIVE' : 'ACTIVE';
-        showToast(`Key ${k.key} status updated to: ${nextStatus}`);
-        return { ...k, status: nextStatus };
+    setLicenseKeys(prev => {
+      const target = prev.find(k => k.id === id);
+      if (!target) return prev;
+      const nextStatus: LicenseStatus = target.status === 'ACTIVE' ? 'NOT ACTIVE' : 'ACTIVE';
+      const updatedKey: LicenseKeyRecord = { ...target, status: nextStatus };
+      showToast(`Key ${target.key} status updated to: ${nextStatus}`);
+
+      // Auto-sync to GitHub if configured
+      const ghCfg = getStoredGitHubConfig();
+      if (ghCfg.token && ghCfg.autoSync !== false) {
+        syncSingleKeyToGitHub(updatedKey, 'UPSERT', ghCfg).then(res => {
+          if (res.success) {
+            showToast(`✅ Auto-synced ${target.key} to GitHub (${nextStatus})`);
+          } else {
+            showToast(`⚠️ GitHub auto-sync note: ${res.message}`);
+          }
+        });
       }
-      return k;
-    }));
+
+      return prev.map(k => (k.id === id ? updatedKey : k));
+    });
   };
 
   const handleToggleInUse = (id: string) => {
-    setLicenseKeys(prev => prev.map(k => {
-      if (k.id === id) {
-        const nextInUse = !k.inUse;
-        const today = new Date().toISOString().split('T')[0];
-        const newActivatedDate = nextInUse ? (k.activatedDate || today) : k.activatedDate;
-        const newExpiresDate = nextInUse 
-          ? (k.expiresDate && !k.expiresDate.startsWith('Pending') ? k.expiresDate : calculateExpirationDate(newActivatedDate!, k.plan))
-          : k.expiresDate;
-        showToast(`Key ${k.key} marked as ${nextInUse ? `In Use (Activated: ${newActivatedDate}, Expires: ${newExpiresDate})` : 'Unclaimed / Available'}`);
-        return { 
-          ...k, 
-          inUse: nextInUse,
-          activatedDate: newActivatedDate,
-          expiresDate: newExpiresDate
-        };
+    setLicenseKeys(prev => {
+      const target = prev.find(k => k.id === id);
+      if (!target) return prev;
+      const nextInUse = !target.inUse;
+      const today = new Date().toISOString().split('T')[0];
+      const newActivatedDate = nextInUse ? (target.activatedDate || today) : target.activatedDate;
+      const newExpiresDate = nextInUse 
+        ? (target.expiresDate && !target.expiresDate.startsWith('Pending') ? target.expiresDate : calculateExpirationDate(newActivatedDate!, target.plan))
+        : target.expiresDate;
+      
+      const updatedKey: LicenseKeyRecord = {
+        ...target,
+        inUse: nextInUse,
+        activatedDate: newActivatedDate,
+        expiresDate: newExpiresDate
+      };
+
+      showToast(`Key ${target.key} marked as ${nextInUse ? `In Use (Activated: ${newActivatedDate}, Expires: ${newExpiresDate})` : 'Unclaimed / Available'}`);
+
+      // Auto-sync to GitHub if configured
+      const ghCfg = getStoredGitHubConfig();
+      if (ghCfg.token && ghCfg.autoSync !== false) {
+        syncSingleKeyToGitHub(updatedKey, 'UPSERT', ghCfg).then(res => {
+          if (res.success) {
+            showToast(`✅ Auto-synced ${target.key} expiration info to GitHub`);
+          }
+        });
       }
-      return k;
-    }));
+
+      return prev.map(k => (k.id === id ? updatedKey : k));
+    });
   };
 
   const handleDeleteKey = (id: string) => {
@@ -360,6 +407,16 @@ export default function App() {
       const target = prev.find(k => k.id === id);
       if (target) {
         showToast(`Key ${target.key} removed from registry.`);
+
+        // Auto-delete from GitHub if configured
+        const ghCfg = getStoredGitHubConfig();
+        if (ghCfg.token && ghCfg.autoSync !== false) {
+          syncSingleKeyToGitHub(target, 'DELETE', ghCfg).then(res => {
+            if (res.success) {
+              showToast(`🗑️ Auto-deleted verification hash for ${target.key} from GitHub`);
+            }
+          });
+        }
       }
       return prev.filter(k => k.id !== id);
     });
@@ -372,6 +429,16 @@ export default function App() {
     };
     setLicenseKeys(prev => [newRecord, ...prev]);
     showToast(`Key ${newRecord.key} registered (${newRecord.status})`);
+
+    // Auto-sync new key to GitHub if configured
+    const ghCfg = getStoredGitHubConfig();
+    if (ghCfg.token && ghCfg.autoSync !== false) {
+      syncSingleKeyToGitHub(newRecord, 'UPSERT', ghCfg).then(res => {
+        if (res.success) {
+          showToast(`✅ Auto-synced new key ${newRecord.key} to GitHub`);
+        }
+      });
+    }
   };
 
   const handleTestKey = () => {

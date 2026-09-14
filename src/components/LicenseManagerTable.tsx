@@ -440,6 +440,11 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
           >
             <Globe className="w-3.5 h-3.5 text-white" />
             <span>GitHub Sync</span>
+            {ghConfig.token && ghConfig.autoSync !== false && (
+              <span className="inline-flex items-center px-1.5 py-0.2 rounded-full text-[9px] bg-emerald-400 text-stone-950 font-extrabold uppercase tracking-wider ml-0.5">
+                Auto
+              </span>
+            )}
           </button>
         </div>
       </div>
@@ -924,7 +929,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
             </div>
 
             <p className="text-xs text-stone-400 leading-relaxed">
-              When configured, clicking <strong>Sync GH</strong> or changing a key's status will automatically push or delete its SHA-256 hash JSON file directly in <code className="text-amber-300 bg-stone-950 px-1 py-0.5 rounded font-mono">public/licenses/&lt;hash&gt;.json</code> in your repository.
+              When configured, clicking <strong className="text-stone-200">Sync GH</strong> on any key or changing a key status automatically uploads or deletes its zero-knowledge SHA-256 JSON verification record directly in your repository (<code className="text-amber-300 bg-stone-950 px-1 py-0.5 rounded font-mono">public/licenses/&lt;hash&gt;.json</code>).
             </p>
 
             <form onSubmit={handleSaveGhConfig} className="space-y-3 text-xs">
@@ -965,20 +970,53 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block text-stone-300 font-medium mb-1">
-                  Personal Access Token (PAT) <span className="text-stone-500 font-normal">(Optional for 1-Click Sync)</span>
-                </label>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="block text-stone-300 font-medium">
+                    Personal Access Token (PAT)
+                  </label>
+                  <a
+                    href="https://github.com/settings/tokens/new?scopes=repo&description=Receipt+Processor+Portal+Sync"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sky-400 hover:text-sky-300 text-[11px] underline flex items-center gap-1"
+                  >
+                    Generate Token on GitHub ↗
+                  </a>
+                </div>
                 <input
                   type="password"
                   value={ghConfig.token || ''}
                   onChange={(e) => setGhConfig({ ...ghConfig, token: e.target.value.trim() })}
-                  placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                  placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
                   className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded text-stone-200 font-mono focus:outline-none focus:border-sky-500"
                 />
-                <span className="text-[11px] text-stone-500 block mt-1">
-                  Requires repo write scope. If left blank, you can still use the <strong>Hash JSON</strong> button on any row to download the file and place it manually.
-                </span>
+                <div className="bg-stone-950 border border-stone-800/80 rounded-lg p-2.5 space-y-1 text-[11px] text-stone-400">
+                  <p className="font-medium text-stone-300">How to get your token on GitHub:</p>
+                  <ol className="list-decimal list-inside space-y-0.5 text-stone-400">
+                    <li>Click <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer" className="text-sky-400 underline">GitHub &gt; Settings &gt; Developer Settings &gt; Personal Access Tokens (Classic)</a></li>
+                    <li>Click <strong>Generate new token (classic)</strong></li>
+                    <li>Check the <strong className="text-amber-300">repo</strong> scope (Full control of private repositories)</li>
+                    <li>Click <strong>Generate token</strong> at the bottom, copy the code starting with <code className="text-sky-300">ghp_</code>, and paste it above!</li>
+                  </ol>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-stone-800">
+                <label className="flex items-start gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={ghConfig.autoSync !== false}
+                    onChange={(e) => setGhConfig({ ...ghConfig, autoSync: e.target.checked })}
+                    className="mt-0.5 rounded border-stone-700 bg-stone-950 text-sky-500 focus:ring-sky-500 cursor-pointer"
+                  />
+                  <div className="space-y-0.5">
+                    <span className="text-stone-200 font-medium">Automatic Real-Time Sync</span>
+                    <p className="text-[11px] text-stone-400">
+                      When enabled, any action you perform (activating, revoking, or deleting a key) will automatically update or delete the hash file on GitHub immediately.
+                    </p>
+                  </div>
+                </label>
               </div>
 
               <div className="pt-3 border-t border-stone-800 flex justify-end gap-2">
@@ -1003,4 +1041,3 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
     </div>
   );
 };
-

@@ -6,6 +6,7 @@ export interface GitHubSyncConfig {
   repo: string;
   branch: string;
   token?: string; // Optional GitHub Personal Access Token with repo/content write permissions
+  autoSync?: boolean; // When true, automatically syncs changes to GitHub on activate/revoke/delete/create
 }
 
 const GITHUB_CONFIG_STORAGE_KEY = 'receipt_processor_gh_config';
@@ -14,14 +15,19 @@ export function getStoredGitHubConfig(): GitHubSyncConfig {
   try {
     const saved = localStorage.getItem(GITHUB_CONFIG_STORAGE_KEY);
     if (saved) {
-      return JSON.parse(saved);
+      const parsed = JSON.parse(saved);
+      return {
+        ...parsed,
+        autoSync: parsed.autoSync !== false // default to true
+      };
     }
   } catch {}
   return {
     owner: 'moisttowlett247-a11y',
     repo: 'receipt-processor-portal',
     branch: 'main',
-    token: ''
+    token: '',
+    autoSync: true
   };
 }
 
