@@ -1,0 +1,6 @@
+{
+  "name": "Receipt Processor & Subscription Manager",
+  "description": "Desktop receipt OCR and QuickBooks sync application with AES-256 encryption, auto-updates, and subscription licensing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,822 @@
+import React, { useState } from 'react';
+import { 
+  ShieldCheck, 
+  Download, 
+  Key, 
+  CheckCircle2, 
+  XCircle, 
+  AlertCircle, 
+  Lock, 
+  Terminal, 
+  Clock, 
+  FileText, 
+  HelpCircle, 
+  ExternalLink, 
+  ChevronRight, 
+  Mail, 
+  Copy, 
+  Check,
+  Sparkles,
+  Tag,
+  DollarSign,
+  Send,
+  X,
+  Shield,
+  FileSpreadsheet,
+  Monitor,
+  Play,
+  Info
+} from 'lucide-react';
+import { LicenseKeyRecord, getPlanDurationDays, getPlanLabel } from '../types';
+import { computeSha256Hex } from '../hashUtils';
+
+interface ClientPortalViewProps {
+  onDownloadExecutable?: () => void;
+  onDownloadScript?: () => void;
+  licenseKeys: LicenseKeyRecord[];
+  currentVersion: string;
+  onGoToAdmin?: () => void;
+}
+
+export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
+  onDownloadExecutable,
+  onDownloadScript,
+  licenseKeys,
+  currentVersion,
+  onGoToAdmin
+}) => {
+  const [clientKeyInput, setClientKeyInput] = useState('');
+  const [checkResult, setCheckResult] = useState<{
+    valid: boolean;
+    plan?: string;
+    expiresDate?: string;
+    status?: string;
+    message: string;
+  } | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
+  
+  // Pricing & Order Request Modal state
+  const [selectedPlanForOrder, setSelectedPlanForOrder] = useState<{
+    id: string;
+    name: string;
+    price: string;
+    originalPrice?: string;
+    period: string;
+    durationDays: number;
+    savingsBadge?: string;
+  } | null>(null);
+
+  const [orderName, setOrderName] = useState('');
+  const [orderEmail, setOrderEmail] = useState('');
+  const [orderNote, setOrderNote] = useState('');
+  const [copiedOrderDetails, setCopiedOrderDetails] = useState(false);
+
+  const handleOpenOrderModal = (plan: {
+    id: string;
+    name: string;
+    price: string;
+    originalPrice?: string;
+    period: string;
+    durationDays: number;
+    savingsBadge?: string;
+  }) => {
+    setSelectedPlanForOrder(plan);
+    setCopiedOrderDetails(false);
+  };
+
+  const getOrderMailtoUrl = () => {
+    if (!selectedPlanForOrder) return '';
+    const subject = encodeURIComponent(`License Key Request: ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`);
+    const body = encodeURIComponent(
+      `Hello,\n\nI would like to purchase an activation key for Receipt Processor Desktop.\n\n` +
+      `Selected Plan: ${selectedPlanForOrder.name}\n` +
+      `Price: ${selectedPlanForOrder.price} (${selectedPlanForOrder.period})\n` +
+      `Name: ${orderName || 'Not specified'}\n` +
+      `Email: ${orderEmail || 'Not specified'}\n` +
+      (orderNote ? `Notes: ${orderNote}\n\n` : '\n') +
+      `Please provide instructions to complete payment and receive my license key.\n\nThank you!`
+    );
+    const contactEmail = (import.meta as any).env?.VITE_CONTACT_EMAIL || 'support@receiptprocessor.com';
+    return `mailto:${contactEmail}?subject=${subject}&body=${body}`;
+  };
+
+  const handleCopyOrderSummary = () => {
+    if (!selectedPlanForOrder) return;
+    const contactEmail = (import.meta as any).env?.VITE_CONTACT_EMAIL || 'support@receiptprocessor.com';
+    const text = 
+      `Subject: License Key Request - ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})\n\n` +
+      `Hi,\n\nI want to request a license key for Receipt Processor Desktop:\n` +
+      `- Plan: ${selectedPlanForOrder.name} (${selectedPlanForOrder.period})\n` +
+      `- Price: ${selectedPlanForOrder.price}\n` +
+      `- My Name: ${orderName || '[Your Name]'}\n` +
+      `- My Email: ${orderEmail || '[Your Email]'}\n` +
+      (orderNote ? `- Notes: ${orderNote}\n` : '') +
+      `\nPlease send instructions to ${contactEmail}.`;
+    navigator.clipboard.writeText(text);
+    setCopiedOrderDetails(true);
+    setTimeout(() => setCopiedOrderDetails(false), 2500);
+  };
+
+  const handleVerifyClientKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanKey = clientKeyInput.trim().toUpperCase();
+    if (!cleanKey) {
+      setCheckResult({
+        valid: false,
+        message: 'Please enter a valid license key.'
+      });
+      return;
+    }
+
+    // 1. Try Zero-Knowledge SHA-256 hash lookup in public/licenses/<hash>.json
+    try {
+      const hash = await computeSha256Hex(cleanKey);
+      const resp = await fetch(`/licenses/${hash}.json`, { cache: 'no-store' });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.status === 'REVOKED') {
+          setCheckResult({
+            valid: false,
+            status: 'Revoked / Inactive',
+            message: 'Access Denied: This license key has been revoked or deactivated by the administrator.'
+          });
+          return;
+        }
+        if (data.status === 'EXPIRED') {
+          setCheckResult({
+            valid: false,
+            status: 'Expired',
+            message: `This license expired on ${data.expires || 'the expiration date'}. Please renew your subscription.`
+          });
+          return;
+        }
+
+        // Active status
+        const isNonExpiring = data.plan === 'ADMIN' || data.expires?.includes('Never') || data.expires?.includes('Lifetime');
+        setCheckResult({
+          valid: true,
+          plan: data.plan === 'ADMIN' ? 'Perpetual Master Access' : getPlanLabel(data.plan as any),
+          expiresDate: isNonExpiring ? 'Never (Lifetime License)' : (data.expires || 'Active'),
+          status: 'Active (Verified on Server)',
+          message: isNonExpiring
+            ? 'Lifetime perpetual master license is active. Full desktop scanning, OCR extraction, and tax report export authorized.'
+            : `Active subscription verified. Valid through ${data.expires}. Ready for desktop activation.`
+        });
+        return;
+      }
+    } catch {
+      // Fall back to in-memory/localStorage keys check
+    }
+
+    // 2. Search for match in active registry (local fallback / simulator)
+    const matched = licenseKeys.find(k => k.key.toUpperCase() === cleanKey);
+
+    if (matched) {
+      if (matched.status === 'NOT ACTIVE') {
+        setCheckResult({
+          valid: false,
+          status: 'Revoked / Inactive',
+          message: 'Access Denied: This license key has been deactivated or revoked by the administrator.'
+        });
+        return;
+      }
+
+      if (matched.status === 'EXPIRED') {
+        setCheckResult({
+          valid: false,
+          status: 'Expired',
+          message: `This license expired on ${matched.expiresDate}. Please renew your subscription to continue scanning.`
+        });
+        return;
+      }
+
+      const isNonExpiring = matched.plan === 'ADMIN' || matched.expiresDate?.includes('Never');
+      setCheckResult({
+        valid: true,
+        plan: matched.plan === 'ADMIN' ? 'Perpetual Master Access' : getPlanLabel(matched.plan),
+        expiresDate: isNonExpiring ? 'Never (Lifetime License)' : matched.expiresDate,
+        status: matched.inUse ? 'Active (Assigned to Workstation)' : 'Active (Available for Activation)',
+        message: isNonExpiring
+          ? 'Lifetime perpetual master license is active. Full desktop scanning, OCR extraction, and tax report export authorized.'
+          : `Active subscription verified. Valid through ${matched.expiresDate}. ${matched.inUse ? 'Already activated on registered workstation.' : 'Ready for first-time desktop activation.'}`
+      });
+      return;
+    }
+
+    setCheckResult({
+      valid: false,
+      status: 'Invalid / Unregistered',
+      message: 'Unrecognized License Key: Key does not exist or has been deleted from the authorized repository.'
+    });
+  };
+
+  return (
+    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-amber-500 selection:text-stone-950">
+      {/* Top Client Navbar */}
+      <header className="border-b border-stone-800 bg-stone-900/90 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+            <ShieldCheck className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm sm:text-base font-semibold tracking-tight text-stone-100">
+                Receipt Processor
+              </h1>
+              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                Client Portal v{currentVersion}
+              </span>
+            </div>
+            <p className="text-xs text-stone-400 hidden sm:block">
+              Automated Receipt OCR, Expense Categorization & Tax Preparation Ledger
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={onDownloadScript}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm transition-colors cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Download Software</span>
+            <span className="sm:hidden">Download</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Hero Section */}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
+        <div className="text-center max-w-2xl mx-auto space-y-3">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium">
+            <ShieldCheck className="w-3.5 h-3.5" />
+            Official Desktop Client Portal
+          </div>
+          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-stone-100">
+            Automated Receipt OCR & Tax Prep Application
+          </h2>
+          <p className="text-xs sm:text-sm text-stone-400 leading-relaxed">
+            Download your desktop software package, verify your active subscription status, and follow the rapid installation guide to start scanning and processing receipts.
+          </p>
+        </div>
+
+        {/* Two-Column Grid: Download Software & Verify License */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Card 1: Download & Getting Started */}
+          <div className="p-6 rounded-2xl bg-stone-900/90 border border-stone-800 flex flex-col justify-between space-y-5 shadow-lg">
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                  <Download className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-stone-100">Desktop Software Download</h3>
+                  <p className="text-xs text-stone-400">Latest standalone script for Windows, Mac & Linux</p>
+                </div>
+              </div>
+
+              <p className="text-xs text-stone-300 leading-relaxed">
+                The desktop client runs locally on your workstation. It performs high-resolution image OCR, extracts merchant, date, total, and tax expense categories, and generates ready-to-file Excel and CSV reports.
+              </p>
+
+              <div className="p-3 bg-stone-950 rounded-xl border border-stone-800 space-y-2 text-xs">
+                <div className="font-semibold text-stone-200 flex items-center gap-1.5">
+                  <Terminal className="w-3.5 h-3.5 text-amber-400" />
+                  Quick Launch Steps:
+                </div>
+                <ol className="list-decimal list-inside text-stone-400 space-y-1 pl-1">
+                  <li>Download <code className="text-amber-300 font-mono">receipt_processor.py</code></li>
+                  <li>Install requirements: <code className="text-stone-300 font-mono">pip install -r requirements.txt</code></li>
+                  <li>Run: <code className="text-stone-300 font-mono">python receipt_processor.py</code></li>
+                  <li>Enter your license key when prompted</li>
+                </ol>
+              </div>
+            </div>
+
+            <div className="pt-2">
+              <button
+                onClick={onDownloadScript}
+                className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 font-semibold text-white rounded-xl text-xs transition-all shadow-md active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Download className="w-4 h-4" />
+                Download receipt_processor.py (v{currentVersion})
+              </button>
+            </div>
+          </div>
+
+          {/* Card 2: Client License Key Verification */}
+          <div className="p-6 rounded-2xl bg-stone-900/90 border border-stone-800 flex flex-col justify-between space-y-5 shadow-lg">
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-stone-100">Verify License Key Status</h3>
+                  <p className="text-xs text-stone-400">Check subscription validity & expiration</p>
+                </div>
+              </div>
+
+              <form onSubmit={handleVerifyClientKey} className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-stone-300 block mb-1">
+                    Enter Your License Key
+                  </label>
+                  <input
+                    type="text"
+                    value={clientKeyInput}
+                    onChange={(e) => setClientKeyInput(e.target.value)}
+                    placeholder="e.g. MONTHLY-9842-8710-2026 or DEMO-..."
+                    className="w-full text-xs font-mono px-3 py-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-sky-500 uppercase tracking-wider"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full py-2 px-4 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white rounded-xl text-xs font-medium border border-stone-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
+                  Check License Status
+                </button>
+              </form>
+
+              {checkResult && (
+                <div className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
+                  checkResult.valid 
+                    ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-200' 
+                    : 'bg-rose-950/40 border-rose-800/60 text-rose-200'
+                }`}>
+                  <div className="flex items-center gap-2 font-semibold text-sm">
+                    {checkResult.valid ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span>{checkResult.status || (checkResult.valid ? 'License Active' : 'Invalid License')}</span>
+                  </div>
+
+                  {checkResult.plan && (
+                    <div className="text-[11px] text-stone-300">
+                      <strong>Plan:</strong> {checkResult.plan}
+                    </div>
+                  )}
+
+                  {checkResult.expiresDate && (
+                    <div className="text-[11px] text-stone-300">
+                      <strong>Expiration:</strong> {checkResult.expiresDate}
+                    </div>
+                  )}
+
+                  <p className="text-[11px] text-stone-400 pt-0.5 leading-relaxed">
+                    {checkResult.message}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="p-3 bg-stone-950/60 rounded-xl border border-stone-800/80 text-[11px] text-stone-400 flex items-center justify-between">
+              <span>Looking to test out the software?</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setClientKeyInput('DEMO-TRIAL-PRO-2026');
+                  navigator.clipboard.writeText('DEMO-TRIAL-PRO-2026');
+                  setCopiedKey(true);
+                  setTimeout(() => setCopiedKey(false), 2000);
+                }}
+                className="text-amber-400 hover:text-amber-300 font-mono font-medium underline cursor-pointer"
+              >
+                {copiedKey ? 'Copied Demo Key!' : 'Use Demo Key'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Pricing & Subscription Plans */}
+        <div className="space-y-6">
+          <div className="text-center max-w-xl mx-auto space-y-2">
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
+              <Tag className="w-3.5 h-3.5" />
+              Simple, Honest Independent Pricing
+            </div>
+            <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-100">
+              Choose Your Subscription Plan
+            </h3>
+            <p className="text-xs text-stone-400">
+              Affordable offline-first OCR & spreadsheet generator. Save big with multi-month discounts!
+            </p>
+          </div>
+
+          {/* 4-Tier Pricing Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+            {/* 1. Monthly Plan */}
+            <div className="rounded-2xl bg-stone-900/90 border border-stone-800 p-5 flex flex-col justify-between space-y-4 hover:border-stone-700 transition-all shadow-md">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-400">Monthly</span>
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-stone-800 text-stone-300 font-medium">30 Days</span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-extrabold text-stone-100">$15</span>
+                    <span className="text-xs text-stone-400">/ month</span>
+                  </div>
+                  <p className="text-[11px] text-stone-500 mt-0.5">Billed monthly • Cancel anytime</p>
+                </div>
+
+                <div className="h-px bg-stone-800/80 my-2" />
+
+                <ul className="space-y-2 text-xs text-stone-300">
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Local OCR image & PDF scanning</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Excel & CSV expense export</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Unlimited receipt processing</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Pay-as-you-go flexibility</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenOrderModal({
+                    id: 'MONTHLY',
+                    name: 'Monthly Plan',
+                    price: '$15',
+                    period: '30 Days',
+                    durationDays: 30
+                  })}
+                  className="w-full py-2.5 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white text-xs font-semibold rounded-xl border border-stone-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <span>Select Monthly</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* 2. 3-Month Plan (Quarterly) */}
+            <div className="rounded-2xl bg-stone-900/90 border border-stone-800 p-5 flex flex-col justify-between space-y-4 hover:border-stone-700 transition-all shadow-md">
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-400">Quarterly</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-semibold">
+                    Save 13%
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-3xl font-extrabold text-stone-100">$39</span>
+                    <span className="text-xs text-stone-400">/ 3 months</span>
+                  </div>
+                  <p className="text-[11px] text-amber-400/90 font-mono mt-0.5">~$13.00 / month ($6 savings)</p>
+                </div>
+
+                <div className="h-px bg-stone-800/80 my-2" />
+
+                <ul className="space-y-2 text-xs text-stone-300">
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Everything in Monthly Plan</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Full 90 days continuous access</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Great for quarterly estimated tax prep</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Full software updates included</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenOrderModal({
+                    id: '3MONTH',
+                    name: '3-Month Quarterly Plan',
+                    price: '$39',
+                    originalPrice: '$45',
+                    period: '90 Days',
+                    durationDays: 90,
+                    savingsBadge: 'Save 13%'
+                  })}
+                  className="w-full py-2.5 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white text-xs font-semibold rounded-xl border border-stone-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <span>Select 3-Month</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* 3. 6-Month Plan (Semi-Annual) - POPULAR OFFER */}
+            <div className="rounded-2xl bg-stone-900 border-2 border-amber-500/60 p-5 flex flex-col justify-between space-y-4 shadow-xl relative scale-[1.02]">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-gradient-to-r from-amber-600 to-amber-500 text-stone-950 text-[10px] font-extrabold uppercase rounded-full shadow-md tracking-wider flex items-center gap-1">
+                <Sparkles className="w-3 h-3" />
+                Popular Offer • Save 35%
+              </div>
+
+              <div className="space-y-3 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400">6 Months</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                    180 Days
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-3xl font-extrabold text-stone-100">$59</span>
+                    <span className="text-xs text-stone-500 line-through">$90</span>
+                    <span className="text-xs text-stone-400">/ 6 mos</span>
+                  </div>
+                  <p className="text-[11px] text-amber-400 font-mono mt-0.5 font-semibold">
+                    ~$9.83 / month (Under $10/mo!)
+                  </p>
+                </div>
+
+                <div className="h-px bg-stone-800/80 my-2" />
+
+                <ul className="space-y-2 text-xs text-stone-300">
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Everything in Quarterly Plan</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Save $31 compared to monthly billing</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Mid-year tax review & receipt ledger</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                    <span>Priority email support & feature updates</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenOrderModal({
+                    id: '6MONTH',
+                    name: '6-Month Plan (Semi-Annual)',
+                    price: '$59',
+                    originalPrice: '$90',
+                    period: '180 Days',
+                    durationDays: 180,
+                    savingsBadge: 'Save 35%'
+                  })}
+                  className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Choose 6-Month Plan</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 4. Full Year Plan (Annual) - BEST VALUE / 50%+ OFF */}
+            <div className="rounded-2xl bg-stone-900 border-2 border-emerald-500/60 p-5 flex flex-col justify-between space-y-4 shadow-xl relative scale-[1.02]">
+              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-emerald-500 text-stone-950 text-[10px] font-extrabold uppercase rounded-full shadow-md tracking-wider flex items-center gap-1">
+                <Tag className="w-3 h-3" />
+                Best Value • Over 50% Off
+              </div>
+
+              <div className="space-y-3 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-emerald-400">Full Year</span>
+                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">
+                    365 Days
+                  </span>
+                </div>
+
+                <div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-3xl font-extrabold text-stone-100">$89</span>
+                    <span className="text-xs text-stone-500 line-through">$180</span>
+                    <span className="text-xs text-stone-400">/ year</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-400 font-mono mt-0.5 font-semibold">
+                    ~$7.42 / month (Save $91 total!)
+                  </p>
+                </div>
+
+                <div className="h-px bg-stone-800/80 my-2" />
+
+                <ul className="space-y-2 text-xs text-stone-300">
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>Complete 365-day fiscal year coverage</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>Lowest cost per month ($7.42/mo)</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>All annual and year-end tax exports</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
+                    <span>Continuous in-place updates included</span>
+                  </li>
+                </ul>
+              </div>
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleOpenOrderModal({
+                    id: 'ANNUAL',
+                    name: 'Full Year Plan (Annual)',
+                    price: '$89',
+                    originalPrice: '$180',
+                    period: '365 Days',
+                    durationDays: 365,
+                    savingsBadge: 'Over 50% Off'
+                  })}
+                  className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                  <Tag className="w-3.5 h-3.5" />
+                  <span>Choose Full Year (Best Deal)</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Transparent Independent Developer & Tax Advisory Disclosure */}
+          <div className="p-5 rounded-2xl bg-stone-900/60 border border-stone-800/90 flex flex-col md:flex-row gap-4 items-start shadow-sm">
+            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
+              <Shield className="w-5 h-5" />
+            </div>
+            <div className="space-y-1.5 text-xs">
+              <h4 className="font-bold text-stone-200 flex items-center gap-2">
+                <span>Independent Developer & Tax Advisory Disclosure</span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-stone-800 text-stone-400">Transparency Notice</span>
+              </h4>
+              <p className="text-stone-400 leading-relaxed">
+                I am an independent software developer and coding enthusiast who built this desktop application to eliminate the painful, tedious chore of manual receipt entry and spreadsheet transcription. <strong className="text-stone-300">I am not a certified public accountant (CPA), licensed tax attorney, or financial advisor.</strong>
+              </p>
+              <p className="text-stone-400 leading-relaxed">
+                The pricing above directly reflects this independent status: providing an accessible, high-efficiency software utility at a fraction of enterprise software prices. This application serves strictly as an automated OCR, organization, and extraction assistant. Users should always verify their categorized expenses and consult a qualified, licensed tax professional for official tax filing and legal advice.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Order / License Request Modal */}
+        {selectedPlanForOrder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150">
+            <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+              <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    <Key className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-stone-100">Request License Key</h3>
+                    <p className="text-xs text-stone-400">Directly from the developer</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedPlanForOrder(null)}
+                  className="p-1 rounded-lg text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-colors cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Selected Plan Summary */}
+              <div className="p-3.5 bg-stone-950 rounded-xl border border-stone-800 flex items-center justify-between">
+                <div>
+                  <span className="text-xs font-bold text-stone-200 block">{selectedPlanForOrder.name}</span>
+                  <span className="text-[11px] text-stone-400">{selectedPlanForOrder.period} activation duration</span>
+                </div>
+                <div className="text-right">
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-lg font-extrabold text-amber-400">{selectedPlanForOrder.price}</span>
+                    {selectedPlanForOrder.originalPrice && (
+                      <span className="text-xs text-stone-500 line-through">{selectedPlanForOrder.originalPrice}</span>
+                    )}
+                  </div>
+                  {selectedPlanForOrder.savingsBadge && (
+                    <span className="text-[10px] font-semibold text-emerald-400">
+                      {selectedPlanForOrder.savingsBadge}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Contact Form Details */}
+              <div className="space-y-3 text-xs">
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1">Your Name</label>
+                  <input
+                    type="text"
+                    value={orderName}
+                    onChange={(e) => setOrderName(e.target.value)}
+                    placeholder="e.g. John Miller"
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1">Your Email (for license delivery)</label>
+                  <input
+                    type="email"
+                    value={orderEmail}
+                    onChange={(e) => setOrderEmail(e.target.value)}
+                    placeholder="e.g. name@example.com"
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1">Optional Message / Questions</label>
+                  <textarea
+                    rows={2}
+                    value={orderNote}
+                    onChange={(e) => setOrderNote(e.target.value)}
+                    placeholder="Any specific questions or preferred payment methods..."
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 resize-none"
+                  />
+                </div>
+              </div>
+
+              {/* Actions: Send Email or Copy Details */}
+              <div className="pt-2 space-y-2">
+                <a
+                  href={getOrderMailtoUrl()}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Send className="w-4 h-4" />
+                  <span>Send Request to Developer (moisttowlett247@gmail.com)</span>
+                </a>
+
+                <button
+                  type="button"
+                  onClick={handleCopyOrderSummary}
+                  className="w-full py-2 px-4 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  {copiedOrderDetails ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-400" />
+                      <span className="text-emerald-400">Order Details Copied to Clipboard!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4" />
+                      <span>Copy Request Details to Clipboard</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+              <p className="text-[11px] text-stone-500 text-center leading-relaxed">
+                Keys are issued and emailed promptly upon confirmation. You can test immediately using the free 7-day demo key!
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Footer */}
+      <footer className="border-t border-stone-800/80 bg-stone-950 py-4 px-6 text-center text-xs text-stone-500 flex flex-col sm:flex-row items-center justify-between gap-2">
+        <span>Receipt Processor Desktop • Automated Receipt OCR & Tax Prep Application</span>
+        <div className="flex items-center gap-4">
+          <span>License Support: <strong className="text-stone-400">moisttowlett247@gmail.com</strong></span>
+          {onGoToAdmin && (
+            <button
+              onClick={onGoToAdmin}
+              className="text-stone-600 hover:text-stone-400 text-[11px] transition-colors cursor-pointer flex items-center gap-1"
+              title="Private Operator Console"
+            >
+              <span>Operator</span>
+            </button>
+          )}
+        </div>
+      </footer>
+    </div>
+  );
+};

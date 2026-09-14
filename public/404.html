@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Redirecting...</title>
+    <script>
+      // Single Page Application (SPA) redirect for GitHub Pages
+      // Keeps path and query string when refreshing sub-paths like /admin
+      var segmentCount = 1; // 1 segment for project repos (e.g. /receipt-processor-portal/)
+      var location = window.location;
+      var path = location.pathname.slice(1).split('/').slice(segmentCount).join('/');
+      location.replace(
+        location.protocol + '//' + location.hostname + (location.port ? ':' + location.port : '') +
+        location.pathname.split('/').slice(0, 1 + segmentCount).join('/') + '/?p=' +
+        encodeURIComponent(path + location.search) +
+        location.hash
+      );
+    </script>
+  </head>
+  <body>
+  </body>
+</html>
