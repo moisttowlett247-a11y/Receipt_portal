@@ -1,8 +1,8 @@
 {
-  "status": "REVOKED",
+  "status": "ACTIVE",
   "plan": "MONTHLY",
   "expires": "Pending (30 days upon activation)",
   "issued": "2026-09-14",
   "hwid": null,
-  "updatedAt": "2026-09-14T23:40:56.107Z"
+  "updatedAt": "2026-09-14T23:43:19.550Z"
 }
