@@ -24,7 +24,7 @@ export function getStoredGitHubConfig(): GitHubSyncConfig {
   } catch {}
   return {
     owner: 'moisttowlett247-a11y',
-    repo: 'receipt-processor-portal',
+    repo: 'Receipt_portal',
     branch: 'main',
     token: '',
     autoSync: true

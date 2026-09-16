@@ -153,6 +153,7 @@ DEFAULT_PORTAL_ENDPOINTS = [
     "http://127.0.0.1:3000",
     "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
     "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
     "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
 ]
 
