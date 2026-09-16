@@ -44,7 +44,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     status?: string;
     message: string;
   } | null>(null);
-  const [copiedKey, setCopiedKey] = useState(false);
   
   // Early Access / Product Interest Form State
   const [inquiryName, setInquiryName] = useState('');
@@ -435,7 +434,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       <option value="3-Month Quarterly ($39)">3-Month Quarterly — $39 / 3 mos</option>
                       <option value="6-Month Semi-Annual ($59) - Recommended">6-Month Semi-Annual — $59 / 6 mos (Popular)</option>
                       <option value="Full Year Annual ($89) - Best Deal">Full Year Annual — $89 / year (Best Deal)</option>
-                      <option value="Free 7-Day Demo Trial">Free 7-Day Trial Demo</option>
                     </select>
                   </div>
 
@@ -493,7 +491,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     type="text"
                     value={clientKeyInput}
                     onChange={(e) => setClientKeyInput(e.target.value)}
-                    placeholder="e.g. 6MONTH-9842-8710-2026 or DEMO-..."
+                    placeholder="e.g. 6MONTH-9842-8710-2026 or ANNUAL-..."
                     className="w-full text-xs font-mono px-3 py-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-sky-500 uppercase tracking-wider"
                   />
                 </div>
@@ -539,22 +537,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   </p>
                 </div>
               )}
-            </div>
-
-            <div className="p-3 bg-stone-950/60 rounded-xl border border-stone-800/80 text-[11px] text-stone-400 flex items-center justify-between">
-              <span>Looking to test license verification?</span>
-              <button
-                type="button"
-                onClick={() => {
-                  setClientKeyInput('DEMO-TRIAL-PRO-2026');
-                  navigator.clipboard.writeText('DEMO-TRIAL-PRO-2026');
-                  setCopiedKey(true);
-                  setTimeout(() => setCopiedKey(false), 2000);
-                }}
-                className="text-amber-400 hover:text-amber-300 font-mono font-medium underline cursor-pointer"
-              >
-                {copiedKey ? 'Copied Demo Key!' : 'Use Demo Key'}
-              </button>
             </div>
           </div>
         </div>
@@ -961,7 +943,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
 
               <p className="text-[11px] text-stone-500 text-center leading-relaxed">
-                Keys are issued and emailed promptly upon confirmation. You can test immediately using the free 7-day demo key!
+                Keys are issued and emailed promptly upon order confirmation and review.
               </p>
             </div>
           </div>
