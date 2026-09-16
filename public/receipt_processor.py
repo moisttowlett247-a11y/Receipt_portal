@@ -1208,6 +1208,7 @@ class QuickBooksOnlineSync:
         self.profile_mgr = profile_manager
         self.client_id = os.getenv("QBO_CLIENT_ID", "").strip()
         self.client_secret = os.getenv("QBO_CLIENT_SECRET", "").strip()
+        self.server_url = os.getenv("LICENSE_SERVER_URL", "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app").rstrip("/")
 
         self.active_client_name = None
         self.realm_id = None
@@ -1227,21 +1228,53 @@ class QuickBooksOnlineSync:
             self.set_active_client(first_client, data["realm_id"], data["refresh_token"], data.get("env", "production"))
 
     def is_configured(self):
+        # Fully configured if realm_id is known (via server broker) or if local direct keys exist
+        if self.realm_id and self.server_url:
+            return True
         return bool(self.client_id and self.client_secret and self.realm_id and self.refresh_token)
 
-    def set_active_client(self, client_name: str, realm_id: str, refresh_token: str, env: str = "production"):
+    def set_active_client(self, client_name: str, realm_id: str, refresh_token: str = "", env: str = "production"):
         self.active_client_name = client_name
-        self.realm_id = realm_id.strip()
-        self.refresh_token = refresh_token.strip()
-        self.env = env.strip().lower()
+        self.realm_id = realm_id.strip() if realm_id else ""
+        self.refresh_token = refresh_token.strip() if refresh_token else ""
+        self.env = env.strip().lower() if env else "production"
         self.base_api_url = "https://sandbox-quickbooks.api.intuit.com" if self.env == "sandbox" else "https://quickbooks.api.intuit.com"
         self.access_token = None
         self._cached_accounts.clear()
         self._cached_vendors.clear()
 
     def refresh_tokens(self) -> str:
-        if not self.is_configured():
-            raise ValueError(f"Client '{self.active_client_name}' is missing Realm ID or Refresh Token.")
+        # 1. First priority: Centralized Server Token Broker
+        # This keeps the Intuit Client Secret 100% server-side and satisfies Intuit App Store production policies.
+        if self.server_url and self.realm_id:
+            try:
+                license_key = os.getenv("LICENSE_KEY", "").strip()
+                headers = {"Content-Type": "application/json"}
+                if license_key:
+                    headers["X-License-Key"] = license_key
+
+                resp = requests.post(
+                    f"{self.server_url}/api/qbo/token",
+                    json={"realmId": self.realm_id, "licenseKey": license_key},
+                    headers=headers,
+                    timeout=12
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("accessToken"):
+                        self.access_token = data.get("accessToken")
+                        if data.get("environment"):
+                            self.env = data.get("environment")
+                            self.base_api_url = "https://sandbox-quickbooks.api.intuit.com" if self.env == "sandbox" else "https://quickbooks.api.intuit.com"
+                        return self.access_token
+            except Exception as e:
+                # If server token broker fails or is unreachable, fallback to direct credentials if available
+                if not (self.client_id and self.client_secret and self.refresh_token):
+                    raise RuntimeError(f"QuickBooks Server Token Broker error: {e}")
+
+        # 2. Local fallback if standalone client credentials are provided
+        if not (self.client_id and self.client_secret and self.realm_id and self.refresh_token):
+            raise ValueError(f"Client '{self.active_client_name}' is missing Realm ID or authorized tokens.")
 
         resp = requests.post(
             self.token_url,

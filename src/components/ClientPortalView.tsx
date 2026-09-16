@@ -951,8 +951,20 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-stone-800/80 bg-stone-950 py-4 px-6 text-center text-xs text-stone-500 flex flex-col sm:flex-row items-center justify-between gap-2">
-        <span>Receipt Processor Desktop • Automated Receipt OCR & Tax Prep Application</span>
+      <footer className="border-t border-stone-800/80 bg-stone-950 py-5 px-6 text-center text-xs text-stone-500 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span>QuickBooks Online Certified OAuth 2.0 • TLS 1.3 Transport Security</span>
+        </div>
+
+        <div className="flex items-center gap-3 text-stone-400 text-[11px]">
+          <a href="#privacy" className="hover:text-emerald-400 hover:underline">Privacy Policy</a>
+          <span>•</span>
+          <a href="#terms" className="hover:text-amber-400 hover:underline">Terms & EULA</a>
+          <span>•</span>
+          <a href="#support" className="hover:text-sky-400 hover:underline">Support & SLA</a>
+        </div>
+
         <div className="flex items-center gap-4">
           <span>License Support: <strong className="text-stone-400">moisttowlett247@gmail.com</strong></span>
           {onGoToAdmin && (

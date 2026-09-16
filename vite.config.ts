@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {defineConfig, Plugin} from 'vite';
+import {quickbooksApiPlugin} from './vite-qbo-plugin';
 
 function licenseSyncApiPlugin(): Plugin {
   return {
@@ -556,7 +557,7 @@ function aistudioMediaPlugin(): Plugin {
 export default defineConfig(() => {
   return {
     base: './',
-    plugins: [react(), tailwindcss(), aistudioMediaPlugin(), licenseSyncApiPlugin()],
+    plugins: [react(), tailwindcss(), aistudioMediaPlugin(), licenseSyncApiPlugin(), quickbooksApiPlugin()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

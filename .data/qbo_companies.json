@@ -1,0 +1,20 @@
+{
+  "9130358123456789": {
+    "realmId": "9130358123456789",
+    "companyName": "Oak Creek Cattle & Agriculture LLC",
+    "legalName": "Oak Creek Cattle & Agriculture LLC Holdings Inc.",
+    "email": "accounting@oakcreekag.com",
+    "country": "US",
+    "currency": "USD",
+    "connectedAt": "2026-09-16T23:37:04.507Z",
+    "lastRefreshedAt": "2026-09-16T23:37:04.507Z",
+    "lastUsedAt": "2026-09-16T23:37:08.495Z",
+    "environment": "production",
+    "status": "DISCONNECTED",
+    "refreshTokenEncrypted": "",
+    "accessTokenCached": "",
+    "accessTokenExpiresAt": 1789605424507,
+    "refreshTokenExpiresAt": 1798328224507,
+    "assignedToKey": "ANNUAL-4819-2026"
+  }
+}

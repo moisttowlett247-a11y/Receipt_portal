@@ -28,7 +28,8 @@ import {
   Globe,
   FolderArchive,
   ChevronDown,
-  Radio
+  Radio,
+  Building2
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -47,6 +48,8 @@ import { AdminLoginView } from './components/AdminLoginView';
 import { DownloadBundleModal } from './components/DownloadBundleModal';
 import { DesktopPackageCard } from './components/DesktopPackageCard';
 import { ActiveDevicesMonitor } from './components/ActiveDevicesMonitor';
+import { QuickBooksProductionCenter } from './components/QuickBooksProductionCenter';
+import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { downloadFullBundleZip, triggerFileDownload } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
@@ -55,7 +58,9 @@ import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'licensing' | 'devices' | 'updater' | 'code' | 'guide'>('licensing');
+  const [activeTab, setActiveTab] = useState<'licensing' | 'devices' | 'qbo' | 'updater' | 'code' | 'guide'>('licensing');
+  const [legalModalOpen, setLegalModalOpen] = useState(false);
+  const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'support'>('privacy');
   
   // Persistent License Keys registry state
   const [licenseKeys, setLicenseKeys] = useState<LicenseKeyRecord[]>(() => {
@@ -149,6 +154,36 @@ export default function App() {
     };
     window.addEventListener('popstate', handleLocationChange);
     window.addEventListener('hashchange', handleLocationChange);
+
+    // Check for QuickBooks OAuth callback results or legal deep-links
+    if (typeof window !== 'undefined') {
+      const searchParams = new URLSearchParams(window.location.search);
+      const hash = window.location.hash.toLowerCase();
+
+      if (searchParams.get('qbo_connected') === 'true') {
+        const company = searchParams.get('company') || 'QuickBooks Company';
+        showToast(`QuickBooks Online Connected: ${company}! Encrypted tokens active with rolling 101-day renewal.`);
+        setActiveTab('qbo');
+        window.history.replaceState({}, '', window.location.pathname);
+      } else if (searchParams.get('qbo_error')) {
+        const err = searchParams.get('qbo_error');
+        showToast(`QuickBooks OAuth Warning: ${err}`);
+        setActiveTab('qbo');
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+
+      if (hash === '#privacy') {
+        setLegalTab('privacy');
+        setLegalModalOpen(true);
+      } else if (hash === '#terms' || hash === '#eula') {
+        setLegalTab('terms');
+        setLegalModalOpen(true);
+      } else if (hash === '#support') {
+        setLegalTab('support');
+        setLegalModalOpen(true);
+      }
+    }
+
     return () => {
       window.removeEventListener('popstate', handleLocationChange);
       window.removeEventListener('hashchange', handleLocationChange);
@@ -771,6 +806,20 @@ export default function App() {
             <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
             <span>Active IP Monitor</span>
           </button>
+
+          {/* QuickBooks Online Production Header Button */}
+          <button
+            onClick={() => setActiveTab('qbo')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-md ${
+              activeTab === 'qbo'
+                ? 'bg-[#2CA01C] text-white border-emerald-400 ring-1 ring-emerald-400/50'
+                : 'bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border-emerald-800'
+            }`}
+            title="QuickBooks Online Production & Connected Companies"
+          >
+            <Building2 className="w-4 h-4 text-emerald-300" />
+            <span>QuickBooks OAuth</span>
+          </button>
           
           {/* Download Desktop Script & Runtime Files (.bat included) */}
           <div className="flex items-center shadow-sm">
@@ -843,6 +892,21 @@ export default function App() {
           <span>Live Connected Devices & Active IPs</span>
           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
             Live Stream
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('qbo')}
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'qbo'
+              ? 'border-emerald-500 text-emerald-400'
+              : 'border-transparent text-stone-400 hover:text-stone-200'
+          }`}
+        >
+          <Building2 className="w-4 h-4 text-emerald-400" />
+          <span>QuickBooks Online Production</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
+            OAuth 2.0
           </span>
         </button>
 
@@ -1461,6 +1525,17 @@ export default function App() {
           />
         )}
 
+        {/* TAB: QUICKBOOKS ONLINE PRODUCTION & CONNECTED COMPANIES */}
+        {activeTab === 'qbo' && (
+          <QuickBooksProductionCenter
+            showToast={showToast}
+            onOpenLegal={(tab) => {
+              setLegalTab(tab);
+              setLegalModalOpen(true);
+            }}
+          />
+        )}
+
         {/* TAB 2: AUTO-UPDATE MANIFEST */}
         {activeTab === 'updater' && (
           <div className="space-y-6">
@@ -1809,6 +1884,53 @@ class UpdateManager:
         isOpen={isBundleModalOpen}
         onClose={() => setIsBundleModalOpen(false)}
         onToast={showToast}
+      />
+
+      {/* Intuit Compliance & Legal Footer Bar */}
+      <footer className="mt-12 py-6 border-t border-stone-800/80 bg-stone-950/60 text-stone-500 text-xs px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-400" />
+          <span>QuickBooks Online OAuth 2.0 • TLS 1.3 Transport • AES-256 Encrypted</span>
+        </div>
+        <div className="flex items-center gap-4 text-stone-400">
+          <button
+            onClick={() => {
+              setLegalTab('privacy');
+              setLegalModalOpen(true);
+            }}
+            className="hover:text-emerald-400 hover:underline cursor-pointer"
+          >
+            Privacy Policy
+          </button>
+          <span>•</span>
+          <button
+            onClick={() => {
+              setLegalTab('terms');
+              setLegalModalOpen(true);
+            }}
+            className="hover:text-amber-400 hover:underline cursor-pointer"
+          >
+            Terms of Service & EULA
+          </button>
+          <span>•</span>
+          <button
+            onClick={() => {
+              setLegalTab('support');
+              setLegalModalOpen(true);
+            }}
+            className="hover:text-sky-400 hover:underline cursor-pointer"
+          >
+            Customer Support & SLA
+          </button>
+        </div>
+      </footer>
+
+      {/* Intuit App Store Compliance: Privacy, Terms, and Support Modal */}
+      <LegalAndComplianceModal
+        isOpen={legalModalOpen}
+        activeTab={legalTab}
+        onClose={() => setLegalModalOpen(false)}
+        onTabChange={(tab) => setLegalTab(tab)}
       />
 
       {/* Toast Notification Banner */}
