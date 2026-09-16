@@ -576,10 +576,12 @@ export default function App() {
     return (
       <>
         <ClientPortalView
-          onDownloadScript={handleDownloadPythonScript}
           licenseKeys={licenseKeys}
           currentVersion={currentVersion}
           onGoToAdmin={() => navigateTo('/admin')}
+          onInquirySubmitted={(inquiry) => {
+            showToast(`Inquiry from ${inquiry.name} received!`);
+          }}
         />
 
         {/* Global Toast */}

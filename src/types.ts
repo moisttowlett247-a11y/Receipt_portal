@@ -1,6 +1,17 @@
 export type LicenseStatus = 'ACTIVE' | 'NOT ACTIVE' | 'EXPIRED';
 export type PlanTier = 'ADMIN' | 'DEMO' | 'MONTHLY' | '3MONTH' | '6MONTH' | 'ANNUAL' | 'FARM' | 'PRO';
 
+export interface ProductInquiry {
+  id: string;
+  name: string;
+  email: string;
+  company?: string;
+  receiptVolume?: string; // e.g. "50-200 / month"
+  interestedPlan?: string;
+  notes?: string;
+  submittedAt: string;
+}
+
 export interface LicenseKeyRecord {
   id: string;
   key: string;

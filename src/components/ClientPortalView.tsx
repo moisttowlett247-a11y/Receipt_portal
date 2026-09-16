@@ -1,49 +1,40 @@
 import React, { useState } from 'react';
 import { 
   ShieldCheck, 
-  Download, 
   Key, 
   CheckCircle2, 
   XCircle, 
-  AlertCircle, 
-  Lock, 
-  Terminal, 
   Clock, 
-  FileText, 
-  HelpCircle, 
-  ExternalLink, 
   ChevronRight, 
   Mail, 
   Copy, 
   Check,
   Sparkles,
   Tag,
-  DollarSign,
   Send,
   X,
   Shield,
   FileSpreadsheet,
-  Monitor,
-  Play,
-  Info
+  User,
+  Building,
+  Layers,
+  MessageSquare
 } from 'lucide-react';
-import { LicenseKeyRecord, getPlanDurationDays, getPlanLabel } from '../types';
+import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel } from '../types';
 import { computeSha256Hex } from '../hashUtils';
 
 interface ClientPortalViewProps {
-  onDownloadExecutable?: () => void;
-  onDownloadScript?: () => void;
   licenseKeys: LicenseKeyRecord[];
   currentVersion: string;
   onGoToAdmin?: () => void;
+  onInquirySubmitted?: (inquiry: ProductInquiry) => void;
 }
 
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
-  onDownloadExecutable,
-  onDownloadScript,
   licenseKeys,
   currentVersion,
-  onGoToAdmin
+  onGoToAdmin,
+  onInquirySubmitted
 }) => {
   const [clientKeyInput, setClientKeyInput] = useState('');
   const [checkResult, setCheckResult] = useState<{
@@ -55,6 +46,17 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   } | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
   
+  // Early Access / Product Interest Form State
+  const [inquiryName, setInquiryName] = useState('');
+  const [inquiryEmail, setInquiryEmail] = useState('');
+  const [inquiryCompany, setInquiryCompany] = useState('');
+  const [inquiryVolume, setInquiryVolume] = useState('50 - 200 receipts / month');
+  const [inquiryPlan, setInquiryPlan] = useState('6-Month Semi-Annual ($59)');
+  const [inquiryNotes, setInquiryNotes] = useState('');
+  const [isSubmittingInquiry, setIsSubmittingInquiry] = useState(false);
+  const [inquirySubmittedSuccess, setInquirySubmittedSuccess] = useState(false);
+  const [inquiryError, setInquiryError] = useState<string | null>(null);
+
   // Pricing & Order Request Modal state
   const [selectedPlanForOrder, setSelectedPlanForOrder] = useState<{
     id: string;
@@ -84,6 +86,52 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     setCopiedOrderDetails(false);
   };
 
+  const handleInquirySubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setInquiryError(null);
+
+    const cleanName = inquiryName.trim();
+    const cleanEmail = inquiryEmail.trim();
+
+    if (!cleanName) {
+      setInquiryError('Please provide your name.');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setInquiryError('Please provide a valid contact email address.');
+      return;
+    }
+
+    setIsSubmittingInquiry(true);
+
+    const newInquiry: ProductInquiry = {
+      id: `inquiry-${Date.now()}`,
+      name: cleanName,
+      email: cleanEmail,
+      company: inquiryCompany.trim() || undefined,
+      receiptVolume: inquiryVolume,
+      interestedPlan: inquiryPlan,
+      notes: inquiryNotes.trim() || undefined,
+      submittedAt: new Date().toISOString()
+    };
+
+    // Save locally to localStorage so operator can review
+    try {
+      const existingRaw = localStorage.getItem('receipt_processor_inquiries');
+      const existing: ProductInquiry[] = existingRaw ? JSON.parse(existingRaw) : [];
+      localStorage.setItem('receipt_processor_inquiries', JSON.stringify([newInquiry, ...existing]));
+    } catch {}
+
+    if (onInquirySubmitted) {
+      onInquirySubmitted(newInquiry);
+    }
+
+    setTimeout(() => {
+      setIsSubmittingInquiry(false);
+      setInquirySubmittedSuccess(true);
+    }, 400);
+  };
+
   const getOrderMailtoUrl = () => {
     if (!selectedPlanForOrder) return '';
     const subject = encodeURIComponent(`License Key Request: ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`);
@@ -96,13 +144,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       (orderNote ? `Notes: ${orderNote}\n\n` : '\n') +
       `Please provide instructions to complete payment and receive my license key.\n\nThank you!`
     );
-    const contactEmail = (import.meta as any).env?.VITE_CONTACT_EMAIL || 'support@receiptprocessor.com';
+    const contactEmail = 'moisttowlett247@gmail.com';
     return `mailto:${contactEmail}?subject=${subject}&body=${body}`;
   };
 
   const handleCopyOrderSummary = () => {
     if (!selectedPlanForOrder) return;
-    const contactEmail = (import.meta as any).env?.VITE_CONTACT_EMAIL || 'support@receiptprocessor.com';
+    const contactEmail = 'moisttowlett247@gmail.com';
     const text = 
       `Subject: License Key Request - ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})\n\n` +
       `Hi,\n\nI want to request a license key for Receipt Processor Desktop:\n` +
@@ -224,7 +272,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 Receipt Processor
               </h1>
               <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                Client Portal v{currentVersion}
+                Official Portal v{currentVersion}
               </span>
             </div>
             <p className="text-xs text-stone-400 hidden sm:block">
@@ -234,14 +282,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
-          <button
-            onClick={onDownloadScript}
+          <a
+            href="#request-access"
             className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm transition-colors cursor-pointer"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Download Software</span>
-            <span className="sm:hidden">Download</span>
-          </button>
+            <Send className="w-3.5 h-3.5" />
+            <span>Request Access</span>
+          </a>
         </div>
       </header>
 
@@ -256,51 +303,167 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             Automated Receipt OCR & Tax Prep Application
           </h2>
           <p className="text-xs sm:text-sm text-stone-400 leading-relaxed">
-            Download your desktop software package, verify your active subscription status, and follow the rapid installation guide to start scanning and processing receipts.
+            Eliminate hours of manual data entry. Our workstation software scans receipts, categorizes deductible business expenses, and produces clean Excel ledgers.
           </p>
         </div>
 
-        {/* Two-Column Grid: Download Software & Verify License */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Card 1: Download & Getting Started */}
+        {/* Two-Column Grid: Product Interest Form & Verify License */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6" id="request-access">
+          {/* Card 1: Product Inquiry / Request Access Form */}
           <div className="p-6 rounded-2xl bg-stone-900/90 border border-stone-800 flex flex-col justify-between space-y-5 shadow-lg">
             <div className="space-y-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-                  <Download className="w-5 h-5" />
+                  <Sparkles className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-stone-100">Desktop Software Download</h3>
-                  <p className="text-xs text-stone-400">Latest standalone script for Windows, Mac & Linux</p>
+                  <h3 className="text-base font-bold text-stone-100">Request Software Access</h3>
+                  <p className="text-xs text-stone-400">Join our exclusive desktop release list</p>
                 </div>
               </div>
 
               <p className="text-xs text-stone-300 leading-relaxed">
-                The desktop client runs locally on your workstation. It performs high-resolution image OCR, extracts merchant, date, total, and tax expense categories, and generates ready-to-file Excel and CSV reports.
+                We are actively onboarding small businesses, accountants, and independent contractors. Fill out this brief form to request your personalized workstation build and license key.
               </p>
 
-              <div className="p-3 bg-stone-950 rounded-xl border border-stone-800 space-y-2 text-xs">
-                <div className="font-semibold text-stone-200 flex items-center gap-1.5">
-                  <Terminal className="w-3.5 h-3.5 text-amber-400" />
-                  Quick Launch Steps:
+              {inquirySubmittedSuccess ? (
+                <div className="p-5 bg-emerald-950/40 border border-emerald-800/60 rounded-xl text-xs text-emerald-200 space-y-3 animate-in fade-in duration-200">
+                  <div className="flex items-center gap-2 font-bold text-sm text-emerald-400">
+                    <CheckCircle2 className="w-5 h-5 shrink-0" />
+                    <span>Inquiry Received Successfully!</span>
+                  </div>
+                  <p className="leading-relaxed text-stone-300">
+                    Thank you, <strong className="text-stone-100">{inquiryName}</strong>! Your request for the <strong className="text-amber-400">{inquiryPlan}</strong> has been logged.
+                  </p>
+                  <p className="text-[11px] text-stone-400 leading-relaxed">
+                    We will review your inquiry and follow up at <strong className="text-stone-200">{inquiryEmail}</strong> with onboarding instructions and your license key.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInquirySubmittedSuccess(false);
+                      setInquiryName('');
+                      setInquiryEmail('');
+                      setInquiryCompany('');
+                      setInquiryNotes('');
+                    }}
+                    className="mt-2 text-amber-400 hover:text-amber-300 underline font-medium cursor-pointer text-xs"
+                  >
+                    Submit another inquiry
+                  </button>
                 </div>
-                <ol className="list-decimal list-inside text-stone-400 space-y-1 pl-1">
-                  <li>Download <code className="text-amber-300 font-mono">receipt_processor.py</code></li>
-                  <li>Install requirements: <code className="text-stone-300 font-mono">pip install -r requirements.txt</code></li>
-                  <li>Run: <code className="text-stone-300 font-mono">python receipt_processor.py</code></li>
-                  <li>Enter your license key when prompted</li>
-                </ol>
-              </div>
-            </div>
+              ) : (
+                <form onSubmit={handleInquirySubmit} className="space-y-3 text-xs">
+                  {inquiryError && (
+                    <div className="p-2.5 bg-rose-950/50 border border-rose-800/60 rounded-lg text-rose-300 flex items-center gap-2">
+                      <XCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                      <span>{inquiryError}</span>
+                    </div>
+                  )}
 
-            <div className="pt-2">
-              <button
-                onClick={onDownloadScript}
-                className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 font-semibold text-white rounded-xl text-xs transition-all shadow-md active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                Download receipt_processor.py (v{currentVersion})
-              </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-stone-300 font-medium block mb-1">
+                        Full Name <span className="text-amber-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={inquiryName}
+                        onChange={(e) => setInquiryName(e.target.value)}
+                        placeholder="e.g. Sarah Jenkins"
+                        required
+                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-stone-300 font-medium block mb-1">
+                        Email Address <span className="text-amber-400">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        value={inquiryEmail}
+                        onChange={(e) => setInquiryEmail(e.target.value)}
+                        placeholder="name@business.com"
+                        required
+                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-stone-300 font-medium block mb-1">
+                        Business / Company (Optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={inquiryCompany}
+                        onChange={(e) => setInquiryCompany(e.target.value)}
+                        placeholder="e.g. Jenkins Farm & Co"
+                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-stone-300 font-medium block mb-1">
+                        Expected Monthly Receipts
+                      </label>
+                      <select
+                        value={inquiryVolume}
+                        onChange={(e) => setInquiryVolume(e.target.value)}
+                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="Under 50 receipts / month">Under 50 receipts / mo</option>
+                        <option value="50 - 200 receipts / month">50 - 200 receipts / mo</option>
+                        <option value="200 - 500 receipts / month">200 - 500 receipts / mo</option>
+                        <option value="500+ receipts / month">500+ receipts / mo</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-stone-300 font-medium block mb-1">
+                      Target Subscription Plan
+                    </label>
+                    <select
+                      value={inquiryPlan}
+                      onChange={(e) => setInquiryPlan(e.target.value)}
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="Monthly Plan ($15/mo)">Monthly Plan — $15 / month</option>
+                      <option value="3-Month Quarterly ($39)">3-Month Quarterly — $39 / 3 mos</option>
+                      <option value="6-Month Semi-Annual ($59) - Recommended">6-Month Semi-Annual — $59 / 6 mos (Popular)</option>
+                      <option value="Full Year Annual ($89) - Best Deal">Full Year Annual — $89 / year (Best Deal)</option>
+                      <option value="Free 7-Day Demo Trial">Free 7-Day Trial Demo</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-stone-300 font-medium block mb-1">
+                      Notes or Specific Requirements (Optional)
+                    </label>
+                    <textarea
+                      rows={2}
+                      value={inquiryNotes}
+                      onChange={(e) => setInquiryNotes(e.target.value)}
+                      placeholder="e.g. Needed for Schedule F farm deductions or QuickBooks sync..."
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 resize-none"
+                    />
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      type="submit"
+                      disabled={isSubmittingInquiry}
+                      className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 font-semibold text-white rounded-xl text-xs transition-all shadow-md active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{isSubmittingInquiry ? 'Submitting...' : 'Submit Interest & Request Build'}</span>
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
 
@@ -317,6 +480,10 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               </div>
 
+              <p className="text-xs text-stone-300 leading-relaxed">
+                Already have an assigned license key? Enter it below to check its real-time activation status, expiration date, and verified plan privileges.
+              </p>
+
               <form onSubmit={handleVerifyClientKey} className="space-y-3">
                 <div>
                   <label className="text-xs font-medium text-stone-300 block mb-1">
@@ -326,7 +493,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     type="text"
                     value={clientKeyInput}
                     onChange={(e) => setClientKeyInput(e.target.value)}
-                    placeholder="e.g. MONTHLY-9842-8710-2026 or DEMO-..."
+                    placeholder="e.g. 6MONTH-9842-8710-2026 or DEMO-..."
                     className="w-full text-xs font-mono px-3 py-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-sky-500 uppercase tracking-wider"
                   />
                 </div>
@@ -375,7 +542,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             </div>
 
             <div className="p-3 bg-stone-950/60 rounded-xl border border-stone-800/80 text-[11px] text-stone-400 flex items-center justify-between">
-              <span>Looking to test out the software?</span>
+              <span>Looking to test license verification?</span>
               <button
                 type="button"
                 onClick={() => {
