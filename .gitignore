@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Security: Client Data & Tokens Protection
+.env
+.app_security.key
+*.enc
+.license_vault.json
+qbo_clients.json
+*.csv
+*.txt
+processed/
+inbox/
+inbox_archive/

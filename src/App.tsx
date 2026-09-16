@@ -25,7 +25,9 @@ import {
   Infinity as InfinityIcon,
   ShieldAlert,
   Clock,
-  Globe
+  Globe,
+  FolderArchive,
+  ChevronDown
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -41,7 +43,11 @@ import { LicenseManagerTable } from './components/LicenseManagerTable';
 import { AdminPinModal } from './components/AdminPinModal';
 import { ClientPortalView } from './components/ClientPortalView';
 import { AdminLoginView } from './components/AdminLoginView';
+import { DownloadBundleModal } from './components/DownloadBundleModal';
+import { DesktopPackageCard } from './components/DesktopPackageCard';
+import { downloadFullBundleZip, triggerFileDownload } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
+import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -66,7 +72,7 @@ export default function App() {
     return INITIAL_KEYS;
   });
 
-  // Save changes to localStorage
+  // Save changes to localStorage and ensure server sync
   useEffect(() => {
     try {
       localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(licenseKeys));
@@ -74,6 +80,13 @@ export default function App() {
       // ignore
     }
   }, [licenseKeys]);
+
+  // Initial sync of existing keys to website server
+  useEffect(() => {
+    if (licenseKeys && licenseKeys.length > 0) {
+      batchSyncKeysToServer(licenseKeys);
+    }
+  }, []);
 
   // Licensing generator state
   const [clientName, setClientName] = useState('Prairie Wind Agriculture');
@@ -105,6 +118,8 @@ export default function App() {
 
   const [copied, setCopied] = useState(false);
   const [isGhModalOpen, setIsGhModalOpen] = useState(false);
+  const [isBundleModalOpen, setIsBundleModalOpen] = useState(false);
+  const [isPackagingZip, setIsPackagingZip] = useState(false);
 
   // URL Route Detection for separating Client Portal from Admin Portal
   const checkIsAdminPath = (): boolean => {
@@ -283,6 +298,9 @@ export default function App() {
 
     showToast(`👑 Registered Non-Expiring Admin Key: ${keyToRegister} (Never Expires)`);
 
+    // Sync to website API server
+    syncKeyToServer(newAdminRecord, 'UPSERT');
+
     // Auto-sync admin key to GitHub if configured
     const ghCfg = getStoredGitHubConfig();
     if (ghCfg.token && ghCfg.autoSync !== false) {
@@ -333,6 +351,9 @@ export default function App() {
 
     showToast(`Key ${keyToRegister} added to Admin Registry for ${newRecord.clientName} (${newRecord.plan} Plan - ${getPlanDurationDays(planType)} days duration)`);
 
+    // Sync to website API server
+    syncKeyToServer(newRecord, 'UPSERT');
+
     // Auto-sync generated key to GitHub if configured
     const ghCfg = getStoredGitHubConfig();
     if (ghCfg.token && ghCfg.autoSync !== false) {
@@ -351,6 +372,9 @@ export default function App() {
       const nextStatus: LicenseStatus = target.status === 'ACTIVE' ? 'NOT ACTIVE' : 'ACTIVE';
       const updatedKey: LicenseKeyRecord = { ...target, status: nextStatus };
       showToast(`Key ${target.key} status updated to: ${nextStatus}`);
+
+      // Real-time sync to website API server (active registers as active, revoke registers as inactive)
+      syncKeyToServer(updatedKey, 'UPSERT');
 
       // Auto-sync to GitHub if configured
       const ghCfg = getStoredGitHubConfig();
@@ -388,6 +412,9 @@ export default function App() {
 
       showToast(`Key ${target.key} marked as ${nextInUse ? `In Use (Activated: ${newActivatedDate}, Expires: ${newExpiresDate})` : 'Unclaimed / Available'}`);
 
+      // Sync to website API server
+      syncKeyToServer(updatedKey, 'UPSERT');
+
       // Auto-sync to GitHub if configured
       const ghCfg = getStoredGitHubConfig();
       if (ghCfg.token && ghCfg.autoSync !== false) {
@@ -407,6 +434,9 @@ export default function App() {
       const target = prev.find(k => k.id === id);
       if (target) {
         showToast(`Key ${target.key} removed from registry.`);
+
+        // Delete from website API server so local application removes it
+        syncKeyToServer(target, 'DELETE');
 
         // Auto-delete from GitHub if configured
         const ghCfg = getStoredGitHubConfig();
@@ -429,6 +459,9 @@ export default function App() {
     };
     setLicenseKeys(prev => [newRecord, ...prev]);
     showToast(`Key ${newRecord.key} registered (${newRecord.status})`);
+
+    // Sync to website API server
+    syncKeyToServer(newRecord, 'UPSERT');
 
     // Auto-sync new key to GitHub if configured
     const ghCfg = getStoredGitHubConfig();
@@ -550,12 +583,25 @@ export default function App() {
   };
 
   const handleDownloadPythonScript = () => {
-    const link = document.createElement('a');
-    link.href = '/receipt_processor.py';
-    link.download = 'receipt_processor.py';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    triggerFileDownload('/receipt_processor.py', 'receipt_processor.py');
+    showToast('Downloaded receipt_processor.py');
+  };
+
+  const handleDownloadBatFile = () => {
+    triggerFileDownload('/run_receipt_processor.bat', 'run_receipt_processor.bat');
+    showToast('Downloaded run_receipt_processor.bat');
+  };
+
+  const handleDownloadBundle = async () => {
+    setIsPackagingZip(true);
+    try {
+      await downloadFullBundleZip();
+      showToast('Desktop bundle package (.zip) downloaded successfully!');
+      setTimeout(() => setIsPackagingZip(false), 1200);
+    } catch {
+      setIsPackagingZip(false);
+      setIsBundleModalOpen(true);
+    }
   };
 
   const copyPythonCode = async () => {
@@ -691,13 +737,25 @@ export default function App() {
             <span>GitHub Sync</span>
           </button>
           
-          <button
-            onClick={handleDownloadPythonScript}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-md shadow-sm transition-colors cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Script</span>
-          </button>
+          {/* Download Desktop Script & Runtime Files (.bat included) */}
+          <div className="flex items-center shadow-sm">
+            <button
+              onClick={handleDownloadBundle}
+              disabled={isPackagingZip}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-l-md transition-colors cursor-pointer border-r border-amber-700/60"
+              title="Download full package (.zip) including receipt_processor.py, run_receipt_processor.bat, and requirements.txt"
+            >
+              <FolderArchive className="w-3.5 h-3.5 text-amber-200" />
+              <span>{isPackagingZip ? 'Packaging...' : 'Download Files (.bat)'}</span>
+            </button>
+            <button
+              onClick={() => setIsBundleModalOpen(true)}
+              className="px-2 py-1.5 text-xs font-semibold bg-amber-700 hover:bg-amber-600 text-white rounded-r-md transition-colors cursor-pointer"
+              title="View individual files and launchers in desktop package"
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
           {/* View Public Portal link */}
           <button
@@ -780,6 +838,12 @@ export default function App() {
         {/* TAB 1: LICENSING */}
         {activeTab === 'licensing' && (
           <div className="space-y-6">
+            {/* Desktop Runtime Package Download Banner */}
+            <DesktopPackageCard
+              onOpenModal={() => setIsBundleModalOpen(true)}
+              onToast={showToast}
+            />
+
             {/* Explanatory Banner */}
             <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col md:flex-row gap-5 items-start justify-between">
               <div className="space-y-2 max-w-3xl">
@@ -1491,20 +1555,49 @@ export default function App() {
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleDownloadBundle}
+                  disabled={isPackagingZip}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 rounded transition-all shadow cursor-pointer whitespace-nowrap"
+                  title="Download receipt_processor.py, run_receipt_processor.bat, and configs in a single ZIP"
+                >
+                  <FolderArchive className="w-3.5 h-3.5" />
+                  <span>{isPackagingZip ? 'Packaging...' : 'Download Full Package (.ZIP with .bat)'}</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadBatFile}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white rounded transition-colors cursor-pointer"
+                  title="Download 1-click Windows batch launcher"
+                >
+                  <Terminal className="w-3.5 h-3.5" />
+                  <span>Download .bat</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadPythonScript}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 rounded transition-colors cursor-pointer"
+                  title="Download Python script only"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download .py</span>
+                </button>
+
                 <button
                   onClick={copyPythonCode}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 rounded transition-colors cursor-pointer"
                 >
                   <Copy className="w-3.5 h-3.5" />
-                  {copied ? 'Copied to Clipboard!' : 'Copy Code'}
+                  {copied ? 'Copied!' : 'Copy Code'}
                 </button>
+
                 <button
-                  onClick={handleDownloadPythonScript}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded transition-colors cursor-pointer"
+                  onClick={() => setIsBundleModalOpen(true)}
+                  className="px-2.5 py-1.5 text-xs text-stone-400 hover:text-white bg-stone-900 border border-stone-800 rounded transition-colors cursor-pointer"
+                  title="View all individual bundle files"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  Download File
+                  Browse Files...
                 </button>
               </div>
             </div>
@@ -1632,6 +1725,13 @@ class UpdateManager:
         savedHash={adminCredHash}
         savedUsername={adminUsername}
         onUpdateCredentials={handleUpdateCredentials}
+      />
+
+      {/* Download Desktop Bundle Modal */}
+      <DownloadBundleModal
+        isOpen={isBundleModalOpen}
+        onClose={() => setIsBundleModalOpen(false)}
+        onToast={showToast}
       />
 
       {/* Toast Notification Banner */}

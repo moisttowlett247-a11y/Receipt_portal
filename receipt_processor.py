@@ -29,13 +29,26 @@ import hashlib
 import threading
 import subprocess
 import urllib.request
+import urllib.error
 import urllib.parse
 from datetime import datetime, timedelta
-from PIL import Image, ImageOps, ImageFilter
 
-# Tkinter GUI imports
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
+# PIL / Pillow Image imports with fallback
+try:
+    from PIL import Image, ImageOps, ImageFilter
+except ImportError:
+    Image = ImageOps = ImageFilter = None
+
+# Tkinter GUI imports with fallback
+try:
+    import tkinter as tk
+    from tkinter import ttk, filedialog, messagebox, scrolledtext
+    _TK_BASE_TOPLEVEL = tk.Toplevel
+    _TK_BASE_TK = tk.Tk
+except (ImportError, AttributeError):
+    tk = ttk = filedialog = messagebox = scrolledtext = None
+    _TK_BASE_TOPLEVEL = object
+    _TK_BASE_TK = object
 
 # Anchor working directory to script directory regardless of launch method
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
@@ -51,9 +64,62 @@ try:
 except ImportError:
     pass
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+# Requests with fallback to urllib
+try:
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+except ImportError:
+    requests = None
+    HTTPAdapter = None
+    Retry = None
+
+
+def http_get_json(url: str, timeout: float = 3.5) -> tuple:
+    """
+    Performs an HTTP GET request returning (status_code, data_dict_or_none).
+    Uses standard library urllib.request (zero external dependencies) and
+    falls back smoothly to requests if present.
+    """
+    try:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "FarmReceiptProcessor/1.0.0",
+                "Cache-Control": "no-cache, no-store",
+                "Pragma": "no-cache",
+                "Accept": "application/json"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            code = resp.status
+            content = resp.read().decode("utf-8")
+            try:
+                return code, json.loads(content)
+            except Exception:
+                return code, {"raw": content}
+    except urllib.error.HTTPError as e:
+        body = None
+        try:
+            body = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            pass
+        return e.code, body
+    except Exception:
+        if requests is not None:
+            try:
+                r = requests.get(
+                    url,
+                    timeout=timeout,
+                    headers={"Cache-Control": "no-cache, no-store", "Pragma": "no-cache"}
+                )
+                try:
+                    return r.status_code, r.json()
+                except Exception:
+                    return r.status_code, None
+            except Exception:
+                pass
+        return 0, None
 
 # -----------------------------------------------------------------------------
 # Version & Remote Update Manifest Configuration
@@ -79,6 +145,17 @@ LICENSE_SERVER_URL = os.getenv(
 LICENSE_FILE = ".license_vault.json"
 LICENSE_REGISTRY_FILE = os.getenv("LICENSE_REGISTRY_PATH", "license_registry.json")
 
+# Known portal endpoints for real-time license state synchronization
+DEFAULT_PORTAL_ENDPOINTS = [
+    os.getenv("PORTAL_URL", "").strip().rstrip("/"),
+    os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/"),
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
+    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
+]
+
 def get_machine_hardware_id() -> str:
     """Derives a stable machine identity so licenses cannot be shared across multiple computers."""
     try:
@@ -92,19 +169,33 @@ def get_machine_hardware_id() -> str:
 class SubscriptionLicenseManager:
     """
     Validates whether the user has an active subscription.
-    Enforces hardware machine locking, sync with local license_registry.json,
-    and prevents re-activation of already-active or revoked licenses.
+    Enforces hardware machine locking, syncs with the live website portal
+    (detects Active, Revoked, and Deleted status in real-time), and manages local vault.
     """
     def __init__(self, filepath=LICENSE_FILE, registry_path=LICENSE_REGISTRY_FILE):
         self.filepath = filepath
         self.registry_path = registry_path
         self.hardware_id = get_machine_hardware_id()
         self.license_data = self.load_local_license()
-        self.sync_with_registry()
+        self._last_scan_ts = 0
+        self.connected_portal = ""
+
+        # Perform initial sync
+        self.scan_remote_status(force=True)
+
+    def get_active_portal_endpoints(self) -> list:
+        """Returns non-empty, deduplicated portal endpoints."""
+        seen = set()
+        endpoints = []
+        for ep in DEFAULT_PORTAL_ENDPOINTS:
+            clean = (ep or "").strip().rstrip("/")
+            if clean and clean not in seen:
+                seen.add(clean)
+                endpoints.append(clean)
+        return endpoints
 
     def load_registry(self) -> list:
         """Loads authorized keys from local license_registry.json or remote registry URL."""
-        # 1. Check local registry file in application directory
         if os.path.exists(self.registry_path):
             try:
                 with open(self.registry_path, "r", encoding="utf-8") as f:
@@ -116,11 +207,10 @@ class SubscriptionLicenseManager:
             except Exception:
                 pass
 
-        # 2. Check remote registry URL if configured in .env (e.g. LICENSE_REGISTRY_URL)
         remote_url = os.getenv("LICENSE_REGISTRY_URL", "").strip()
         if remote_url and remote_url.startswith("http"):
             try:
-                resp = requests.get(remote_url, timeout=5)
+                resp = requests.get(remote_url, timeout=4)
                 if resp.status_code == 200:
                     data = resp.json()
                     if isinstance(data, list):
@@ -133,7 +223,7 @@ class SubscriptionLicenseManager:
         return []
 
     def save_registry(self, registry_list: list):
-        """Saves updated registry (e.g. marking key in_use and locking hardware_id)."""
+        """Saves updated registry."""
         try:
             with open(self.registry_path, "w", encoding="utf-8") as f:
                 json.dump(registry_list, f, indent=2)
@@ -165,35 +255,225 @@ class SubscriptionLicenseManager:
         except Exception:
             pass
 
-    def sync_with_registry(self):
-        """Checks if current local license has been revoked or toggled to inactive in registry."""
-        current_key = (self.license_data.get("license_key") or "").strip().upper()
-        if not current_key or self.license_data.get("status") != "ACTIVE":
-            return
+    def remove_license_key(self) -> str:
+        """Completely removes the assigned license key from the local application."""
+        old_key = self.license_data.get("license_key", "")
+        self.license_data["license_key"] = ""
+        self.license_data["status"] = "INACTIVE"
+        self.license_data["plan_tier"] = "Unregistered"
+        self.license_data["activated_at"] = ""
+        self.license_data["expires_at"] = ""
+        self.license_data["last_verified"] = datetime.now().isoformat()
+        self.save_local_license()
+        return old_key
 
-        registry = self.load_registry()
-        if not registry:
-            return
+    def scan_remote_status(self, force=False) -> dict:
+        """
+        Scans the website portal for changes to the assigned license key:
+        - If 'ACTIVE' on website: registers it as active on local application.
+        - If 'REVOKE' / 'NOT ACTIVE' on website: shows inactive on local application.
+        - If 'DELETE' on website (404/not found): removes the license key from local application.
+        """
+        current_key = (self.license_data.get("license_key") or os.getenv("LICENSE_KEY", "")).strip().upper()
+        if not current_key:
+            return {
+                "result": "NO_KEY",
+                "status": "INACTIVE",
+                "changed": False,
+                "message": "No license key assigned to local application."
+            }
 
-        matched = next((k for k in registry if str(k.get("key", "")).strip().upper() == current_key), None)
-        if matched:
-            status = matched.get("status", "ACTIVE").upper()
-            if status in ["NOT ACTIVE", "REVOKED", "SUSPENDED"]:
-                self.license_data["status"] = "REVOKED"
-                self.save_local_license()
-            elif status == "EXPIRED":
-                self.license_data["status"] = "EXPIRED"
-                self.save_local_license()
+        now_ts = time.time()
+        if not force and (now_ts - self._last_scan_ts) < 4:
+            return {
+                "result": self.license_data.get("status", "INACTIVE"),
+                "status": self.license_data.get("status", "INACTIVE"),
+                "changed": False,
+                "cached": True
+            }
+        self._last_scan_ts = now_ts
+
+        key_hash = hashlib.sha256(current_key.encode('utf-8')).hexdigest().lower()
+        endpoints = self.get_active_portal_endpoints()
+
+        responded = False
+        for endpoint in endpoints:
+            check_urls = []
+            if "githubusercontent" in endpoint:
+                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
             else:
-                # Check machine lock
-                reg_hw = matched.get("hardwareId", "")
-                if reg_hw and reg_hw != self.hardware_id:
+                check_urls.append(f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}")
+                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
+
+            for check_url in check_urls:
+                try:
+                    status_code, data = http_get_json(check_url, timeout=3.5)
+                    if status_code in [200, 404]:
+                        responded = True
+                        self.connected_portal = endpoint
+
+                    # 1. Key exists on website
+                    if status_code == 200 and isinstance(data, dict):
+                        remote_status = str(data.get("status", "ACTIVE")).strip().upper()
+                        remote_plan = data.get("plan", self.license_data.get("plan_tier", "Standard"))
+                        remote_expires = data.get("expires", self.license_data.get("expires_at", ""))
+
+                        # Check whether date has expired or status is explicitly EXPIRED
+                        is_date_expired = False
+                        if remote_expires and not ("Never" in str(remote_expires) or "Lifetime" in str(remote_expires) or "Admin" in str(remote_plan)):
+                            try:
+                                exp_clean = str(remote_expires).split("T")[0].strip()
+                                exp_d = datetime.strptime(exp_clean, "%Y-%m-%d").date()
+                                if datetime.now().date() > exp_d:
+                                    is_date_expired = True
+                            except Exception:
+                                pass
+
+                        if remote_status == "EXPIRED" or is_date_expired:
+                            prev_status = self.license_data.get("status", "INACTIVE")
+                            was_active = (prev_status == "ACTIVE")
+
+                            self.license_data["license_key"] = current_key
+                            self.license_data["status"] = "EXPIRED"
+                            if remote_plan:
+                                self.license_data["plan_tier"] = remote_plan
+                            if remote_expires:
+                                self.license_data["expires_at"] = remote_expires
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+
+                            return {
+                                "result": "EXPIRED",
+                                "status": "EXPIRED",
+                                "changed": was_active or (prev_status != "EXPIRED"),
+                                "key": current_key,
+                                "expires": remote_expires,
+                                "plan": remote_plan,
+                                "portal": endpoint,
+                                "message": f"License expired on {remote_expires}. Subscription renewal required."
+                            }
+
+                        # ACTIVE ON WEBSITE -> REGISTER AS ACTIVE
+                        elif remote_status == "ACTIVE":
+                            prev_status = self.license_data.get("status", "INACTIVE")
+                            was_inactive = (prev_status != "ACTIVE")
+
+                            self.license_data["license_key"] = current_key
+                            self.license_data["status"] = "ACTIVE"
+                            if remote_plan:
+                                self.license_data["plan_tier"] = remote_plan
+                            if remote_expires:
+                                self.license_data["expires_at"] = remote_expires
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+
+                            return {
+                                "result": "ACTIVE",
+                                "status": "ACTIVE",
+                                "changed": was_inactive,
+                                "plan": self.license_data.get("plan_tier", "Standard"),
+                                "key": current_key,
+                                "portal": endpoint,
+                                "message": f"License is registered as ACTIVE on website ({remote_plan})"
+                            }
+
+                        # REVOKED / NOT ACTIVE ON WEBSITE -> SHOW INACTIVE LOCALLY
+                        elif remote_status in ["NOT ACTIVE", "REVOKED", "INACTIVE", "SUSPENDED"]:
+                            prev_status = self.license_data.get("status", "INACTIVE")
+                            was_active = (prev_status == "ACTIVE")
+
+                            self.license_data["status"] = "REVOKED"
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+
+                            return {
+                                "result": "REVOKED",
+                                "status": "INACTIVE",
+                                "changed": was_active,
+                                "key": current_key,
+                                "portal": endpoint,
+                                "message": f"License key '{current_key}' was revoked on website portal (Inactive)."
+                            }
+
+                    # 2. DELETED ON WEBSITE (HTTP 404 NOT FOUND)
+                    elif status_code == 404:
+                        # User deleted the key on the website portal -> remove from local application!
+                        had_key = bool(self.license_data.get("license_key"))
+                        removed_key = self.remove_license_key()
+
+                        return {
+                            "result": "DELETED",
+                            "status": "INACTIVE",
+                            "changed": had_key,
+                            "removed_key": removed_key or current_key,
+                            "portal": endpoint,
+                            "message": f"License key '{removed_key or current_key}' was deleted from website portal and has been removed from this local application."
+                        }
+
+                except Exception:
+                    continue
+
+            if responded:
+                break
+
+        # Fallback to local registry if offline / portal unreachable
+        registry = self.load_registry()
+        if registry:
+            matched = next((k for k in registry if str(k.get("key", "")).strip().upper() == current_key), None)
+            if matched:
+                status = str(matched.get("status", "ACTIVE")).upper()
+                exp_date_str = str(matched.get("expiresDate", ""))
+                is_exp = False
+                if exp_date_str and not ("Never" in exp_date_str or "Lifetime" in exp_date_str or "ADMIN" in str(matched.get("plan", "")).upper()):
+                    try:
+                        exp_clean = exp_date_str.split("T")[0].strip()
+                        exp_d = datetime.strptime(exp_clean, "%Y-%m-%d").date()
+                        if datetime.now().date() > exp_d:
+                            is_exp = True
+                    except Exception:
+                        pass
+
+                if status == "EXPIRED" or is_exp:
+                    was_active = (self.license_data.get("status") == "ACTIVE")
+                    self.license_data["status"] = "EXPIRED"
+                    self.license_data["expires_at"] = exp_date_str
+                    self.save_local_license()
+                    return {"result": "EXPIRED", "status": "EXPIRED", "changed": was_active, "key": current_key, "expires": exp_date_str, "message": f"License expired on {exp_date_str} (local registry)."}
+                elif status in ["NOT ACTIVE", "REVOKED", "SUSPENDED"]:
+                    was_active = (self.license_data.get("status") == "ACTIVE")
                     self.license_data["status"] = "REVOKED"
                     self.save_local_license()
+                    return {"result": "REVOKED", "status": "INACTIVE", "changed": was_active, "key": current_key, "message": "License marked revoked in local registry."}
+                elif status == "ACTIVE":
+                    was_inactive = (self.license_data.get("status") != "ACTIVE")
+                    self.license_data["status"] = "ACTIVE"
+                    if exp_date_str:
+                        self.license_data["expires_at"] = exp_date_str
+                    self.save_local_license()
+                    return {"result": "ACTIVE", "status": "ACTIVE", "changed": was_inactive, "plan": matched.get("plan", "Standard"), "message": "License marked active in local registry."}
+            else:
+                # Key absent from local registry -> deleted!
+                had_key = bool(self.license_data.get("license_key"))
+                removed_key = self.remove_license_key()
+                return {"result": "DELETED", "status": "INACTIVE", "changed": had_key, "removed_key": removed_key, "message": f"License key '{removed_key}' deleted from local registry and removed."}
+
+        return {
+            "result": "OFFLINE",
+            "status": self.license_data.get("status", "INACTIVE"),
+            "changed": False,
+            "message": "Website portal unreachable; maintaining cached state."
+        }
+
+    def sync_with_registry(self):
+        """Compatibility wrapper that scans remote status."""
+        self.scan_remote_status()
 
     def is_subscription_active(self) -> bool:
-        self.sync_with_registry()
-        status = self.license_data.get("status", "EXPIRED").upper()
+        current_key = (self.license_data.get("license_key") or "").strip().upper()
+        if not current_key:
+            return False
+
+        status = self.license_data.get("status", "INACTIVE").upper()
         if status != "ACTIVE":
             return False
 
@@ -203,7 +483,8 @@ class SubscriptionLicenseManager:
             return True
 
         try:
-            exp_date = datetime.strptime(exp_str, "%Y-%m-%d")
+            exp_clean = exp_str.split("T")[0].strip()
+            exp_date = datetime.strptime(exp_clean, "%Y-%m-%d")
             if datetime.now().date() > exp_date.date():
                 self.license_data["status"] = "EXPIRED"
                 self.save_local_license()
@@ -218,7 +499,8 @@ class SubscriptionLicenseManager:
         if "Never" in exp_str or "Lifetime" in exp_str or "Admin" in self.license_data.get("plan_tier", ""):
             return 99999
         try:
-            exp_date = datetime.strptime(exp_str, "%Y-%m-%d").date()
+            exp_clean = exp_str.split("T")[0].strip()
+            exp_date = datetime.strptime(exp_clean, "%Y-%m-%d").date()
             delta = (exp_date - datetime.now().date()).days
             return max(0, delta)
         except Exception:
@@ -229,115 +511,64 @@ class SubscriptionLicenseManager:
         if not clean_key:
             return False, "Please enter a valid license key."
 
-        # 1. Check live remote server if configured
-        if "youraccountingdomain.com" not in LICENSE_SERVER_URL:
-            payload = {
-                "license_key": clean_key,
-                "email": email.strip(),
-                "hardware_id": self.hardware_id,
-                "version": APP_VERSION
-            }
-            try:
-                resp = requests.post(LICENSE_SERVER_URL, json=payload, timeout=8)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("valid"):
-                        self.license_data["status"] = "ACTIVE"
-                        self.license_data["license_key"] = clean_key
-                        self.license_data["user_email"] = email
-                        self.license_data["plan_tier"] = data.get("plan", "Custom")
-                        self.license_data["activated_at"] = data.get("activated_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
-                        self.license_data["expires_at"] = data.get("expires_at", (datetime.now() + timedelta(days=30)).strftime("%Y-%m-%d"))
-                        self.license_data["last_verified"] = datetime.now().isoformat()
-                        self.save_local_license()
-                        return True, f"Subscription Verified Active! Plan: {self.license_data['plan_tier']} • Expires: {self.license_data['expires_at']}"
-                    else:
-                        self.license_data["status"] = "REVOKED"
-                        self.save_local_license()
-                        return False, data.get("reason", "License key is invalid or has been revoked.")
-            except Exception:
-                pass
-
-        # 2. Check local license_registry.json
-        registry = self.load_registry()
-        if not registry:
-            return False, (
-                "Verification Failed: 'license_registry.json' not found in application folder.\n"
-                "Please export 'license_registry.json' from your Admin Dashboard and place it in this directory."
-            )
-
-        matched_idx = -1
-        matched = None
-        for idx, rec in enumerate(registry):
-            if str(rec.get("key", "")).strip().upper() == clean_key:
-                matched_idx = idx
-                matched = rec
-                break
-
-        if not matched:
-            return False, f"License Key Not Found: '{clean_key}' does not exist in authorized registry."
-
-        # Check if Admin or Operator marked it NOT ACTIVE / REVOKED
-        status = str(matched.get("status", "ACTIVE")).upper()
-        if status in ["NOT ACTIVE", "REVOKED", "SUSPENDED"]:
-            self.license_data["status"] = "REVOKED"
-            self.save_local_license()
-            return False, "Access Denied: This license key has been marked 'NOT ACTIVE' (Revoked) by administrator."
-
-        if status == "EXPIRED":
-            self.license_data["status"] = "EXPIRED"
-            self.save_local_license()
-            return False, f"Access Denied: This license key expired on {matched.get('expiresDate', 'N/A')}."
-
-        # Check if already in use
-        is_already_in_use = matched.get("inUse", False)
-        registered_hw = matched.get("hardwareId", "")
-
-        if is_already_in_use:
-            if registered_hw == self.hardware_id:
-                return False, f"Notice: This license key is already activated on this computer (Expires: {matched.get('expiresDate', 'Lifetime')}). Re-activation of an already activated key is prohibited."
-            else:
-                return False, f"Activation Blocked: Key is already in use on another computer ({registered_hw or 'Workstation'}). Multi-machine sharing is restricted."
-
-        # Determine Plan & Duration
-        plan = str(matched.get("plan", "")).upper()
-        is_admin_perpetual = plan == "ADMIN" or "Never" in str(matched.get("expiresDate", ""))
-
-        now_dt = datetime.now()
-        activated_str = now_dt.strftime("%Y-%m-%d %H:%M")
-
-        if is_admin_perpetual:
-            expires_str = "Never (Lifetime / Non-Expiring)"
-            plan_name = "Admin Master (Never Expires)"
-        else:
-            duration_days = 30
-            if plan == "DEMO": duration_days = 7
-            elif plan == "3MONTH": duration_days = 90
-            elif plan == "6MONTH": duration_days = 180
-            elif plan == "ANNUAL": duration_days = 365
-            expires_str = (now_dt + timedelta(days=duration_days)).strftime("%Y-%m-%d")
-            plan_name = f"{matched.get('plan', 'Standard')} ({duration_days} Days)"
-
-        # Update and lock in registry
-        matched["inUse"] = True
-        matched["hardwareId"] = self.hardware_id
-        matched["activatedDate"] = now_dt.strftime("%Y-%m-%d")
-        matched["expiresDate"] = expires_str
-        registry[matched_idx] = matched
-        self.save_registry(registry)
-
-        # Save to local vault
-        self.license_data["status"] = "ACTIVE"
+        # Assign temporarily to scan against website portal
         self.license_data["license_key"] = clean_key
-        self.license_data["user_email"] = email or matched.get("clientEmail", "")
-        self.license_data["plan_tier"] = plan_name
-        self.license_data["hardware_id"] = self.hardware_id
-        self.license_data["activated_at"] = activated_str
-        self.license_data["expires_at"] = expires_str
-        self.license_data["last_verified"] = now_dt.isoformat()
-        self.save_local_license()
+        if email:
+            self.license_data["user_email"] = email
 
-        return True, f"✅ License Successfully Activated! Plan: {plan_name} • Machine Locked • Expires: {expires_str}"
+        scan_res = self.scan_remote_status(force=True)
+
+        if scan_res.get("result") == "ACTIVE":
+            return True, f"✅ Verified Active on Website! Plan: {scan_res.get('plan', self.license_data.get('plan_tier', 'Standard'))} • Machine ID Locked."
+        elif scan_res.get("result") == "EXPIRED":
+            return False, f"⏳ Access Denied: License key '{clean_key}' has EXPIRED (Expiration: {scan_res.get('expires', self.license_data.get('expires_at', 'Past date'))}). Please renew subscription."
+        elif scan_res.get("result") == "REVOKED":
+            return False, f"❌ Access Denied: License key '{clean_key}' is marked 'REVOKED' (Not Active) on the website."
+        elif scan_res.get("result") == "DELETED":
+            return False, f"❌ Key Not Found: '{clean_key}' was deleted or does not exist on the website portal."
+
+        # Local fallback if portal offline
+        registry = self.load_registry()
+        if registry:
+            matched = next((k for k in registry if str(k.get("key", "")).strip().upper() == clean_key), None)
+            if not matched:
+                return False, f"License Key Not Found: '{clean_key}' does not exist on server or local registry."
+
+            status = str(matched.get("status", "ACTIVE")).upper()
+            exp_date_str = str(matched.get("expiresDate", ""))
+            is_exp = False
+            if exp_date_str and not ("Never" in exp_date_str or "Lifetime" in exp_date_str or "ADMIN" in str(matched.get("plan", "")).upper()):
+                try:
+                    exp_clean = exp_date_str.split("T")[0].strip()
+                    exp_d = datetime.strptime(exp_clean, "%Y-%m-%d").date()
+                    if datetime.now().date() > exp_d:
+                        is_exp = True
+                except Exception:
+                    pass
+
+            if status == "EXPIRED" or is_exp:
+                self.license_data["status"] = "EXPIRED"
+                self.license_data["expires_at"] = exp_date_str
+                self.save_local_license()
+                return False, f"⏳ Access Denied: License key '{clean_key}' expired on {exp_date_str}."
+
+            if status in ["NOT ACTIVE", "REVOKED", "SUSPENDED"]:
+                self.license_data["status"] = "REVOKED"
+                self.save_local_license()
+                return False, "Access Denied: This license key has been marked 'NOT ACTIVE' (Revoked)."
+
+            now_dt = datetime.now()
+            self.license_data["status"] = "ACTIVE"
+            self.license_data["license_key"] = clean_key
+            self.license_data["user_email"] = email or matched.get("clientEmail", "")
+            self.license_data["plan_tier"] = matched.get("plan", "Standard")
+            self.license_data["activated_at"] = now_dt.strftime("%Y-%m-%d %H:%M")
+            self.license_data["expires_at"] = matched.get("expiresDate", (now_dt + timedelta(days=30)).strftime("%Y-%m-%d"))
+            self.license_data["last_verified"] = now_dt.isoformat()
+            self.save_local_license()
+            return True, f"✅ License Verified Active from local registry! Plan: {self.license_data['plan_tier']}"
+
+        return False, "Unable to verify license: Website portal is unreachable and no local registry found."
 
 
 
@@ -409,7 +640,7 @@ class UpdateManager:
             return False
 
 
-class DismissibleUpdateDialog(tk.Toplevel):
+class DismissibleUpdateDialog(_TK_BASE_TOPLEVEL):
     def __init__(self, parent, update_info, updater: UpdateManager):
         super().__init__(parent)
         self.updater = updater
@@ -806,11 +1037,15 @@ SYSTEM_INSTRUCTION = (
     "Output strictly conforming JSON according to the schema."
 )
 
-GLOBAL_SESSION = requests.Session()
-retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
-adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retries)
-GLOBAL_SESSION.mount("https://", adapter)
-GLOBAL_SESSION.mount("http://", adapter)
+if requests is not None:
+    GLOBAL_SESSION = requests.Session()
+    if Retry is not None and HTTPAdapter is not None:
+        retries = Retry(total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504])
+        adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=retries)
+        GLOBAL_SESSION.mount("https://", adapter)
+        GLOBAL_SESSION.mount("http://", adapter)
+else:
+    GLOBAL_SESSION = None
 
 
 # -----------------------------------------------------------------------------
@@ -1211,7 +1446,7 @@ def get_file_sha256(filepath):
 # -----------------------------------------------------------------------------
 # Main Desktop GUI Window
 # -----------------------------------------------------------------------------
-class FarmReceiptApp(tk.Tk):
+class FarmReceiptApp(_TK_BASE_TK):
     def __init__(self):
         super().__init__()
         self.title(f"Receipt Processor & Tax Accounting - Subscription Edition (v{APP_VERSION})")
@@ -1274,8 +1509,54 @@ class FarmReceiptApp(tk.Tk):
         else:
             self.log("⚠️ No QuickBooks clients found. Click '+ New Client' to connect your first client!", "warning")
 
+        # Active license dialog reference for live UI sync
+        self.active_license_dialog = None
+        # Start background scanner for real-time license updates from the website
+        self.start_license_website_scanner()
+
         # Silent background update check after 2 seconds
         self.after(2000, lambda: threading.Thread(target=self.run_silent_update_check, daemon=True).start())
+
+    def start_license_website_scanner(self):
+        """
+        Background scanner thread that scans the website portal every 10 seconds.
+        If the license status changes on the website (Active, Revoked, Deleted),
+        it immediately reflects on the local desktop application.
+        """
+        def scanner_worker():
+            time.sleep(3)
+            while True:
+                try:
+                    res = self.license_mgr.scan_remote_status()
+                    if res and res.get("changed"):
+                        self.after(0, lambda r=res: self.handle_remote_license_changed(r))
+                except Exception:
+                    pass
+                time.sleep(10)
+
+        threading.Thread(target=scanner_worker, daemon=True).start()
+
+    def handle_remote_license_changed(self, res: dict):
+        """Dispatches live license status transitions to badges, logs, and dialog."""
+        outcome = res.get("result", "")
+        if outcome == "ACTIVE":
+            self.sub_badge.config(text="👑 Pro Subscription", fg="#34d399")
+            self.log(f"👑 Website License Update: Registered as ACTIVE via website ({res.get('plan', 'Standard')}).", "success")
+        elif outcome == "EXPIRED":
+            self.sub_badge.config(text="⏳ License Expired", fg="#fbbf24")
+            self.log(f"⏳ Website License Update: License key '{res.get('key')}' has EXPIRED (Expiration: {res.get('expires', 'N/A')}). Processing locked.", "warning")
+        elif outcome in ["REVOKED", "INACTIVE"]:
+            self.sub_badge.config(text="🔒 License Inactive", fg="#ef4444")
+            self.log("🔒 Website License Update: License key was REVOKED (marked inactive) on website portal.", "error")
+        elif outcome == "DELETED":
+            self.sub_badge.config(text="🔒 No License", fg="#a8a29e")
+            self.log(f"🗑️ Website License Update: Key '{res.get('removed_key')}' was DELETED on website portal and removed from local application.", "warning")
+
+        if self.active_license_dialog:
+            try:
+                self.active_license_dialog.refresh_ui(res)
+            except Exception:
+                pass
 
     def run_silent_update_check(self):
         info = self.updater.check_for_updates()
@@ -1811,61 +2092,122 @@ class FarmReceiptApp(tk.Tk):
         btn_open_out_folder.pack(side="right")
 
     # -------------------------------------------------------------------------
-    # Subscription License Dialog
+    # Subscription License Dialog (Real-Time Website Synchronized)
     # -------------------------------------------------------------------------
     def open_license_dialog(self):
         dialog = tk.Toplevel(self)
         dialog.title("Subscription & License Management")
-        dialog.geometry("540x460")
+        dialog.geometry("560x540")
         dialog.configure(bg="#1c1917", padx=20, pady=18)
         dialog.transient(self)
         dialog.grab_set()
 
+        self.active_license_dialog = dialog
+
+        def on_close():
+            self.active_license_dialog = None
+            dialog.destroy()
+
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+
         tk.Label(
             dialog,
-            text="👑 Software Subscription Status",
+            text="👑 Software Subscription & License Portal",
             font=("Segoe UI", 13, "bold"),
             fg="#fbbf24",
             bg="#1c1917"
         ).pack(anchor="w", pady=(0, 2))
 
-        is_active = self.license_mgr.is_subscription_active()
-        status_text = f"Status: {'Active Pro License' if is_active else 'License Expired / Inactive'}"
+        # Real-time sync indicator banner
+        sync_banner = tk.Frame(dialog, bg="#0c4a6e", padx=10, pady=6)
+        sync_banner.pack(fill="x", pady=(0, 8))
         tk.Label(
+            sync_banner,
+            text="📡 Live Website Sync: Active (scans for Active, Revoke & Delete)",
+            font=("Segoe UI", 8, "bold"),
+            fg="#7dd3fc",
+            bg="#0c4a6e"
+        ).pack(anchor="w")
+
+        lbl_status = tk.Label(
             dialog,
-            text=status_text,
+            text="",
             font=("Segoe UI", 10, "bold"),
-            fg="#34d399" if is_active else "#f87171",
             bg="#1c1917"
-        ).pack(anchor="w", pady=(0, 10))
+        )
+        lbl_status.pack(anchor="w", pady=(0, 8))
 
         hw_box = tk.Frame(dialog, bg="#292524", padx=12, pady=10)
-        hw_box.pack(fill="x", pady=(0, 12))
-        tk.Label(hw_box, text=f"Plan Tier: {self.license_mgr.license_data.get('plan_tier', 'Standard')}", font=("Segoe UI", 9, "bold"), fg="#fbbf24", bg="#292524").pack(anchor="w")
-        tk.Label(hw_box, text=f"Activated On: {self.license_mgr.license_data.get('activated_at', 'Not Recorded')}", font=("Consolas", 8), fg="#e7e5e4", bg="#292524").pack(anchor="w")
-        days_left = self.license_mgr.get_days_remaining()
-        exp_text = self.license_mgr.license_data.get('expires_at', 'N/A')
-        if "Never" in str(exp_text) or days_left >= 90000:
-            exp_display = "Never (Perpetual Lifetime License)"
-            exp_color = "#38bdf8"
-        else:
-            exp_color = "#34d399" if days_left > 7 else "#fbbf24" if days_left > 0 else "#f87171"
-            exp_display = f"{exp_text} ({days_left} day(s) remaining)"
-        tk.Label(hw_box, text=f"Expires: {exp_display}", font=("Consolas", 8, "bold"), fg=exp_color, bg="#292524").pack(anchor="w")
-        tk.Label(hw_box, text=f"Machine ID: {self.license_mgr.hardware_id}", font=("Consolas", 8), fg="#a8a29e", bg="#292524").pack(anchor="w")
+        hw_box.pack(fill="x", pady=(0, 10))
+
+        lbl_plan = tk.Label(hw_box, text="", font=("Segoe UI", 9, "bold"), fg="#fbbf24", bg="#292524")
+        lbl_plan.pack(anchor="w")
+
+        lbl_activated = tk.Label(hw_box, text="", font=("Consolas", 8), fg="#e7e5e4", bg="#292524")
+        lbl_activated.pack(anchor="w")
+
+        lbl_expires = tk.Label(hw_box, text="", font=("Consolas", 8, "bold"), bg="#292524")
+        lbl_expires.pack(anchor="w")
+
+        lbl_machine = tk.Label(hw_box, text=f"Machine ID: {self.license_mgr.hardware_id}", font=("Consolas", 8), fg="#a8a29e", bg="#292524")
+        lbl_machine.pack(anchor="w")
 
         tk.Label(dialog, text="Subscription License Key:", fg="#d6d3d1", bg="#1c1917", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         e_key = tk.Entry(dialog, bg="#292524", fg="#fafaf9", insertbackground="white", font=("Consolas", 10))
-        e_key.pack(fill="x", pady=(2, 8))
-        e_key.insert(0, self.license_mgr.license_data.get("license_key", ""))
+        e_key.pack(fill="x", pady=(2, 6))
 
         tk.Label(dialog, text="Registered Subscriber Email:", fg="#d6d3d1", bg="#1c1917", font=("Segoe UI", 9, "bold")).pack(anchor="w")
         e_email = tk.Entry(dialog, bg="#292524", fg="#fafaf9", insertbackground="white", font=("Consolas", 10))
-        e_email.pack(fill="x", pady=(2, 12))
-        e_email.insert(0, self.license_mgr.license_data.get("user_email", ""))
+        e_email.pack(fill="x", pady=(2, 8))
 
-        status_feedback = tk.Label(dialog, text="", font=("Segoe UI", 9), fg="#38bdf8", bg="#1c1917", wraplength=480, justify="left")
-        status_feedback.pack(anchor="w", pady=(0, 10))
+        status_feedback = tk.Label(dialog, text="", font=("Segoe UI", 9), fg="#38bdf8", bg="#1c1917", wraplength=510, justify="left")
+        status_feedback.pack(anchor="w", pady=(0, 8))
+
+        def refresh_ui(res: dict = None):
+            cur_key = self.license_mgr.license_data.get("license_key", "")
+            is_active = self.license_mgr.is_subscription_active()
+
+            if not cur_key:
+                lbl_status.config(text="Status: No License Key Assigned", fg="#a8a29e")
+            elif is_active:
+                lbl_status.config(text="Status: Active Pro License (Website Verified)", fg="#34d399")
+            elif self.license_mgr.license_data.get("status") == "EXPIRED":
+                lbl_status.config(text="Status: License Expired (Subscription Lapsed)", fg="#fbbf24")
+            else:
+                lbl_status.config(text="Status: License Inactive / Revoked", fg="#f87171")
+
+            lbl_plan.config(text=f"Plan Tier: {self.license_mgr.license_data.get('plan_tier', 'Unregistered')}")
+            lbl_activated.config(text=f"Activated On: {self.license_mgr.license_data.get('activated_at', 'Not Recorded')}")
+
+            days_left = self.license_mgr.get_days_remaining()
+            exp_text = self.license_mgr.license_data.get('expires_at', 'N/A')
+            if "Never" in str(exp_text) or days_left >= 90000:
+                exp_display = "Never (Perpetual Lifetime License)"
+                exp_color = "#38bdf8"
+            else:
+                exp_color = "#34d399" if days_left > 7 else "#fbbf24" if days_left > 0 else "#f87171"
+                exp_display = f"{exp_text} ({days_left} day(s) remaining)"
+            lbl_expires.config(text=f"Expires: {exp_display}", fg=exp_color)
+
+            # Update entry fields
+            e_key.delete(0, tk.END)
+            e_key.insert(0, cur_key)
+            e_email.delete(0, tk.END)
+            e_email.insert(0, self.license_mgr.license_data.get("user_email", ""))
+
+            if res:
+                r_type = res.get("result", "")
+                if r_type == "ACTIVE":
+                    status_feedback.config(text=f"✅ {res.get('message', 'Active on website')}", fg="#34d399")
+                elif r_type == "EXPIRED":
+                    status_feedback.config(text=f"⏳ {res.get('message', 'License expired')}", fg="#fbbf24")
+                elif r_type in ["REVOKED", "INACTIVE"]:
+                    status_feedback.config(text=f"⚠️ {res.get('message', 'Revoked on website')}", fg="#f87171")
+                elif r_type == "DELETED":
+                    status_feedback.config(text=f"🗑️ {res.get('message', 'Deleted on website and removed locally')}", fg="#fbbf24")
+
+        dialog.refresh_ui = refresh_ui
+        refresh_ui()
 
         def activate_key():
             k = e_key.get().strip()
@@ -1874,7 +2216,7 @@ class FarmReceiptApp(tk.Tk):
                 status_feedback.config(text="⚠️ Please enter a license key.", fg="#fbbf24")
                 return
 
-            status_feedback.config(text="⏳ Verifying license status with server...", fg="#38bdf8")
+            status_feedback.config(text="⏳ Verifying license status with website portal...", fg="#38bdf8")
             dialog.update_idletasks()
 
             success, msg = self.license_mgr.verify_with_server(k, em)
@@ -1885,19 +2227,66 @@ class FarmReceiptApp(tk.Tk):
             else:
                 status_feedback.config(text=f"❌ {msg}", fg="#f87171")
                 self.sub_badge.config(text="🔒 License Inactive", fg="#ef4444")
+            refresh_ui()
+
+        def scan_now():
+            status_feedback.config(text="📡 Scanning website portal for changes...", fg="#38bdf8")
+            dialog.update_idletasks()
+            res = self.license_mgr.scan_remote_status(force=True)
+            self.handle_remote_license_changed(res)
+            refresh_ui(res)
+
+        def remove_key():
+            if not self.license_mgr.license_data.get("license_key"):
+                status_feedback.config(text="ℹ️ No license key to remove.", fg="#a8a29e")
+                return
+            removed = self.license_mgr.remove_license_key()
+            self.sub_badge.config(text="🔒 No License", fg="#a8a29e")
+            self.log(f"🗑️ License key '{removed}' removed from local application.", "warning")
+            status_feedback.config(text=f"🗑️ Removed license key '{removed}'.", fg="#fbbf24")
+            refresh_ui()
+
+        btn_box = tk.Frame(dialog, bg="#1c1917")
+        btn_box.pack(fill="x", pady=(2, 0))
 
         act_btn = tk.Button(
-            dialog,
+            btn_box,
             text="Activate / Renew License",
             command=activate_key,
             bg="#b45309",
             fg="white",
-            font=("Segoe UI", 10, "bold"),
+            font=("Segoe UI", 9, "bold"),
             relief="flat",
             pady=6,
             cursor="hand2"
         )
-        act_btn.pack(fill="x")
+        act_btn.pack(side="left", fill="x", expand=True, padx=(0, 4))
+
+        scan_btn = tk.Button(
+            btn_box,
+            text="🔍 Scan Website Now",
+            command=scan_now,
+            bg="#1e3a8a",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            pady=6,
+            cursor="hand2"
+        )
+        scan_btn.pack(side="left", fill="x", expand=True, padx=4)
+
+        del_btn = tk.Button(
+            btn_box,
+            text="🗑️ Remove Key",
+            command=remove_key,
+            bg="#7f1d1d",
+            fg="white",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            pady=6,
+            cursor="hand2"
+        )
+        del_btn.pack(side="right", fill="x", expand=True, padx=(4, 0))
 
     # -------------------------------------------------------------------------
     # Multi-Client Switching & Management (AES-256 Vault)
