@@ -62,10 +62,97 @@ function licenseSyncApiPlugin(): Plugin {
           fs.mkdirSync(licensesDir, { recursive: true });
         }
 
+        const sessionsFilePath = path.join(licensesDir, 'active_sessions.json');
+
+        function getClientIp(r: any): string {
+          const forwarded = r.headers['x-forwarded-for'];
+          if (typeof forwarded === 'string' && forwarded.trim()) {
+            const first = forwarded.split(',')[0].trim();
+            if (first) return first;
+          }
+          const realIp = r.headers['x-real-ip'];
+          if (typeof realIp === 'string' && realIp.trim()) {
+            return realIp.trim();
+          }
+          const sockAddr = r.socket?.remoteAddress || r.connection?.remoteAddress || '';
+          if (sockAddr) {
+            const clean = sockAddr.replace(/^.*:/, '');
+            return clean === '1' ? '127.0.0.1' : (clean || '127.0.0.1');
+          }
+          return '127.0.0.1';
+        }
+
+        function loadSessions(): Record<string, any> {
+          if (fs.existsSync(sessionsFilePath)) {
+            try {
+              return JSON.parse(fs.readFileSync(sessionsFilePath, 'utf-8'));
+            } catch {}
+          }
+          return {};
+        }
+
+        function saveSessions(sessions: Record<string, any>) {
+          try {
+            fs.writeFileSync(sessionsFilePath, JSON.stringify(sessions, null, 2), 'utf-8');
+          } catch {}
+        }
+
+        function recordSessionPing(data: {
+          ip: string;
+          hash: string;
+          key?: string;
+          hwid?: string;
+          machineName?: string;
+          appVersion?: string;
+          plan?: string;
+          status?: string;
+        }) {
+          if (!data.hash && !data.key) return;
+          const sessions = loadSessions();
+          const sessionId = `${data.ip}_${data.hash}`;
+          const now = new Date();
+          const existing = sessions[sessionId] || {};
+
+          let maskedKey = existing.keyMasked || '';
+          if (data.key) {
+            const k = data.key.trim().toUpperCase();
+            if (k.length > 8) {
+              maskedKey = `${k.slice(0, 4)}...${k.slice(-4)}`;
+            } else {
+              maskedKey = k;
+            }
+          } else if (!maskedKey && data.hash) {
+            maskedKey = `${data.hash.slice(0, 6)}...${data.hash.slice(-4)}`;
+          }
+
+          sessions[sessionId] = {
+            id: sessionId,
+            ip: data.ip,
+            hash: data.hash,
+            keyMasked: maskedKey,
+            rawKey: data.key || existing.rawKey || '',
+            hwid: data.hwid || existing.hwid || 'Pending HWID',
+            machineName: data.machineName || existing.machineName || 'Desktop Workstation',
+            appVersion: data.appVersion || existing.appVersion || '1.0.0',
+            plan: data.plan || existing.plan || 'Standard',
+            status: data.status || existing.status || 'ACTIVE',
+            lastPing: now.toISOString(),
+            lastPingMs: now.getTime(),
+            firstSeen: existing.firstSeen || now.toISOString(),
+            pingCount: (existing.pingCount || 0) + 1
+          };
+
+          saveSessions(sessions);
+        }
+
         // GET /api/licenses/check?key=... or ?hash=...
         if (pathname === '/api/licenses/check' && req.method === 'GET') {
           const keyParam = urlObj.searchParams.get('key')?.trim().toUpperCase() || '';
           let hashParam = urlObj.searchParams.get('hash')?.trim().toLowerCase() || '';
+          const hwidParam = urlObj.searchParams.get('hwid')?.trim() || '';
+          const machineParam = urlObj.searchParams.get('machine')?.trim() || '';
+          const verParam = urlObj.searchParams.get('ver')?.trim() || '';
+          const clientIp = getClientIp(req);
 
           if (!hashParam && keyParam) {
             hashParam = crypto.createHash('sha256').update(keyParam).digest('hex');
@@ -94,6 +181,18 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               }
 
+              // Record session ping
+              recordSessionPing({
+                ip: clientIp,
+                hash: hashParam,
+                key: keyParam,
+                hwid: hwidParam,
+                machineName: machineParam,
+                appVersion: verParam,
+                plan,
+                status
+              });
+
               res.statusCode = 200;
               res.setHeader('Content-Type', 'application/json');
               res.end(JSON.stringify({
@@ -104,6 +203,7 @@ function licenseSyncApiPlugin(): Plugin {
                 expires,
                 issued: fileData.issued || '',
                 hwid: fileData.hwid || null,
+                clientIp,
                 updatedAt: fileData.updatedAt || new Date().toISOString()
               }));
               return;
@@ -114,6 +214,18 @@ function licenseSyncApiPlugin(): Plugin {
               return;
             }
           } else {
+            // Record failed check attempt too
+            recordSessionPing({
+              ip: clientIp,
+              hash: hashParam,
+              key: keyParam,
+              hwid: hwidParam,
+              machineName: machineParam,
+              appVersion: verParam,
+              plan: 'Unknown',
+              status: 'NOT_FOUND'
+            });
+
             // License file not found (Deleted or never existed)
             res.statusCode = 404;
             res.setHeader('Content-Type', 'application/json');
@@ -122,10 +234,160 @@ function licenseSyncApiPlugin(): Plugin {
               deleted: true,
               status: 'NOT_FOUND',
               hash: hashParam,
+              clientIp,
               message: 'License key record not found or was deleted from server'
             }));
             return;
           }
+        }
+
+        // POST /api/licenses/heartbeat - Direct heartbeat ping from desktop app
+        if (pathname === '/api/licenses/heartbeat' && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', chunk => {
+            bodyStr += chunk;
+          });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const clientIp = getClientIp(req);
+              const key = (body.key || '').trim().toUpperCase();
+              let hash = (body.hash || '').trim().toLowerCase();
+              if (!hash && key) {
+                hash = crypto.createHash('sha256').update(key).digest('hex');
+              }
+
+              const hwid = body.hwid || body.hardware_id || '';
+              const machineName = body.machine_name || body.machineName || body.hostname || '';
+              const appVersion = body.version || body.app_version || '1.0.0';
+              const status = body.status || 'ACTIVE';
+              const plan = body.plan || '';
+
+              if (hash) {
+                recordSessionPing({
+                  ip: clientIp,
+                  hash,
+                  key,
+                  hwid,
+                  machineName,
+                  appVersion,
+                  plan,
+                  status
+                });
+              }
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({
+                success: true,
+                clientIp,
+                recordedAt: new Date().toISOString(),
+                status
+              }));
+            } catch (err: any) {
+              res.statusCode = 400;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
+        }
+
+        // GET /api/licenses/sessions - Retrieve all active/recent connected devices
+        if (pathname === '/api/licenses/sessions' && req.method === 'GET') {
+          try {
+            const sessionsObj = loadSessions();
+            const now = Date.now();
+            const sessionList = Object.values(sessionsObj).map((s: any) => {
+              const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
+              const diffMs = now - lastPingMs;
+              let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
+              if (diffMs < 90000) { // < 90 seconds
+                onlineState = 'ONLINE';
+              } else if (diffMs < 600000) { // < 10 minutes
+                onlineState = 'IDLE';
+              }
+              return {
+                ...s,
+                onlineState,
+                secondsSinceLastPing: Math.floor(diffMs / 1000)
+              };
+            });
+
+            // Sort with ONLINE first, then by lastPing descending
+            sessionList.sort((a, b) => {
+              if (a.onlineState === 'ONLINE' && b.onlineState !== 'ONLINE') return -1;
+              if (b.onlineState === 'ONLINE' && a.onlineState !== 'ONLINE') return 1;
+              return (b.lastPingMs || 0) - (a.lastPingMs || 0);
+            });
+
+            const onlineCount = sessionList.filter(s => s.onlineState === 'ONLINE').length;
+            const idleCount = sessionList.filter(s => s.onlineState === 'IDLE').length;
+            const uniqueIps = Array.from(new Set(sessionList.map(s => s.ip))).length;
+
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              success: true,
+              totalSessions: sessionList.length,
+              onlineCount,
+              idleCount,
+              uniqueIps,
+              sessions: sessionList,
+              serverTime: new Date().toISOString()
+            }));
+            return;
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: err.message }));
+            return;
+          }
+        }
+
+        // POST /api/licenses/sessions/clear - Prune offline/all sessions
+        if (pathname === '/api/licenses/sessions/clear' && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', chunk => { bodyStr += chunk; });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const clearAll = Boolean(body.clearAll);
+              const sessionsObj = loadSessions();
+              const now = Date.now();
+
+              if (clearAll) {
+                saveSessions({});
+                res.statusCode = 200;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: true, message: 'All active sessions cleared' }));
+                return;
+              }
+
+              // Keep only sessions active within the last 15 minutes
+              const filtered: Record<string, any> = {};
+              for (const [id, s] of Object.entries(sessionsObj)) {
+                const diff = now - ((s as any).lastPingMs || 0);
+                if (diff < 900000) {
+                  filtered[id] = s;
+                }
+              }
+              saveSessions(filtered);
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({
+                success: true,
+                message: 'Stale offline sessions pruned',
+                remaining: Object.keys(filtered).length
+              }));
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
         }
 
         // POST /api/licenses/sync - Upsert or Delete license record

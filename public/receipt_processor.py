@@ -28,6 +28,8 @@ import base64
 import hashlib
 import threading
 import subprocess
+import socket
+import platform
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -303,7 +305,11 @@ class SubscriptionLicenseManager:
             if "githubusercontent" in endpoint:
                 check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
             else:
-                check_urls.append(f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}")
+                try:
+                    host_name_enc = urllib.parse.quote(socket.gethostname())
+                except Exception:
+                    host_name_enc = "Unknown-PC"
+                check_urls.append(f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}&hwid={self.hardware_id}&machine={host_name_enc}&ver={APP_VERSION}")
                 check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
 
             for check_url in check_urls:
@@ -464,6 +470,51 @@ class SubscriptionLicenseManager:
             "changed": False,
             "message": "Website portal unreachable; maintaining cached state."
         }
+
+    def send_heartbeat(self) -> bool:
+        """
+        Sends an active heartbeat ping to the website portal so the Admin
+        Console live device monitor displays this computer's public IP,
+        hostname, and online status in real-time.
+        """
+        current_key = (self.license_data.get("license_key") or os.getenv("LICENSE_KEY", "")).strip().upper()
+        if not current_key:
+            return False
+
+        key_hash = hashlib.sha256(current_key.encode('utf-8')).hexdigest().lower()
+        endpoints = self.get_active_portal_endpoints()
+
+        for endpoint in endpoints:
+            if "githubusercontent" in endpoint:
+                continue
+            url = f"{endpoint}/api/licenses/heartbeat"
+            try:
+                payload = json.dumps({
+                    "key": current_key,
+                    "hash": key_hash,
+                    "hwid": self.hardware_id,
+                    "machine_name": socket.gethostname(),
+                    "platform": f"{platform.system()} {platform.release()}",
+                    "version": APP_VERSION,
+                    "status": self.license_data.get("status", "ACTIVE"),
+                    "plan": self.license_data.get("plan_tier", "Standard")
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
+                    url,
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "User-Agent": f"ReceiptProcessorDesktop/{APP_VERSION}"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        return True
+            except Exception:
+                pass
+        return False
 
     def sync_with_registry(self):
         """Compatibility wrapper that scans remote status."""
@@ -1531,6 +1582,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                     res = self.license_mgr.scan_remote_status()
                     if res and res.get("changed"):
                         self.after(0, lambda r=res: self.handle_remote_license_changed(r))
+                    self.license_mgr.send_heartbeat()
                 except Exception:
                     pass
                 time.sleep(10)

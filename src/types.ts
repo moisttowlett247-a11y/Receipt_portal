@@ -111,3 +111,22 @@ export function generateAdminKey(flavor: 'MASTER' | 'VIP' | 'DEV' = 'MASTER'): s
   return `ADMIN-${flavor}-${rand1}-${rand2}`;
 }
 
+export interface ActiveDeviceSession {
+  id: string;
+  ip: string;
+  hash: string;
+  keyMasked: string;
+  rawKey?: string;
+  hwid: string;
+  machineName: string;
+  appVersion: string;
+  plan: string;
+  status: string;
+  lastPing: string;
+  lastPingMs: number;
+  firstSeen: string;
+  pingCount: number;
+  onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE';
+  secondsSinceLastPing: number;
+}
+

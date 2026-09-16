@@ -27,7 +27,8 @@ import {
   Clock,
   Globe,
   FolderArchive,
-  ChevronDown
+  ChevronDown,
+  Radio
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -45,6 +46,7 @@ import { ClientPortalView } from './components/ClientPortalView';
 import { AdminLoginView } from './components/AdminLoginView';
 import { DownloadBundleModal } from './components/DownloadBundleModal';
 import { DesktopPackageCard } from './components/DesktopPackageCard';
+import { ActiveDevicesMonitor } from './components/ActiveDevicesMonitor';
 import { downloadFullBundleZip, triggerFileDownload } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
@@ -53,7 +55,7 @@ import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'licensing' | 'updater' | 'code' | 'guide'>('licensing');
+  const [activeTab, setActiveTab] = useState<'licensing' | 'devices' | 'updater' | 'code' | 'guide'>('licensing');
   
   // Persistent License Keys registry state
   const [licenseKeys, setLicenseKeys] = useState<LicenseKeyRecord[]>(() => {
@@ -389,6 +391,25 @@ export default function App() {
       }
 
       return prev.map(k => (k.id === id ? updatedKey : k));
+    });
+  };
+
+  const handleRevokeKey = (keyString: string) => {
+    setLicenseKeys(prev => {
+      const cleanKey = keyString.trim().toUpperCase();
+      const target = prev.find(k => k.key.trim().toUpperCase() === cleanKey || k.id === cleanKey);
+      if (!target) return prev;
+      const updatedKey: LicenseKeyRecord = { ...target, status: 'NOT ACTIVE' };
+      showToast(`Key ${target.key} status revoked (NOT ACTIVE)`);
+
+      syncKeyToServer(updatedKey, 'UPSERT');
+
+      const ghCfg = getStoredGitHubConfig();
+      if (ghCfg.token && ghCfg.autoSync !== false) {
+        syncSingleKeyToGitHub(updatedKey, 'UPSERT', ghCfg);
+      }
+
+      return prev.map(k => (k.id === target.id ? updatedKey : k));
     });
   };
 
@@ -736,6 +757,20 @@ export default function App() {
             <Globe className="w-4 h-4 text-sky-200 animate-pulse" />
             <span>GitHub Sync</span>
           </button>
+
+          {/* Active Devices & IP Monitor header button */}
+          <button
+            onClick={() => setActiveTab('devices')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-md ${
+              activeTab === 'devices'
+                ? 'bg-emerald-600 text-white border-emerald-400 ring-1 ring-emerald-400/50'
+                : 'bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border-emerald-800'
+            }`}
+            title="View Live Connected Devices and Active IP Addresses"
+          >
+            <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+            <span>Active IP Monitor</span>
+          </button>
           
           {/* Download Desktop Script & Runtime Files (.bat included) */}
           <div className="flex items-center shadow-sm">
@@ -780,10 +815,10 @@ export default function App() {
       </header>
 
       {/* Main Tab Navigation */}
-      <nav className="border-b border-stone-800/80 bg-stone-900/40 px-6 flex gap-2">
+      <nav className="border-b border-stone-800/80 bg-stone-900/40 px-6 flex gap-2 overflow-x-auto">
         <button
           onClick={() => setActiveTab('licensing')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
             activeTab === 'licensing'
               ? 'border-amber-500 text-amber-400'
               : 'border-transparent text-stone-400 hover:text-stone-200'
@@ -797,39 +832,54 @@ export default function App() {
         </button>
 
         <button
+          onClick={() => setActiveTab('devices')}
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'devices'
+              ? 'border-emerald-500 text-emerald-400'
+              : 'border-transparent text-stone-400 hover:text-stone-200'
+          }`}
+        >
+          <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+          <span>Live Connected Devices & Active IPs</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
+            Live Stream
+          </span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('updater')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
             activeTab === 'updater'
               ? 'border-sky-500 text-sky-400'
               : 'border-transparent text-stone-400 hover:text-stone-200'
           }`}
         >
           <RefreshCw className="w-4 h-4" />
-          Auto-Update System & Dismissible Modal
+          <span>Auto-Update System & Dismissible Modal</span>
         </button>
 
         <button
           onClick={() => setActiveTab('guide')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
             activeTab === 'guide'
               ? 'border-emerald-500 text-emerald-400'
               : 'border-transparent text-stone-400 hover:text-stone-200'
           }`}
         >
           <Layers className="w-4 h-4" />
-          Subscription Architecture Guide
+          <span>Subscription Architecture Guide</span>
         </button>
 
         <button
           onClick={() => setActiveTab('code')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
             activeTab === 'code'
               ? 'border-purple-500 text-purple-400'
               : 'border-transparent text-stone-400 hover:text-stone-200'
           }`}
         >
           <FileCode2 className="w-4 h-4" />
-          Integrated Python Code
+          <span>Integrated Python Code</span>
         </button>
       </nav>
 
@@ -1370,6 +1420,24 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Quick shortcut to Live Active IP Monitor */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-xs">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                  <div>
+                    <span className="font-semibold text-emerald-300 mr-2">Live Device IP Telemetry:</span>
+                    <span className="text-stone-300">Monitor which public IP addresses and computer hostnames are actively running your local application.</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setActiveTab('devices')}
+                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg text-xs transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm whitespace-nowrap self-start sm:self-auto"
+                >
+                  <Radio className="w-3.5 h-3.5" />
+                  <span>Open IP Monitor</span>
+                </button>
+              </div>
+
               <LicenseManagerTable
                 keys={licenseKeys}
                 onToggleStatus={handleToggleStatus}
@@ -1382,6 +1450,15 @@ export default function App() {
               />
             </div>
           </div>
+        )}
+
+        {/* TAB: ACTIVE DEVICES & PUBLIC IP MONITOR */}
+        {activeTab === 'devices' && (
+          <ActiveDevicesMonitor
+            licenseKeys={licenseKeys}
+            onRevokeKey={handleRevokeKey}
+            showToast={showToast}
+          />
         )}
 
         {/* TAB 2: AUTO-UPDATE MANIFEST */}
