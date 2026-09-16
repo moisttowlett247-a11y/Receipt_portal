@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Lock, Unlock, ArrowLeft, AlertCircle, ShieldCheck, Check, User, Eye, EyeOff, RotateCcw } from 'lucide-react';
+import { Lock, Unlock, ArrowLeft, AlertCircle, ShieldCheck, Check, User, Eye, EyeOff } from 'lucide-react';
 import { computeCredentialsHash } from '../hashUtils';
 
 interface AdminLoginViewProps {
@@ -15,8 +15,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
   onSaveCredentials,
   onGoToClientPortal
 }) => {
-  const [isResetting, setIsResetting] = useState(false);
-  const isInitialSetup = !savedHash || isResetting;
+  const isInitialSetup = !savedHash;
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -73,7 +72,6 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
 
         const hash = await computeCredentialsHash(cleanUser, cleanPass);
         onSaveCredentials(cleanUser, hash);
-        setIsResetting(false);
         onUnlock();
         return;
       }
@@ -84,7 +82,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
       // Check against savedHash or fallback default (admin / 1995)
       const defaultHash = await computeCredentialsHash('admin', '1995');
 
-      if ((savedHash && inputHash === savedHash) || inputHash === defaultHash) {
+      if ((savedHash && inputHash === savedHash) || (!savedHash && inputHash === defaultHash)) {
         onUnlock();
       } else {
         triggerError('Invalid username or password. Access Denied.');
@@ -94,18 +92,6 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleReset = () => {
-    try {
-      localStorage.removeItem('receipt_processor_admin_user');
-      localStorage.removeItem('receipt_processor_admin_cred_hash');
-    } catch {}
-    setUsername('');
-    setPassword('');
-    setConfirmPassword('');
-    setErrorMsg(null);
-    setIsResetting(true);
   };
 
   return (
@@ -246,27 +232,12 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
                 )}
               </button>
 
-              {isInitialSetup && isResetting && (
-                <button
-                  type="button"
-                  onClick={() => setIsResetting(false)}
-                  className="w-full py-1.5 px-3 bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200 text-xs rounded-xl border border-stone-800 transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-              )}
-
               {!isInitialSetup && (
-                <div className="flex items-center justify-between pt-1 text-[11px] text-stone-500">
-                  <span>Default fallback: <code className="text-amber-400/90 font-mono">admin</code> / <code className="text-amber-400/90 font-mono">1995</code></span>
-                  <button
-                    type="button"
-                    onClick={handleReset}
-                    className="text-stone-400 hover:text-amber-400 flex items-center gap-1 cursor-pointer transition-colors underline"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                    Reset Account
-                  </button>
+                <div className="flex items-center justify-center pt-2 text-[11px] text-stone-500">
+                  <span className="flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-stone-600" />
+                    Encrypted SHA-256 local authentication
+                  </span>
                 </div>
               )}
             </div>
