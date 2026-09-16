@@ -1,8 +1,8 @@
 {
-  "status": "ACTIVE",
+  "status": "REVOKED",
   "plan": "ADMIN",
   "expires": "Never (Lifetime / Non-Expiring)",
   "issued": "2026-09-14",
   "hwid": "HW-ADMIN-MASTER-9760",
-  "updatedAt": "2026-09-15T00:19:27.639Z"
+  "updatedAt": "2026-09-16T05:05:30.144Z"
 }
