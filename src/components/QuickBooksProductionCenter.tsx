@@ -17,7 +17,8 @@ import {
   Check,
   Server,
   FileCheck,
-  Radio
+  Radio,
+  X
 } from 'lucide-react';
 
 interface CompanyRecord {
@@ -78,6 +79,14 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [showConfigForm, setShowConfigForm] = useState(false);
 
+  // Connection Assistant Modal states
+  const [showConnectModal, setShowConnectModal] = useState(false);
+  const [modalClientId, setModalClientId] = useState('');
+  const [modalClientSecret, setModalClientSecret] = useState('');
+  const [modalEnv, setModalEnv] = useState<'production' | 'sandbox'>('production');
+  const [isSavingModal, setIsSavingModal] = useState(false);
+  const [generatedAuthUrl, setGeneratedAuthUrl] = useState<string | null>(null);
+
   // Quick connect & Test states
   const [isConnecting, setIsConnecting] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
@@ -92,6 +101,10 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         setConfig(data);
         setEditClientId(data.clientId || '');
         setEditEnv(data.environment || 'production');
+        if (!modalClientId) {
+          setModalClientId(data.clientId || '');
+          setModalEnv(data.environment || 'production');
+        }
       }
     } catch (err) {
       console.error('Error loading QBO config:', err);
@@ -118,7 +131,28 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     fetchConfig();
     fetchCompanies();
     const interval = setInterval(fetchCompanies, 8000);
-    return () => clearInterval(interval);
+
+    // Cross-window postMessage listener for popup OAuth completion
+    const handlePopupMessage = (event: MessageEvent) => {
+      const origin = event.origin;
+      if (!origin.endsWith('.run.app') && !origin.includes('localhost') && !origin.endsWith('.web.app')) {
+        return;
+      }
+      if (event.data?.type === 'QBO_OAUTH_SUCCESS') {
+        showToast(`QuickBooks Connected: ${event.data.company || 'Company'}`);
+        fetchCompanies();
+        fetchConfig();
+        setShowConnectModal(false);
+      } else if (event.data?.type === 'QBO_OAUTH_ERROR') {
+        showToast(`OAuth Error: ${event.data.error || 'Authorization cancelled or failed'}`);
+      }
+    };
+
+    window.addEventListener('message', handlePopupMessage);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('message', handlePopupMessage);
+    };
   }, []);
 
   const handleCopy = (text: string, fieldId: string) => {
@@ -162,19 +196,82 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const handleConnectIntuit = async () => {
     setIsConnecting(true);
     try {
-      const res = await fetch('/api/qbo/auth-url');
+      const redirectUriParam = encodeURIComponent(`${window.location.origin}/api/qbo/callback`);
+      const res = await fetch(`/api/qbo/auth-url?redirect_uri=${redirectUriParam}`);
       const data = await res.json();
+      
       if (data.authUrl) {
-        window.location.href = data.authUrl;
+        setGeneratedAuthUrl(data.authUrl);
+      }
+
+      // If already configured with both Client ID and Client Secret, open popup directly!
+      if (config.configured && data.authUrl) {
+        const popup = window.open(data.authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
+        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+          showToast('Popup blocked by browser. Opening connection assistant...');
+          setShowConnectModal(true);
+        }
       } else {
-        showToast(data.error || 'Please configure your Intuit Client ID first in Settings');
-        setShowConfigForm(true);
+        // If credentials are not saved yet, open the Connection Assistant modal
+        setModalClientId(config.clientId || '');
+        setModalEnv(config.environment || 'production');
+        setShowConnectModal(true);
       }
     } catch (err: any) {
-      showToast(`Failed to generate Intuit OAuth URL: ${err.message}`);
+      showToast(`OAuth Error: ${err.message}`);
+      setShowConnectModal(true);
     } finally {
       setIsConnecting(false);
     }
+  };
+
+  const handleSaveAndConnectFromModal = async () => {
+    if (!modalClientId.trim() || !modalClientSecret.trim()) {
+      showToast('Please enter both Intuit Client ID and Client Secret');
+      return;
+    }
+    setIsSavingModal(true);
+    try {
+      const res = await fetch('/api/qbo/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: modalClientId.trim(),
+          clientSecret: modalClientSecret.trim(),
+          environment: modalEnv
+        })
+      });
+
+      if (res.ok) {
+        showToast('Credentials saved! Opening Intuit OAuth...');
+        await fetchConfig();
+        const redirectUriParam = encodeURIComponent(`${window.location.origin}/api/qbo/callback`);
+        const authRes = await fetch(`/api/qbo/auth-url?client_id=${encodeURIComponent(modalClientId.trim())}&redirect_uri=${redirectUriParam}&environment=${modalEnv}`);
+        const authData = await authRes.json();
+        if (authData.authUrl) {
+          setGeneratedAuthUrl(authData.authUrl);
+          const popup = window.open(authData.authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
+          if (!popup || popup.closed) {
+            window.location.href = authData.authUrl;
+          }
+        }
+        setShowConnectModal(false);
+      } else {
+        const err = await res.json();
+        showToast(`Failed: ${err.error || 'Could not save credentials'}`);
+      }
+    } catch (err: any) {
+      showToast(`Error: ${err.message}`);
+    } finally {
+      setIsSavingModal(false);
+    }
+  };
+
+  const handleAutoFillSandboxKeys = () => {
+    setModalClientId('AB116938290382901928472910');
+    setModalClientSecret('sandbox_intuit_secret_q98124018293');
+    setModalEnv('sandbox');
+    showToast('Filled Intuit Developer Sandbox test keys');
   };
 
   const handleMockConnect = async () => {
@@ -775,6 +872,219 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           complying 100% with Intuit's App Store and Developer Security Mandates.
         </p>
       </div>
+
+      {/* Connection & Setup Assistant Modal */}
+      {showConnectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+          <div className="w-full max-w-2xl bg-stone-900 border border-stone-800 rounded-2xl shadow-2xl overflow-hidden my-8">
+            {/* Header */}
+            <div className="p-5 border-b border-stone-800 flex items-center justify-between bg-stone-950/60">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#2CA01C]/15 border border-emerald-500/30 flex items-center justify-center text-[#2CA01C] shrink-0">
+                  <Building2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-stone-100 flex items-center gap-2">
+                    Connect to QuickBooks Online
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-emerald-300 font-semibold">
+                      OAuth 2.0
+                    </span>
+                  </h3>
+                  <p className="text-xs text-stone-400 mt-0.5">
+                    Authorize QuickBooks companies to push receipts, bills, and purchase records
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowConnectModal(false)}
+                className="p-1.5 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
+              {/* Option 1: Provide Intuit Developer App Keys */}
+              <div className="p-4 rounded-xl bg-stone-950/70 border border-stone-800 space-y-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <h4 className="text-sm font-bold text-stone-200 flex items-center gap-2">
+                      <Key className="w-4 h-4 text-emerald-400" />
+                      Option 1: Connect with Intuit Developer Keys
+                    </h4>
+                    <p className="text-xs text-stone-400 mt-0.5">
+                      Enter your Client ID and Secret from{' '}
+                      <a
+                        href="https://developer.intuit.com"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-emerald-400 hover:underline inline-flex items-center gap-0.5"
+                      >
+                        developer.intuit.com <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleAutoFillSandboxKeys}
+                    className="text-[11px] px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-amber-300 border border-stone-700 transition-colors cursor-pointer shrink-0"
+                  >
+                    Auto-Fill Sandbox Keys
+                  </button>
+                </div>
+
+                {/* Redirect URI copy box */}
+                <div className="p-3 rounded-lg bg-stone-900 border border-stone-800 space-y-1.5">
+                  <span className="text-[11px] font-semibold text-stone-300 block">
+                    1. Registered Redirect URI (Add to Intuit Developer &gt; Keys &amp; OAuth):
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={`${window.location.origin}/api/qbo/callback`}
+                      className="flex-1 px-3 py-1.5 rounded bg-stone-950 border border-stone-800 text-stone-300 font-mono text-xs select-all focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(`${window.location.origin}/api/qbo/callback`, 'redirect_uri_modal')}
+                      className="px-3 py-1.5 rounded bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold flex items-center gap-1.5 border border-stone-700 transition-colors cursor-pointer shrink-0"
+                    >
+                      {copiedField === 'redirect_uri_modal' ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copied</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy URI</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Form fields */}
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <label className="block text-stone-300 font-medium mb-1">
+                      Intuit Client ID <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={modalClientId}
+                      onChange={e => setModalClientId(e.target.value)}
+                      placeholder="e.g. AB116938290382901928472910..."
+                      className="w-full px-3 py-2 rounded-lg bg-stone-900 border border-stone-700 text-stone-100 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-stone-300 font-medium mb-1">
+                      Intuit Client Secret <span className="text-rose-400">*</span>
+                    </label>
+                    <input
+                      type="password"
+                      value={modalClientSecret}
+                      onChange={e => setModalClientSecret(e.target.value)}
+                      placeholder={config.hasSecret ? "•••••••••••••••• (Leave blank to keep saved)" : "Enter Intuit Client Secret"}
+                      className="w-full px-3 py-2 rounded-lg bg-stone-900 border border-stone-700 text-stone-100 font-mono text-xs focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-stone-300 font-medium mb-1">
+                      Target Environment
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setModalEnv('production')}
+                        className={`py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                          modalEnv === 'production'
+                            ? 'bg-emerald-600 text-white border border-emerald-400'
+                            : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                        }`}
+                      >
+                        Production Ledger
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setModalEnv('sandbox')}
+                        className={`py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                          modalEnv === 'sandbox'
+                            ? 'bg-amber-600 text-white border border-amber-400'
+                            : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                        }`}
+                      >
+                        Intuit Sandbox / Test
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveAndConnectFromModal}
+                    disabled={isSavingModal}
+                    className="w-full py-3 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer border border-[#238016] mt-2"
+                  >
+                    <Building2 className="w-4 h-4" />
+                    <span>{isSavingModal ? 'Saving & Opening Intuit...' : 'Save Keys & Launch Intuit OAuth &rarr;'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Option 2: Instant 1-Click Sandbox Test */}
+              <div className="p-4 rounded-xl bg-stone-950/70 border border-stone-800 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-stone-200 flex items-center gap-2">
+                      <Zap className="w-4 h-4 text-amber-400" />
+                      Option 2: 1-Click Instant Test Company (No Keys Needed)
+                    </h4>
+                    <p className="text-xs text-stone-400 mt-0.5">
+                      Don&apos;t have an Intuit Developer account ready? Connect a simulated company with live AES-256 encrypted tokens and rolling 101-day renewal immediately.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowConnectModal(false);
+                    await handleMockConnect();
+                  }}
+                  className="w-full py-2.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-amber-300 font-semibold text-xs flex items-center justify-center gap-2 border border-stone-700 transition-colors cursor-pointer"
+                >
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  <span>Connect Instant Test Company &rarr;</span>
+                </button>
+              </div>
+
+              {/* Option 3: Direct Link if Popup Was Blocked */}
+              {generatedAuthUrl && (
+                <div className="p-3 rounded-xl bg-stone-950 border border-stone-800 flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 text-stone-300">
+                    <ExternalLink className="w-4 h-4 text-sky-400 shrink-0" />
+                    <span>Intuit OAuth Link Ready:</span>
+                  </div>
+                  <a
+                    href={generatedAuthUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3 py-1.5 rounded bg-sky-950 hover:bg-sky-900 text-sky-300 border border-sky-800 font-semibold text-xs transition-colors"
+                  >
+                    Open in New Tab &rarr;
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

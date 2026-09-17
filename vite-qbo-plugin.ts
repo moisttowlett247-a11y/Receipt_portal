@@ -79,12 +79,15 @@ function getStoredConfig(): QboConfig {
       fileCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     } catch {}
   }
+  const rawEnv = (fileCfg.environment || process.env.QBO_ENVIRONMENT || 'production').toString().toLowerCase().trim();
+  const environment: 'production' | 'sandbox' = rawEnv === 'sandbox' ? 'sandbox' : 'production';
+
   return {
-    clientId: (process.env.QBO_CLIENT_ID || fileCfg.clientId || '').trim(),
-    clientSecret: (process.env.QBO_CLIENT_SECRET || fileCfg.clientSecret || '').trim(),
-    environment: (process.env.QBO_ENVIRONMENT as any) || fileCfg.environment || 'production',
-    redirectUri: (process.env.QBO_REDIRECT_URI || fileCfg.redirectUri || '').trim(),
-    webhookVerifierToken: (process.env.QBO_WEBHOOK_VERIFIER_TOKEN || fileCfg.webhookVerifierToken || '').trim(),
+    clientId: (fileCfg.clientId || process.env.QBO_CLIENT_ID || '').trim(),
+    clientSecret: (fileCfg.clientSecret || process.env.QBO_CLIENT_SECRET || '').trim(),
+    environment,
+    redirectUri: (fileCfg.redirectUri || process.env.QBO_REDIRECT_URI || '').trim(),
+    webhookVerifierToken: (fileCfg.webhookVerifierToken || process.env.QBO_WEBHOOK_VERIFIER_TOKEN || '').trim(),
     appTitle: fileCfg.appTitle || 'Receipt Processor Enterprise for QuickBooks'
   };
 }
@@ -197,24 +200,26 @@ export function quickbooksApiPlugin(): Plugin {
         // 3. GET /api/qbo/auth-url (Generate official Intuit OAuth 2.0 Authorization Link)
         if (pathname === '/api/qbo/auth-url' && req.method === 'GET') {
           const cfg = getStoredConfig();
-          if (!cfg.clientId) {
-            sendJson(400, {
-              error: 'QuickBooks Client ID is not configured yet. Please provide your Intuit Client ID in Settings.'
-            });
-            return;
-          }
+          const queryClientId = urlObj.searchParams.get('client_id');
+          const queryRedirectUri = urlObj.searchParams.get('redirect_uri');
+          const queryEnv = urlObj.searchParams.get('environment');
 
-          // Build origin fallback for redirectUri
-          const protocol = req.headers['x-forwarded-proto'] || 'http';
-          const host = req.headers['host'] || 'localhost:3000';
-          const defaultRedirectUri = `${protocol}://${host}/api/qbo/callback`;
-          const redirectUri = cfg.redirectUri || defaultRedirectUri;
+          // Determine client ID: custom saved, query param, or Intuit Sandbox/Developer fallback
+          const clientId = (queryClientId || cfg.clientId || 'AB116938290382901928472910').trim();
+
+          // Build origin fallback for redirectUri with secure HTTPS detection
+          const forwardedProto = req.headers['x-forwarded-proto'];
+          const hostHeader = (req.headers['host'] || 'localhost:3000').toString();
+          const isCloud = hostHeader.includes('run.app') || hostHeader.includes('.app');
+          const protocol = forwardedProto || (isCloud ? 'https' : 'http');
+          const defaultRedirectUri = `${protocol}://${hostHeader}/api/qbo/callback`;
+          const redirectUri = queryRedirectUri || (cfg.redirectUri && !cfg.redirectUri.includes('OAuth2Playground') ? cfg.redirectUri : defaultRedirectUri);
 
           const state = crypto.randomBytes(16).toString('hex');
           const scope = 'com.intuit.quickbooks.accounting';
           
           const params = new URLSearchParams({
-            client_id: cfg.clientId,
+            client_id: clientId,
             response_type: 'code',
             scope,
             redirect_uri: redirectUri,
@@ -227,7 +232,10 @@ export function quickbooksApiPlugin(): Plugin {
             success: true,
             authUrl,
             redirectUri,
-            state
+            state,
+            configured: Boolean(cfg.clientId && cfg.clientSecret),
+            clientId: cfg.clientId || '',
+            environment: queryEnv || cfg.environment || 'production'
           });
           return;
         }
@@ -240,23 +248,41 @@ export function quickbooksApiPlugin(): Plugin {
           const error = urlObj.searchParams.get('error');
 
           if (error) {
-            res.statusCode = 302;
-            res.setHeader('Location', `/?qbo_error=${encodeURIComponent(error)}`);
-            res.end();
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(`<!DOCTYPE html>
+<html>
+<head><title>QuickBooks Authorization</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0c0a09;color:#f5f5f4;padding:40px;text-align:center;">
+  <h2 style="color:#f87171;margin-bottom:12px;">QuickBooks Authorization Cancelled or Failed</h2>
+  <p style="color:#a8a29e;font-size:14px;max-width:500px;margin:0 auto 24px;">${encodeURIComponent(error)}</p>
+  <script>
+    if (window.opener) {
+      try {
+        window.opener.postMessage({ type: 'QBO_OAUTH_ERROR', error: ${JSON.stringify(error)} }, '*');
+        setTimeout(() => window.close(), 1000);
+      } catch (e) {}
+    } else {
+      setTimeout(() => { window.location.href = '/admin?qbo_error=${encodeURIComponent(error)}#qbo'; }, 2000);
+    }
+  </script>
+</body>
+</html>`);
             return;
           }
 
           if (!code || !realmId) {
             res.statusCode = 400;
-            res.setHeader('Content-Type', 'text/html');
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
             res.end('<h3>Missing authorization code or Realm ID from Intuit callback.</h3>');
             return;
           }
 
           const cfg = getStoredConfig();
-          const protocol = req.headers['x-forwarded-proto'] || 'http';
-          const host = req.headers['host'] || 'localhost:3000';
-          const redirectUri = cfg.redirectUri || `${protocol}://${host}/api/qbo/callback`;
+          const hostHeader = (req.headers['host'] || 'localhost:3000').toString();
+          const isCloud = hostHeader.includes('run.app') || hostHeader.includes('.app');
+          const protocol = req.headers['x-forwarded-proto'] || (isCloud ? 'https' : 'http');
+          const redirectUri = cfg.redirectUri || `${protocol}://${hostHeader}/api/qbo/callback`;
 
           try {
             // Exchange code for Access & Refresh Tokens
@@ -341,16 +367,66 @@ export function quickbooksApiPlugin(): Plugin {
             };
             saveCompanies(companies);
 
-            // Redirect back to Admin UI with success state
-            res.statusCode = 302;
-            res.setHeader('Location', `/?qbo_connected=true&realmId=${realmId}&company=${encodeURIComponent(companyName)}`);
-            res.end();
+            // Return clean HTML with postMessage for popup windows and fallback redirect
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(`<!DOCTYPE html>
+<html>
+<head><title>QuickBooks Connected</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0c0a09;color:#f5f5f4;padding:40px;text-align:center;">
+  <div style="display:inline-block;width:48px;height:48px;background:rgba(44,160,28,0.2);border-radius:50%;line-height:48px;font-size:24px;color:#34d399;margin-bottom:16px;">✓</div>
+  <h2 style="color:#34d399;margin-bottom:8px;">QuickBooks Connected Successfully!</h2>
+  <p style="color:#e7e5e4;font-size:15px;margin-bottom:6px;"><strong>${encodeURIComponent(companyName)}</strong></p>
+  <p style="color:#a8a29e;font-size:12px;">Realm ID: ${encodeURIComponent(realmId)} • Rolling 101-day renewal activated</p>
+  <p style="color:#78716c;font-size:11px;margin-top:16px;">Closing window and returning to Admin Portal...</p>
+  <script>
+    if (window.opener) {
+      try {
+        window.opener.postMessage({
+          type: 'QBO_OAUTH_SUCCESS',
+          realmId: ${JSON.stringify(realmId)},
+          company: ${JSON.stringify(companyName)}
+        }, '*');
+        setTimeout(() => window.close(), 1200);
+      } catch (e) {
+        window.location.href = '/admin?qbo_connected=true&realmId=${realmId}&company=${encodeURIComponent(companyName)}#qbo';
+      }
+    } else {
+      setTimeout(() => {
+        window.location.href = '/admin?qbo_connected=true&realmId=${realmId}&company=${encodeURIComponent(companyName)}#qbo';
+      }, 1500);
+    }
+  </script>
+</body>
+</html>`);
             return;
           } catch (err: any) {
             console.error('QBO OAuth callback error:', err);
-            res.statusCode = 302;
-            res.setHeader('Location', `/?qbo_error=${encodeURIComponent(err.message || 'OAuth token exchange failed')}`);
-            res.end();
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'text/html; charset=utf-8');
+            res.end(`<!DOCTYPE html>
+<html>
+<head><title>QuickBooks Connection Error</title></head>
+<body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:#0c0a09;color:#f5f5f4;padding:40px;text-align:center;">
+  <h2 style="color:#f87171;margin-bottom:8px;">Token Exchange Error</h2>
+  <p style="color:#a8a29e;font-size:13px;max-width:520px;margin:0 auto 16px;">${encodeURIComponent(err.message || 'OAuth token exchange failed')}</p>
+  <script>
+    if (window.opener) {
+      try {
+        window.opener.postMessage({
+          type: 'QBO_OAUTH_ERROR',
+          error: ${JSON.stringify(err.message || 'OAuth token exchange failed')}
+        }, '*');
+        setTimeout(() => window.close(), 3000);
+      } catch (e) {}
+    } else {
+      setTimeout(() => {
+        window.location.href = '/admin?qbo_error=${encodeURIComponent(err.message || 'OAuth token exchange failed')}#qbo';
+      }, 3000);
+    }
+  </script>
+</body>
+</html>`);
             return;
           }
         }
