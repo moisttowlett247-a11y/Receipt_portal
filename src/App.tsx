@@ -157,8 +157,16 @@ export default function App() {
     const handleLocationChange = () => {
       setIsAdminRoute(checkIsAdminPath());
     };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Operator shortcut: Ctrl+Shift+A or Alt+A to navigate to admin console
+      if ((e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'a') || (e.altKey && e.key.toLowerCase() === 'a')) {
+        navigateTo('/admin');
+      }
+    };
+
     window.addEventListener('popstate', handleLocationChange);
     window.addEventListener('hashchange', handleLocationChange);
+    window.addEventListener('keydown', handleKeyDown);
 
     // Check for QuickBooks OAuth callback results or legal deep-links
     if (typeof window !== 'undefined') {
@@ -196,6 +204,7 @@ export default function App() {
     return () => {
       window.removeEventListener('popstate', handleLocationChange);
       window.removeEventListener('hashchange', handleLocationChange);
+      window.removeEventListener('keydown', handleKeyDown);
     };
   }, []);
 
@@ -688,11 +697,6 @@ export default function App() {
         <ClientPortalView
           licenseKeys={licenseKeys}
           currentVersion={currentVersion}
-          onGoToAdmin={() => navigateTo('/admin')}
-          onOpenQuickBooks={() => {
-            setActiveTab('qbo');
-            navigateTo('/admin');
-          }}
           onInquirySubmitted={(inquiry) => {
             showToast(`Inquiry from ${inquiry.name} received!`);
           }}
@@ -969,6 +973,34 @@ export default function App() {
               onOpenModal={() => setIsBundleModalOpen(true)}
               onToast={showToast}
             />
+
+            {/* QuickBooks Online Production Quick-Access Card in Admin Portal */}
+            <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/40 via-stone-900 to-stone-900 border border-emerald-600/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-md">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-[#2CA01C]/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                  <Building2 className="w-5 h-5 text-[#2CA01C]" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-stone-100">QuickBooks Online Production Center</h3>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950 border border-emerald-800 text-emerald-300 font-semibold">
+                      OAuth 2.0
+                    </span>
+                  </div>
+                  <p className="text-xs text-stone-400 mt-0.5">
+                    Configure Intuit Developer Client ID/Secret, authorize companies, and manage encrypted tokens with 101-day rolling renewal.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('qbo')}
+                className="px-4 py-2 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white text-xs font-bold flex items-center gap-2 shrink-0 shadow transition-all cursor-pointer"
+              >
+                <Building2 className="w-4 h-4" />
+                <span>Open QuickBooks Center &rarr;</span>
+              </button>
+            </div>
 
             {/* Explanatory Banner */}
             <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col md:flex-row gap-5 items-start justify-between">

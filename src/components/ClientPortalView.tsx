@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { 
   ShieldCheck, 
   Key, 
@@ -19,10 +19,6 @@ import {
   Building,
   Layers,
   MessageSquare,
-  Building2,
-  Lock,
-  ExternalLink,
-  RefreshCw,
   Zap
 } from 'lucide-react';
 import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel } from '../types';
@@ -31,16 +27,12 @@ import { computeSha256Hex } from '../hashUtils';
 interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
   currentVersion: string;
-  onGoToAdmin?: () => void;
-  onOpenQuickBooks?: () => void;
   onInquirySubmitted?: (inquiry: ProductInquiry) => void;
 }
 
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   licenseKeys,
   currentVersion,
-  onGoToAdmin,
-  onOpenQuickBooks,
   onInquirySubmitted
 }) => {
   const [clientKeyInput, setClientKeyInput] = useState('');
@@ -51,54 +43,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     status?: string;
     message: string;
   } | null>(null);
-
-  // QuickBooks Live Status
-  const [isConnectingQbo, setIsConnectingQbo] = useState(false);
-  const [qboConfig, setQboConfig] = useState<{
-    configured: boolean;
-    environment: string;
-    totalConnectedCompanies: number;
-  } | null>(null);
-  const [qboNotice, setQboNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetch('/api/qbo/config')
-      .then(res => res.json())
-      .then(data => {
-        if (data && typeof data.configured === 'boolean') {
-          setQboConfig({
-            configured: data.configured,
-            environment: data.environment || 'production',
-            totalConnectedCompanies: data.totalConnectedCompanies || 0
-          });
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  const handleConnectQuickBooks = async () => {
-    setIsConnectingQbo(true);
-    setQboNotice(null);
-    try {
-      const res = await fetch('/api/qbo/auth-url');
-      const data = await res.json();
-      if (data.authUrl) {
-        window.location.href = data.authUrl;
-      } else {
-        setQboNotice(data.error || 'QuickBooks Client ID & Secret must be saved in Admin Console before connecting.');
-        if (onOpenQuickBooks) {
-          onOpenQuickBooks();
-        } else if (onGoToAdmin) {
-          onGoToAdmin();
-        }
-      }
-    } catch (err: any) {
-      setQboNotice(`Unable to connect: ${err.message}`);
-      if (onOpenQuickBooks) onOpenQuickBooks();
-    } finally {
-      setIsConnectingQbo(false);
-    }
-  };
   
   // Early Access / Product Interest Form State
   const [inquiryName, setInquiryName] = useState('');
@@ -336,36 +280,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-2.5">
-          {/* Direct QuickBooks OAuth Button in Top Navigation */}
-          <button
-            type="button"
-            onClick={onOpenQuickBooks || onGoToAdmin}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold bg-[#2CA01C] hover:bg-[#238016] text-white rounded-lg shadow-sm border border-emerald-400/50 transition-all cursor-pointer"
-            title="QuickBooks Online Production OAuth 2.0 Center"
-          >
-            <Building2 className="w-3.5 h-3.5" />
-            <span>QuickBooks OAuth</span>
-          </button>
-
           <a
             href="#request-access"
-            className="hidden sm:flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm transition-colors cursor-pointer"
           >
             <Send className="w-3.5 h-3.5" />
             <span>Request Access</span>
           </a>
-
-          {onGoToAdmin && (
-            <button
-              type="button"
-              onClick={onGoToAdmin}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-medium bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 rounded-lg transition-colors cursor-pointer"
-              title="Operator Admin Console"
-            >
-              <Lock className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Admin</span>
-            </button>
-          )}
         </div>
       </header>
 
@@ -382,84 +303,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           <p className="text-xs sm:text-sm text-stone-400 leading-relaxed">
             Eliminate hours of manual data entry. Our workstation software scans receipts, categorizes deductible business expenses, and produces clean Excel ledgers.
           </p>
-        </div>
-
-        {/* PROMINENT QUICKBOOKS ONLINE OAUTH 2.0 INTEGRATION CARD */}
-        <div className="p-6 rounded-2xl bg-gradient-to-b from-emerald-950/30 to-stone-900/90 border border-emerald-600/40 shadow-xl relative overflow-hidden">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div className="space-y-3 max-w-xl">
-              <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-bold">
-                <Building2 className="w-3.5 h-3.5" />
-                <span>QuickBooks Online Certified OAuth 2.0 Sync</span>
-              </div>
-              <h3 className="text-lg sm:text-xl font-bold text-stone-100">
-                Direct Accounting & Ledger Synchronization
-              </h3>
-              <p className="text-xs sm:text-sm text-stone-300 leading-relaxed">
-                Connect your QuickBooks Online company to automatically push OCR receipts, tax categorization, and vendor bills. Protected by server-side OAuth 2.0 token broking, AES-256-GCM encryption, and 101-day rolling renewal.
-              </p>
-
-              <div className="flex flex-wrap items-center gap-3 text-xs text-stone-400 pt-1">
-                <span className="flex items-center gap-1.5 text-emerald-300">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>TLS 1.3 Transport Security</span>
-                </span>
-                <span>•</span>
-                <span className="flex items-center gap-1.5 text-emerald-300">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>AES-256 Token Encryption</span>
-                </span>
-                <span>•</span>
-                <span className="flex items-center gap-1.5 text-emerald-300">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>101-Day Rolling Refresh Tokens</span>
-                </span>
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row md:flex-col gap-3 shrink-0">
-              {/* Official Intuit Connect Button */}
-              <button
-                type="button"
-                onClick={handleConnectQuickBooks}
-                disabled={isConnectingQbo}
-                className="px-5 py-3 rounded-xl bg-[#2CA01C] hover:bg-[#238016] text-white font-bold text-xs flex items-center justify-center gap-2.5 shadow-lg border border-emerald-300/40 transition-all cursor-pointer active:scale-95"
-              >
-                {isConnectingQbo ? (
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Building2 className="w-4 h-4" />
-                )}
-                <span>Connect to QuickBooks</span>
-              </button>
-
-              {/* Open Admin QuickBooks Center */}
-              <button
-                type="button"
-                onClick={onOpenQuickBooks || onGoToAdmin}
-                className="px-4 py-2.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold border border-stone-700 flex items-center justify-center gap-2 transition-colors cursor-pointer"
-              >
-                <Key className="w-3.5 h-3.5 text-amber-400" />
-                <span>Configure Intuit Keys / Companies</span>
-              </button>
-            </div>
-          </div>
-
-          {qboNotice && (
-            <div className="mt-4 p-3 rounded-lg bg-amber-950/40 border border-amber-800/60 text-amber-200 text-xs flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-              <div className="flex-1">
-                <span>{qboNotice}</span>
-                <button
-                  type="button"
-                  onClick={onOpenQuickBooks || onGoToAdmin}
-                  className="ml-2 underline font-bold text-amber-300 hover:text-white cursor-pointer"
-                >
-                  Open QuickBooks Admin Console &rarr;
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Two-Column Grid: Product Interest Form & Verify License */}
@@ -1123,15 +966,6 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
         <div className="flex items-center gap-4">
           <span>License Support: <strong className="text-stone-400">moisttowlett247@gmail.com</strong></span>
-          {onGoToAdmin && (
-            <button
-              onClick={onGoToAdmin}
-              className="text-stone-600 hover:text-stone-400 text-[11px] transition-colors cursor-pointer flex items-center gap-1"
-              title="Private Operator Console"
-            >
-              <span>Operator</span>
-            </button>
-          )}
         </div>
       </footer>
     </div>
