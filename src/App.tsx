@@ -137,12 +137,17 @@ export default function App() {
     return (
       path.endsWith('/admin') ||
       path.includes('/admin/') ||
+      path.includes('/qbo') ||
       hash === '#admin' ||
       hash === '#/admin' ||
+      hash === '#qbo' ||
+      hash === '#/qbo' ||
       search.includes('p=admin') ||
       search.includes('admin=true') ||
       search.includes('portal=admin') ||
-      search.includes('view=admin')
+      search.includes('view=admin') ||
+      search.includes('tab=qbo') ||
+      search.includes('qbo=true')
     );
   };
 
@@ -159,6 +164,10 @@ export default function App() {
     if (typeof window !== 'undefined') {
       const searchParams = new URLSearchParams(window.location.search);
       const hash = window.location.hash.toLowerCase();
+
+      if (hash === '#qbo' || hash === '#/qbo' || searchParams.get('tab') === 'qbo' || searchParams.get('qbo') === 'true') {
+        setActiveTab('qbo');
+      }
 
       if (searchParams.get('qbo_connected') === 'true') {
         const company = searchParams.get('company') || 'QuickBooks Company';
@@ -673,7 +682,6 @@ export default function App() {
   };
 
   // 1. Client Facing Portal (Separate URL: `/`)
-  // Has zero admin login buttons, links, or triggers for clients
   if (!isAdminRoute) {
     return (
       <>
@@ -681,6 +689,10 @@ export default function App() {
           licenseKeys={licenseKeys}
           currentVersion={currentVersion}
           onGoToAdmin={() => navigateTo('/admin')}
+          onOpenQuickBooks={() => {
+            setActiveTab('qbo');
+            navigateTo('/admin');
+          }}
           onInquirySubmitted={(inquiry) => {
             showToast(`Inquiry from ${inquiry.name} received!`);
           }}

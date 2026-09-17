@@ -128,14 +128,22 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
             <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto shadow-inner">
               {isInitialSetup ? <ShieldCheck className="w-6 h-6" /> : <Lock className="w-6 h-6" />}
             </div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-medium mx-auto">
+              <span>QuickBooks Online & License Center</span>
+            </div>
             <h2 className="text-lg font-extrabold text-stone-100 tracking-tight">
               {isInitialSetup ? 'Initialize Master Admin Account' : 'Admin Authentication Required'}
             </h2>
             <p className="text-xs text-stone-400 leading-relaxed">
               {isInitialSetup 
                 ? 'Create an administrative username and strong password to secure your portal.'
-                : 'Sign in with your master credentials to manage licenses, subscriptions, and sync settings.'}
+                : 'Sign in with your master credentials to configure QuickBooks Online OAuth 2.0 keys, tokens, and licenses.'}
             </p>
+            {!savedHash && !isInitialSetup && (
+              <p className="text-[11px] text-amber-400/90 font-mono bg-amber-500/10 py-1 px-2.5 rounded-lg border border-amber-500/20">
+                Default Credentials: <strong>admin</strong> / <strong>1995</strong>
+              </p>
+            )}
           </div>
 
           {errorMsg && (
