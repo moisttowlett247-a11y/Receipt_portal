@@ -1200,7 +1200,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                     className="w-full py-3 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-all cursor-pointer border border-[#238016] mt-2"
                   >
                     <Building2 className="w-4 h-4" />
-                    <span>{isSavingModal ? 'Saving & Opening Intuit...' : 'Save Keys & Launch Intuit OAuth &rarr;'}</span>
+                    <span>{isSavingModal ? 'Saving & Opening Intuit...' : 'Save Keys & Launch Intuit OAuth →'}</span>
                   </button>
                 </div>
               </div>
@@ -1228,7 +1228,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                   className="w-full py-2.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-amber-300 font-semibold text-xs flex items-center justify-center gap-2 border border-stone-700 transition-colors cursor-pointer"
                 >
                   <Zap className="w-4 h-4 text-amber-400" />
-                  <span>Connect Instant Test Company &rarr;</span>
+                  <span>Connect Instant Test Company →</span>
                 </button>
               </div>
 
@@ -1245,7 +1245,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                     rel="noopener noreferrer"
                     className="px-3 py-1.5 rounded bg-sky-950 hover:bg-sky-900 text-sky-300 border border-sky-800 font-semibold text-xs transition-colors"
                   >
-                    Open in New Tab &rarr;
+                    Open in New Tab →
                   </a>
                 </div>
               )}
