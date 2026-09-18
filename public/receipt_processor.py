@@ -80,8 +80,7 @@ except ImportError:
 def http_get_json(url: str, timeout: float = 3.5) -> tuple:
     """
     Performs an HTTP GET request returning (status_code, data_dict_or_none).
-    Uses standard library urllib.request (zero external dependencies) and
-    falls back smoothly to requests if present.
+    Filters out HTML error/redirect pages so only real JSON objects are returned.
     """
     try:
         req = urllib.request.Request(
@@ -95,15 +94,24 @@ def http_get_json(url: str, timeout: float = 3.5) -> tuple:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = resp.status
-            content = resp.read().decode("utf-8")
+            content = resp.read().decode("utf-8", errors="ignore").strip()
+            if not content or content.startswith("<") or "<html" in content.lower():
+                return code, None
             try:
-                return code, json.loads(content)
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    return code, parsed
+                return code, None
             except Exception:
-                return code, {"raw": content}
+                return code, None
     except urllib.error.HTTPError as e:
         body = None
         try:
-            body = json.loads(e.read().decode("utf-8"))
+            raw_e = e.read().decode("utf-8", errors="ignore").strip()
+            if raw_e and not raw_e.startswith("<") and "<html" not in raw_e.lower():
+                parsed = json.loads(raw_e)
+                if isinstance(parsed, dict):
+                    body = parsed
         except Exception:
             pass
         return e.code, body
@@ -113,12 +121,16 @@ def http_get_json(url: str, timeout: float = 3.5) -> tuple:
                 r = requests.get(
                     url,
                     timeout=timeout,
-                    headers={"Cache-Control": "no-cache, no-store", "Pragma": "no-cache"}
+                    headers={"Cache-Control": "no-cache, no-store", "Pragma": "no-cache", "Accept": "application/json"}
                 )
-                try:
-                    return r.status_code, r.json()
-                except Exception:
-                    return r.status_code, None
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                        if isinstance(data, dict):
+                            return r.status_code, data
+                    except Exception:
+                        pass
+                return r.status_code, None
             except Exception:
                 pass
         return 0, None
@@ -149,14 +161,14 @@ LICENSE_REGISTRY_FILE = os.getenv("LICENSE_REGISTRY_PATH", "license_registry.jso
 
 # Known portal endpoints for real-time license state synchronization
 DEFAULT_PORTAL_ENDPOINTS = [
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public",
     os.getenv("PORTAL_URL", "").strip().rstrip("/"),
     os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/"),
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
-    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
+    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app"
 ]
 
 def get_machine_hardware_id() -> str:
@@ -299,7 +311,6 @@ class SubscriptionLicenseManager:
         key_hash = hashlib.sha256(current_key.encode('utf-8')).hexdigest().lower()
         endpoints = self.get_active_portal_endpoints()
 
-        responded = False
         for endpoint in endpoints:
             check_urls = []
             if "githubusercontent" in endpoint:
@@ -309,42 +320,43 @@ class SubscriptionLicenseManager:
                     host_name_enc = urllib.parse.quote(socket.gethostname())
                 except Exception:
                     host_name_enc = "Unknown-PC"
-                check_urls.append(f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}&hwid={self.hardware_id}&machine={host_name_enc}&ver={APP_VERSION}")
                 check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
+                check_urls.append(f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}&hwid={self.hardware_id}&machine={host_name_enc}&ver={APP_VERSION}")
 
             for check_url in check_urls:
                 try:
-                    status_code, data = http_get_json(check_url, timeout=3.5)
-                    if status_code in [200, 404]:
-                        responded = True
-                        self.connected_portal = endpoint
+                    status_code, data = http_get_json(check_url, timeout=4.0)
+                    if not isinstance(data, dict):
+                        continue
 
-                    # 1. Key exists on website
-                    if status_code == 200 and isinstance(data, dict):
-                        if "raw" in data:
-                            raw_text = str(data.get("raw", ""))
-                            if "<html" in raw_text.lower() or "302 found" in raw_text.lower() or "not found" in raw_text.lower() or "<html>" in raw_text.lower():
-                                continue
-
-                        if data.get("exists") is False or str(data.get("status", "")).upper() in ["NOT_FOUND", "NOT FOUND"]:
-                            continue
-
+                    # Validate that response is a genuine license JSON object
+                    if status_code == 200:
                         remote_status = str(data.get("status", "")).strip().upper()
                         if not remote_status or remote_status not in ["ACTIVE", "EXPIRED", "REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
                             continue
 
+                        self.connected_portal = endpoint
+
+                        # Determine remote plan cleanly
                         raw_remote_plan = data.get("plan", "")
-                        if "ADMIN" in current_key.upper() or "MASTER" in current_key.upper():
+                        is_admin = ("ADMIN" in current_key.upper() or "MASTER" in current_key.upper() or "ADMIN" in str(raw_remote_plan).upper())
+                        
+                        if is_admin:
                             remote_plan = "Admin (Lifetime)"
-                        elif not raw_remote_plan or str(raw_remote_plan).strip() in ["Unregistered", "Unknown", "Standard", ""]:
-                            remote_plan = "Admin (Lifetime)" if ("ADMIN" in current_key.upper() or "MASTER" in current_key.upper()) else "Pro Subscription"
+                        elif raw_remote_plan and str(raw_remote_plan).strip() not in ["Unregistered", "Unknown", "Standard", ""]:
+                            remote_plan = str(raw_remote_plan).strip()
                         else:
-                            remote_plan = raw_remote_plan
-                        remote_expires = data.get("expires", self.license_data.get("expires_at", ""))
+                            remote_plan = "Pro Subscription"
+
+                        remote_expires = data.get("expires", "")
+                        if is_admin and (not remote_expires or "Never" not in str(remote_expires)):
+                            remote_expires = "Never (Lifetime / Non-Expiring)"
+                        elif not remote_expires:
+                            remote_expires = self.license_data.get("expires_at", "")
 
                         # Check whether date has expired or status is explicitly EXPIRED
                         is_date_expired = False
-                        if remote_expires and not ("Never" in str(remote_expires) or "Lifetime" in str(remote_expires) or "Admin" in str(remote_plan)):
+                        if remote_expires and not ("Never" in str(remote_expires) or "Lifetime" in str(remote_expires) or is_admin):
                             try:
                                 exp_clean = str(remote_expires).split("T")[0].strip()
                                 exp_d = datetime.strptime(exp_clean, "%Y-%m-%d").date()
@@ -359,10 +371,8 @@ class SubscriptionLicenseManager:
 
                             self.license_data["license_key"] = current_key
                             self.license_data["status"] = "EXPIRED"
-                            if remote_plan:
-                                self.license_data["plan_tier"] = remote_plan
-                            if remote_expires:
-                                self.license_data["expires_at"] = remote_expires
+                            self.license_data["plan_tier"] = remote_plan
+                            self.license_data["expires_at"] = remote_expires or "Expired"
                             self.license_data["last_verified"] = datetime.now().isoformat()
                             self.save_local_license()
 
@@ -384,10 +394,10 @@ class SubscriptionLicenseManager:
 
                             self.license_data["license_key"] = current_key
                             self.license_data["status"] = "ACTIVE"
-                            if remote_plan:
-                                self.license_data["plan_tier"] = remote_plan
-                            if remote_expires:
-                                self.license_data["expires_at"] = remote_expires
+                            self.license_data["plan_tier"] = remote_plan
+                            self.license_data["expires_at"] = remote_expires or ("Never (Lifetime / Non-Expiring)" if is_admin else "")
+                            if not self.license_data.get("activated_at"):
+                                self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
                             self.license_data["last_verified"] = datetime.now().isoformat()
                             self.save_local_license()
 
@@ -395,7 +405,7 @@ class SubscriptionLicenseManager:
                                 "result": "ACTIVE",
                                 "status": "ACTIVE",
                                 "changed": was_inactive,
-                                "plan": self.license_data.get("plan_tier", "Standard"),
+                                "plan": remote_plan,
                                 "key": current_key,
                                 "portal": endpoint,
                                 "message": f"License is registered as ACTIVE on website ({remote_plan})"
@@ -407,6 +417,7 @@ class SubscriptionLicenseManager:
                             was_active = (prev_status == "ACTIVE")
 
                             self.license_data["status"] = "REVOKED"
+                            self.license_data["plan_tier"] = remote_plan
                             self.license_data["last_verified"] = datetime.now().isoformat()
                             self.save_local_license()
 
@@ -414,20 +425,14 @@ class SubscriptionLicenseManager:
                                 "result": "REVOKED",
                                 "status": "INACTIVE",
                                 "changed": was_active,
+                                "plan": remote_plan,
                                 "key": current_key,
                                 "portal": endpoint,
                                 "message": f"License key '{current_key}' was revoked on website portal (Inactive)."
                             }
 
-                    # 2. 404 NOT FOUND (Key not found on static/remote endpoint - do not delete local active key)
-                    elif status_code == 404:
-                        continue
-
                 except Exception:
                     continue
-
-            if responded:
-                break
 
         # Fallback if offline / portal unreachable / not in registry: maintain active status for valid key
         if current_key:
