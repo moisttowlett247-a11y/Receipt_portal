@@ -204,8 +204,16 @@ export function quickbooksApiPlugin(): Plugin {
           const queryRedirectUri = urlObj.searchParams.get('redirect_uri');
           const queryEnv = urlObj.searchParams.get('environment');
 
-          // Determine client ID: custom saved, query param, or Intuit Sandbox/Developer fallback
-          const clientId = (queryClientId || cfg.clientId || 'AB116938290382901928472910').trim();
+          // Determine client ID: custom saved, query param
+          const clientId = (queryClientId || cfg.clientId || '').trim();
+          if (!clientId) {
+            sendJson(400, {
+              success: false,
+              error: 'Missing Client ID. Please enter your Development Client ID from Intuit Developer.',
+              configured: false
+            });
+            return;
+          }
 
           // Build origin fallback for redirectUri with secure HTTPS detection
           const forwardedProto = req.headers['x-forwarded-proto'];
