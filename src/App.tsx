@@ -1500,7 +1500,7 @@ export default function App() {
                     </span>
                   </div>
                   <p className="text-xs text-stone-300 mt-0.5">
-                    Sync active SHA-256 hashed keys directly to repository <span className="text-sky-300 font-mono font-semibold">moisttowlett247-a11y/receipt-processor-portal</span> for live desktop verification without running a backend server.
+                    Sync active SHA-256 hashed keys directly to repository <span className="text-sky-300 font-mono font-semibold">moisttowlett247-a11y/Receipt_portal</span> for live desktop verification without running a backend server.
                   </p>
                 </div>
               </div>

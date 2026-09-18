@@ -56,6 +56,7 @@ interface QuickBooksProductionCenterProps {
 const QBO_STORAGE_CONFIG_KEY = 'receipt_processor_qbo_config_v1';
 const QBO_STORAGE_COMPANIES_KEY = 'receipt_processor_qbo_companies_v1';
 const DEFAULT_CLIENT_ID = 'ABCsXqO9WiPqbL2Bgqf9AeBPMDeBQSjWKLdHiZUPYIlPwDoHni';
+const DEFAULT_WEBHOOK_VERIFIER = '10dcc427-1e8b-4358-b8f7-8d1e30150fa6';
 
 async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
   try {
@@ -130,7 +131,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       environment: local.environment || 'production',
       hasSecret: local.hasSecret ?? true,
       redirectUri: local.redirectUri || '',
-      hasWebhookVerifier: local.hasWebhookVerifier ?? false,
+      hasWebhookVerifier: local.hasWebhookVerifier ?? true,
       totalConnectedCompanies: local.totalConnectedCompanies ?? 0
     };
   });
@@ -143,7 +144,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [editClientId, setEditClientId] = useState(config.clientId || DEFAULT_CLIENT_ID);
   const [editClientSecret, setEditClientSecret] = useState('');
   const [editEnv, setEditEnv] = useState<'production' | 'sandbox'>(config.environment || 'production');
-  const [editWebhookSecret, setEditWebhookSecret] = useState('');
+  const [editWebhookSecret, setEditWebhookSecret] = useState(DEFAULT_WEBHOOK_VERIFIER);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [showConfigForm, setShowConfigForm] = useState(false);
 
