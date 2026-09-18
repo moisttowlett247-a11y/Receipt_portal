@@ -1,1 +1,34 @@
-{}
+{
+  "127.0.0.1_a60eaf147da4c9737cb8b75d46d7f2e9110671937861aad31f813643561bb878": {
+    "id": "127.0.0.1_a60eaf147da4c9737cb8b75d46d7f2e9110671937861aad31f813643561bb878",
+    "ip": "127.0.0.1",
+    "hash": "a60eaf147da4c9737cb8b75d46d7f2e9110671937861aad31f813643561bb878",
+    "keyMasked": "FAKEKEY",
+    "rawKey": "FAKEKEY",
+    "hwid": "Pending HWID",
+    "machineName": "Desktop Workstation",
+    "appVersion": "1.0.0",
+    "plan": "Unknown",
+    "status": "NOT_FOUND",
+    "lastPing": "2026-09-18T19:42:45.283Z",
+    "lastPingMs": 1789760565283,
+    "firstSeen": "2026-09-18T19:42:45.283Z",
+    "pingCount": 1
+  },
+  "127.0.0.1_11b0c2856f1232419a3883b07011896fd52c7da2d53e72158804700f9d96af93": {
+    "id": "127.0.0.1_11b0c2856f1232419a3883b07011896fd52c7da2d53e72158804700f9d96af93",
+    "ip": "127.0.0.1",
+    "hash": "11b0c2856f1232419a3883b07011896fd52c7da2d53e72158804700f9d96af93",
+    "keyMasked": "RAND...Y999",
+    "rawKey": "RANDOMKEY999",
+    "hwid": "3F1065CB0FDA5537D9728245",
+    "machineName": "localhost",
+    "appVersion": "1.0.0",
+    "plan": "Unknown",
+    "status": "NOT_FOUND",
+    "lastPing": "2026-09-18T19:44:07.754Z",
+    "lastPingMs": 1789760647754,
+    "firstSeen": "2026-09-18T19:44:07.754Z",
+    "pingCount": 1
+  }
+}
