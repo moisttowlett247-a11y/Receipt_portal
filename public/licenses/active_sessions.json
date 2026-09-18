@@ -62,5 +62,21 @@
     "lastPingMs": 1789763255382,
     "firstSeen": "2026-09-18T20:27:35.382Z",
     "pingCount": 1
+  },
+  "127.0.0.1_718f2fc92e143b207b42ac0dbd015a12fe6688635e84bfbb1b9523edd9fba4c9": {
+    "id": "127.0.0.1_718f2fc92e143b207b42ac0dbd015a12fe6688635e84bfbb1b9523edd9fba4c9",
+    "ip": "127.0.0.1",
+    "hash": "718f2fc92e143b207b42ac0dbd015a12fe6688635e84bfbb1b9523edd9fba4c9",
+    "keyMasked": "ADMI...5819",
+    "rawKey": "ADMIN-MASTER-8185-5819",
+    "hwid": "3F1065CB0FDA5537D9728245",
+    "machineName": "localhost",
+    "appVersion": "1.0.0",
+    "plan": "ADMIN",
+    "status": "ACTIVE",
+    "lastPing": "2026-09-18T21:04:03.299Z",
+    "lastPingMs": 1789765443299,
+    "firstSeen": "2026-09-18T21:03:22.462Z",
+    "pingCount": 3
   }
 }
