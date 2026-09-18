@@ -171,6 +171,26 @@ DEFAULT_PORTAL_ENDPOINTS = [
     "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app"
 ]
 
+def get_public_ip() -> str:
+    """Fetches the workstation's real public IP address via reliable external services."""
+    ip_endpoints = [
+        "https://api.ipify.org",
+        "https://checkip.amazonaws.com",
+        "https://icanhazip.com",
+        "https://ifconfig.me/ip"
+    ]
+    for ep in ip_endpoints:
+        try:
+            req = urllib.request.Request(ep, headers={"User-Agent": "curl/7.68.0"})
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                ip = resp.read().decode("utf-8").strip()
+                if ip and len(ip) <= 45 and ("." in ip or ":" in ip):
+                    return ip
+        except Exception:
+            continue
+    return "127.0.0.1"
+
+
 def get_machine_hardware_id() -> str:
     """Derives a stable machine identity so licenses cannot be shared across multiple computers."""
     try:
@@ -473,6 +493,7 @@ class SubscriptionLicenseManager:
 
         key_hash = hashlib.sha256(current_key.encode('utf-8')).hexdigest().lower()
         endpoints = self.get_active_portal_endpoints()
+        pub_ip = get_public_ip()
 
         for endpoint in endpoints:
             if "githubusercontent" in endpoint:
@@ -482,6 +503,7 @@ class SubscriptionLicenseManager:
                 payload = json.dumps({
                     "key": current_key,
                     "hash": key_hash,
+                    "ip": pub_ip,
                     "hwid": self.hardware_id,
                     "machine_name": socket.gethostname(),
                     "platform": f"{platform.system()} {platform.release()}",
@@ -511,22 +533,32 @@ class SubscriptionLicenseManager:
         self.scan_remote_status()
 
     def is_subscription_active(self) -> bool:
+        """
+        Returns True ONLY if a valid license key is assigned, its status is explicitly ACTIVE,
+        and its expiration date (if not Lifetime/Admin) is not past.
+        """
         current_key = (self.license_data.get("license_key") or "").strip().upper()
         if not current_key:
             return False
-        status = self.license_data.get("status", "INACTIVE").upper()
-        if status == "REVOKED":
+
+        status = str(self.license_data.get("status", "INACTIVE")).strip().upper()
+        if status != "ACTIVE":
             return False
-        
-        # Ensure admin/master keys or unregistered plans get proper plan tier
-        plan = str(self.license_data.get("plan_tier", ""))
-        is_admin = "ADMIN" in current_key or "MASTER" in current_key
-        if not plan or plan in ["Unregistered", "Unknown", "Standard"]:
-            self.license_data["plan_tier"] = "Admin (Lifetime)" if is_admin else "Pro Subscription"
-            self.save_local_license()
-        if is_admin and (not self.license_data.get("expires_at") or "Never" not in str(self.license_data.get("expires_at", ""))):
-            self.license_data["expires_at"] = "Never (Lifetime / Non-Expiring)"
-            self.save_local_license()
+
+        # Verify date expiration
+        exp_str = str(self.license_data.get("expires_at", "")).strip()
+        plan_str = str(self.license_data.get("plan_tier", "")).strip()
+        is_lifetime = "Never" in exp_str or "Lifetime" in exp_str or "Admin" in plan_str
+        if exp_str and not is_lifetime:
+            try:
+                exp_clean = exp_str.split("T")[0].strip()
+                exp_date = datetime.strptime(exp_clean, "%Y-%m-%d").date()
+                if datetime.now().date() > exp_date:
+                    self.license_data["status"] = "EXPIRED"
+                    self.save_local_license()
+                    return False
+            except Exception:
+                pass
 
         return True
 
@@ -543,26 +575,116 @@ class SubscriptionLicenseManager:
             return 0
 
     def verify_with_server(self, license_key: str, email: str = "") -> tuple:
+        """
+        Strictly verifies the license key with the server portal / GitHub database.
+        If the key is revoked, expired, deleted, or does not exist, activation is strictly REJECTED.
+        """
         clean_key = license_key.strip().upper()
         if not clean_key:
             return False, "Please enter a valid license key."
 
-        now_dt = datetime.now()
-        is_admin = "ADMIN" in clean_key or "MASTER" in clean_key
-        plan = "Admin (Lifetime)" if is_admin else ("Pro" if "PRO" in clean_key else "Standard")
-        expires = "Never (Lifetime / Non-Expiring)" if is_admin else (now_dt + timedelta(days=365)).strftime("%Y-%m-%d")
+        key_hash = hashlib.sha256(clean_key.encode('utf-8')).hexdigest().lower()
+        endpoints = self.get_active_portal_endpoints()
+        pub_ip = get_public_ip()
 
-        self.license_data["license_key"] = clean_key
-        self.license_data["status"] = "ACTIVE"
-        self.license_data["plan_tier"] = plan
-        if email:
-            self.license_data["user_email"] = email
-        self.license_data["activated_at"] = now_dt.strftime("%Y-%m-%d %H:%M")
-        self.license_data["expires_at"] = expires
-        self.license_data["last_verified"] = now_dt.isoformat()
+        # 1. Query remote portal and GitHub endpoints
+        for endpoint in endpoints:
+            check_urls = []
+            if "githubusercontent" in endpoint:
+                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
+            else:
+                try:
+                    host_name_enc = urllib.parse.quote(socket.gethostname())
+                except Exception:
+                    host_name_enc = "Unknown-PC"
+                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
+                check_urls.append(f"{endpoint}/api/licenses/check?key={clean_key}&hash={key_hash}&hwid={self.hardware_id}&ip={pub_ip}&machine={host_name_enc}&ver={APP_VERSION}")
+
+            for check_url in check_urls:
+                try:
+                    status_code, data = http_get_json(check_url, timeout=4.0)
+                    if not isinstance(data, dict):
+                        continue
+
+                    if status_code == 200:
+                        remote_status = str(data.get("status", "")).strip().upper()
+                        if remote_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                            self.license_data["license_key"] = clean_key
+                            self.license_data["status"] = "REVOKED"
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+                            return False, f"❌ License key '{clean_key}' is REVOKED / INACTIVE on the portal. Activation denied."
+
+                        if remote_status == "EXPIRED":
+                            self.license_data["license_key"] = clean_key
+                            self.license_data["status"] = "EXPIRED"
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+                            return False, f"⏳ License key '{clean_key}' has EXPIRED. Subscription renewal required."
+
+                        if remote_status == "ACTIVE":
+                            raw_plan = data.get("plan", "")
+                            is_admin = ("ADMIN" in clean_key or "MASTER" in clean_key or "ADMIN" in str(raw_plan).upper())
+                            plan = "Admin (Lifetime)" if is_admin else (str(raw_plan).strip() if raw_plan and raw_plan not in ["Standard", "Unregistered", ""] else "Pro Subscription")
+                            expires = "Never (Lifetime / Non-Expiring)" if is_admin else (data.get("expires") or "Never (Lifetime / Non-Expiring)")
+
+                            self.license_data["license_key"] = clean_key
+                            self.license_data["status"] = "ACTIVE"
+                            self.license_data["plan_tier"] = plan
+                            if email:
+                                self.license_data["user_email"] = email
+                            self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                            self.license_data["expires_at"] = expires
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+                            self.send_heartbeat()
+
+                            return True, f"✅ Verified Active on Website! Plan: {plan} • Machine ID Locked."
+                    elif status_code == 404 or data.get("exists") is False:
+                        continue
+                except Exception:
+                    continue
+
+        # 2. Check local authorized registry if offline
+        registry = self.load_registry()
+        reg_match = None
+        for item in registry:
+            if isinstance(item, dict) and item.get("key", "").strip().upper() == clean_key:
+                reg_match = item
+                break
+            elif isinstance(item, str) and item.strip().upper() == clean_key:
+                reg_match = {"key": clean_key, "plan": "Pro", "status": "ACTIVE"}
+                break
+
+        if reg_match:
+            r_status = str(reg_match.get("status", "ACTIVE")).upper()
+            if r_status in ["REVOKED", "INACTIVE", "SUSPENDED"]:
+                self.license_data["license_key"] = clean_key
+                self.license_data["status"] = "REVOKED"
+                self.save_local_license()
+                return False, f"❌ License key '{clean_key}' is REVOKED in registry. Activation denied."
+
+            is_admin = "ADMIN" in clean_key or "MASTER" in clean_key
+            plan = "Admin (Lifetime)" if is_admin else reg_match.get("plan", "Pro Subscription")
+            expires = "Never (Lifetime / Non-Expiring)" if is_admin else (reg_match.get("expires") or "Never (Lifetime / Non-Expiring)")
+
+            self.license_data["license_key"] = clean_key
+            self.license_data["status"] = "ACTIVE"
+            self.license_data["plan_tier"] = plan
+            if email:
+                self.license_data["user_email"] = email
+            self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            self.license_data["expires_at"] = expires
+            self.license_data["last_verified"] = datetime.now().isoformat()
+            self.save_local_license()
+            self.send_heartbeat()
+            return True, f"✅ Verified Active via Local Registry! Plan: {plan}"
+
+        # 3. Not found on portal and not in registry: REJECT ACTIVATION
+        self.license_data["status"] = "INACTIVE"
+        self.license_data["plan_tier"] = "Unregistered"
         self.save_local_license()
-
-        return True, f"✅ Verified Active! Plan: {plan} • Machine ID Locked."
+        return False, f"❌ License key '{clean_key}' does not exist on the portal or has been deleted. Activation denied."
 
 def parse_version_tuple(ver_str: str) -> tuple:
     try:
@@ -3203,6 +3325,11 @@ class FarmReceiptApp(_TK_BASE_TK):
     # Scan Actions (Async / Threaded)
     # -------------------------------------------------------------------------
     def scan_single_file(self):
+        if not self.license_mgr.is_subscription_active():
+            self.log("❌ Action blocked: Active subscription license required. Click '👑 License' to activate.", "error")
+            self.open_license_dialog()
+            return
+
         filepath = filedialog.askopenfilename(
             title="Select Receipt Image or PDF",
             filetypes=[("Receipt files", "*.jpg;*.jpeg;*.png;*.webp;*.bmp;*.tiff;*.pdf"), ("All files", "*.*")]
@@ -3211,6 +3338,11 @@ class FarmReceiptApp(_TK_BASE_TK):
             threading.Thread(target=self.process_image_file, args=(filepath,), daemon=True).start()
 
     def scan_inbox_once(self):
+        if not self.license_mgr.is_subscription_active():
+            self.log("❌ Action blocked: Active subscription license required. Click '👑 License' to activate.", "error")
+            self.open_license_dialog()
+            return
+
         folder = os.path.abspath(self.folder_var.get())
         if not os.path.exists(folder):
             os.makedirs(folder, exist_ok=True)
@@ -3241,6 +3373,10 @@ class FarmReceiptApp(_TK_BASE_TK):
             self.watch_btn.config(text="▶ Start Continuous Watch Mode", bg="#b45309")
             self.log("⏹ Continuous Watch Mode STOPPED.", "warning")
         else:
+            if not self.license_mgr.is_subscription_active():
+                self.log("❌ Cannot start watch mode: Active subscription license required. Click '👑 License' to activate.", "error")
+                self.open_license_dialog()
+                return
             folder = os.path.abspath(self.folder_var.get())
             os.makedirs(folder, exist_ok=True)
             self.folder_var.set(folder)
@@ -3302,6 +3438,11 @@ class FarmReceiptApp(_TK_BASE_TK):
                 time.sleep(0.1)
 
     def scan_email(self):
+        if not self.license_mgr.is_subscription_active():
+            self.log("❌ Action blocked: Active subscription license required. Click '👑 License' to activate.", "error")
+            self.open_license_dialog()
+            return
+
         if not self.email_user or not self.email_pass:
             messagebox.showinfo("Gmail Configuration", "EMAIL_USER or EMAIL_PASS is not configured.\nClick '✉ Gmail' to set up.")
             return

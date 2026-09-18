@@ -24,6 +24,7 @@ import {
   Pause
 } from 'lucide-react';
 import { ActiveDeviceSession, LicenseKeyRecord } from '../types';
+import { getStoredGitHubConfig } from '../githubSyncService';
 
 interface ActiveDevicesMonitorProps {
   licenseKeys: LicenseKeyRecord[];
@@ -47,9 +48,13 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const [isRevokingKey, setIsRevokingKey] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState<boolean>(false);
 
-  // Fetch active sessions from server
+  // Fetch active sessions from server and/or GitHub Raw repository
   const fetchSessions = useCallback(async (silent = false) => {
     if (!silent) setIsLoading(true);
+    let loadedSessions: ActiveDeviceSession[] = [];
+    const now = Date.now();
+
+    // 1. Try server endpoint
     try {
       const res = await fetch('/api/licenses/sessions', {
         headers: { 'Cache-Control': 'no-cache' }
@@ -57,15 +62,62 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.sessions && Array.isArray(data.sessions)) {
-          setSessions(data.sessions);
-          setLastFetched(new Date());
+          loadedSessions = data.sessions;
         }
       }
     } catch (err) {
-      console.warn('Could not fetch active device sessions:', err);
-    } finally {
-      if (!silent) setIsLoading(false);
+      console.warn('Local sessions endpoint unreachable, trying GitHub raw fallback:', err);
     }
+
+    // 2. If server has no sessions or is running on static hosting, fetch from GitHub raw
+    if (loadedSessions.length === 0) {
+      try {
+        const ghCfg = getStoredGitHubConfig();
+        const ghUrl = `https://raw.githubusercontent.com/${ghCfg.owner}/${ghCfg.repo}/${ghCfg.branch}/public/licenses/active_sessions.json?t=${now}`;
+        const ghRes = await fetch(ghUrl, { cache: 'no-store' });
+        if (ghRes.ok) {
+          const rawDict = await ghRes.json();
+          if (rawDict && typeof rawDict === 'object') {
+            const mapped: ActiveDeviceSession[] = Object.values(rawDict).map((s: any) => {
+              const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
+              const diffMs = now - lastPingMs;
+              const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
+              let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
+              if (diffMs < 90000) {
+                onlineState = 'ONLINE';
+              } else if (diffMs < 600000) {
+                onlineState = 'IDLE';
+              }
+              return {
+                id: s.id || `${s.ip}_${s.hash}`,
+                ip: s.ip || '127.0.0.1',
+                hash: s.hash || '',
+                keyMasked: s.keyMasked || s.rawKey || '••••-••••',
+                rawKey: s.rawKey || '',
+                hwid: s.hwid || 'Desktop-PC',
+                machineName: s.machineName || 'Workstation',
+                appVersion: s.appVersion || '1.0.0',
+                plan: s.plan || 'Standard',
+                status: s.status || 'ACTIVE',
+                lastPing: s.lastPing || new Date().toISOString(),
+                lastPingMs,
+                firstSeen: s.firstSeen || s.lastPing || new Date().toISOString(),
+                pingCount: s.pingCount || 1,
+                secondsSinceLastPing,
+                onlineState
+              };
+            });
+            loadedSessions = mapped;
+          }
+        }
+      } catch (ghErr) {
+        console.warn('Could not fetch sessions from GitHub raw:', ghErr);
+      }
+    }
+
+    setSessions(loadedSessions);
+    setLastFetched(new Date());
+    if (!silent) setIsLoading(false);
   }, []);
 
   // Polling effect

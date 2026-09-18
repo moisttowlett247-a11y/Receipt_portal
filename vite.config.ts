@@ -152,7 +152,9 @@ function licenseSyncApiPlugin(): Plugin {
           const hwidParam = urlObj.searchParams.get('hwid')?.trim() || '';
           const machineParam = urlObj.searchParams.get('machine')?.trim() || '';
           const verParam = urlObj.searchParams.get('ver')?.trim() || '';
-          const clientIp = getClientIp(req);
+          const rawClientIp = getClientIp(req);
+          const ipParam = urlObj.searchParams.get('ip')?.trim() || '';
+          const clientIp = (ipParam && ipParam !== '127.0.0.1' && ipParam !== 'localhost') ? ipParam : rawClientIp;
 
           if (!hashParam && keyParam) {
             hashParam = crypto.createHash('sha256').update(keyParam).digest('hex');
@@ -250,7 +252,9 @@ function licenseSyncApiPlugin(): Plugin {
           req.on('end', () => {
             try {
               const body = JSON.parse(bodyStr || '{}');
-              const clientIp = getClientIp(req);
+              const rawClientIp = getClientIp(req);
+              const bodyIp = (body.ip || '').trim();
+              const clientIp = (bodyIp && bodyIp !== '127.0.0.1' && bodyIp !== 'localhost') ? bodyIp : rawClientIp;
               const key = (body.key || '').trim().toUpperCase();
               let hash = (body.hash || '').trim().toLowerCase();
               if (!hash && key) {
