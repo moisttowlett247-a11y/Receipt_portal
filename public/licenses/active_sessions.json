@@ -110,5 +110,21 @@
     "lastPingMs": 1789767305781,
     "firstSeen": "2026-09-18T21:35:05.778Z",
     "pingCount": 2
+  },
+  "34.34.229.112_b77c3213056c3ac856dbb30df42873c55d4effc5707ea3d5dafce99118f84d67": {
+    "id": "34.34.229.112_b77c3213056c3ac856dbb30df42873c55d4effc5707ea3d5dafce99118f84d67",
+    "ip": "34.34.229.112",
+    "hash": "b77c3213056c3ac856dbb30df42873c55d4effc5707ea3d5dafce99118f84d67",
+    "keyMasked": "TEST...-KEY",
+    "rawKey": "TEST-DEL-KEY",
+    "hwid": "3F1065CB0FDA5537D9728245",
+    "machineName": "localhost",
+    "appVersion": "1.0.0",
+    "plan": "Unknown",
+    "status": "NOT_FOUND",
+    "lastPing": "2026-09-18T22:09:16.936Z",
+    "lastPingMs": 1789769356936,
+    "firstSeen": "2026-09-18T22:09:16.933Z",
+    "pingCount": 2
   }
 }
