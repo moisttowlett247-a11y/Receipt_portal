@@ -1,10 +1,12 @@
 import JSZip from 'jszip';
-import receiptProcessorPy from '../receipt_processor.py?raw';
-import runReceiptProcessorBat from '../run_receipt_processor.bat?raw';
-import runReceiptProcessorSh from '../run_receipt_processor.sh?raw';
-import requirementsTxt from '../requirements.txt?raw';
-import envExample from '../.env.example?raw';
-import readmeDesktopApp from '../README_DESKTOP_APP.txt?raw';
+import {
+  RECEIPT_PROCESSOR_PY,
+  RUN_RECEIPT_PROCESSOR_BAT,
+  RUN_RECEIPT_PROCESSOR_SH,
+  REQUIREMENTS_TXT,
+  ENV_EXAMPLE,
+  README_DESKTOP_APP_TXT,
+} from './embeddedDesktopFiles';
 
 export interface BundleFileItem {
   id: string;
@@ -21,32 +23,32 @@ export interface BundleFileItem {
 export const EMBEDDED_FILES: Record<string, { content: string; name: string; mimeType: string }> = {
   bat: {
     name: 'run_receipt_processor.bat',
-    content: runReceiptProcessorBat,
+    content: RUN_RECEIPT_PROCESSOR_BAT,
     mimeType: 'application/x-bat;charset=utf-8',
   },
   py: {
     name: 'receipt_processor.py',
-    content: receiptProcessorPy,
+    content: RECEIPT_PROCESSOR_PY,
     mimeType: 'text/x-python;charset=utf-8',
   },
   sh: {
     name: 'run_receipt_processor.sh',
-    content: runReceiptProcessorSh,
+    content: RUN_RECEIPT_PROCESSOR_SH,
     mimeType: 'application/x-sh;charset=utf-8',
   },
   req: {
     name: 'requirements.txt',
-    content: requirementsTxt,
+    content: REQUIREMENTS_TXT,
     mimeType: 'text/plain;charset=utf-8',
   },
   env: {
     name: '.env.example',
-    content: envExample,
+    content: ENV_EXAMPLE,
     mimeType: 'text/plain;charset=utf-8',
   },
   doc: {
     name: 'README_DESKTOP_APP.txt',
-    content: readmeDesktopApp,
+    content: README_DESKTOP_APP_TXT,
     mimeType: 'text/plain;charset=utf-8',
   },
 };
@@ -136,7 +138,7 @@ export function resolveAssetUrl(filePath: string): string {
       return `/${match[1]}/${clean}`;
     }
   }
-  const base = (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || './';
+  const base = (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: { BASE_URL?: string } }).env?.BASE_URL) || './';
   const cleanBase = base.endsWith('/') ? base : `${base}/`;
   return `${cleanBase}${clean}`;
 }

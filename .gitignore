@@ -15,6 +15,11 @@ coverage/
 qbo_clients.json
 *.csv
 *.txt
+!requirements.txt
+!README_DESKTOP_APP.txt
+!public/*.txt
+!public/README_DESKTOP_APP.txt
+!public/requirements.txt
 processed/
 inbox/
 inbox_archive/

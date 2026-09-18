@@ -1,0 +1,5 @@
+# Farm & Small Business Receipt Processor Desktop Requirements
+Pillow>=9.0.0
+requests>=2.28.0
+python-dotenv>=1.0.0
+cryptography>=38.0.0
