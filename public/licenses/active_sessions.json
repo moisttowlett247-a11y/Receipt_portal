@@ -74,9 +74,9 @@
     "appVersion": "1.0.0",
     "plan": "ADMIN",
     "status": "ACTIVE",
-    "lastPing": "2026-09-18T21:04:03.299Z",
-    "lastPingMs": 1789765443299,
+    "lastPing": "2026-09-18T21:13:03.389Z",
+    "lastPingMs": 1789765983389,
     "firstSeen": "2026-09-18T21:03:22.462Z",
-    "pingCount": 3
+    "pingCount": 12
   }
 }

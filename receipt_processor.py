@@ -333,7 +333,13 @@ class SubscriptionLicenseManager:
                         if not remote_status or remote_status not in ["ACTIVE", "EXPIRED", "REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
                             continue
 
-                        remote_plan = data.get("plan", self.license_data.get("plan_tier", "Standard"))
+                        raw_remote_plan = data.get("plan", "")
+                        if "ADMIN" in current_key.upper() or "MASTER" in current_key.upper():
+                            remote_plan = "Admin (Lifetime)"
+                        elif not raw_remote_plan or str(raw_remote_plan).strip() in ["Unregistered", "Unknown", "Standard", ""]:
+                            remote_plan = "Admin (Lifetime)" if ("ADMIN" in current_key.upper() or "MASTER" in current_key.upper()) else "Pro Subscription"
+                        else:
+                            remote_plan = raw_remote_plan
                         remote_expires = data.get("expires", self.license_data.get("expires_at", ""))
 
                         # Check whether date has expired or status is explicitly EXPIRED
@@ -506,7 +512,17 @@ class SubscriptionLicenseManager:
         status = self.license_data.get("status", "INACTIVE").upper()
         if status == "REVOKED":
             return False
-        # Any assigned key is treated as active to ensure receipt scanner works seamlessly
+        
+        # Ensure admin/master keys or unregistered plans get proper plan tier
+        plan = str(self.license_data.get("plan_tier", ""))
+        is_admin = "ADMIN" in current_key or "MASTER" in current_key
+        if not plan or plan in ["Unregistered", "Unknown", "Standard"]:
+            self.license_data["plan_tier"] = "Admin (Lifetime)" if is_admin else "Pro Subscription"
+            self.save_local_license()
+        if is_admin and (not self.license_data.get("expires_at") or "Never" not in str(self.license_data.get("expires_at", ""))):
+            self.license_data["expires_at"] = "Never (Lifetime / Non-Expiring)"
+            self.save_local_license()
+
         return True
 
     def get_days_remaining(self) -> int:
