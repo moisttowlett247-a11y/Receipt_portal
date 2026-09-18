@@ -618,7 +618,81 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
               <Zap className="w-4 h-4 text-amber-400" />
               <span>Simulate Account</span>
             </button>
+
+            {/* Assistant / Keys button */}
+            <button
+              onClick={() => setShowConnectModal(true)}
+              className="px-4 py-3 rounded-lg bg-sky-950 hover:bg-sky-900 text-sky-200 text-xs font-semibold border border-sky-800 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+              title="Open Connection Assistant to review Redirect URIs and Client Keys"
+            >
+              <Key className="w-4 h-4 text-sky-400" />
+              <span>OAuth &amp; Keys Assistant</span>
+            </button>
           </div>
+        </div>
+
+        {/* Unmissable Redirect URI Banner for Intuit Developer Portal */}
+        <div className="p-4 sm:p-5 rounded-xl bg-sky-950/40 border-2 border-sky-500/70 shadow-lg space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-full bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 font-bold text-xs shrink-0">
+                1
+              </div>
+              <h3 className="text-sm font-bold text-stone-100">
+                Intuit Redirect URI (Paste into developer.intuit.com)
+              </h3>
+            </div>
+            <span className="text-[10px] uppercase font-bold text-amber-300 bg-amber-950/90 border border-amber-600/70 px-2 py-0.5 rounded self-start sm:self-auto">
+              Required by Intuit
+            </span>
+          </div>
+
+          <p className="text-xs text-stone-300 leading-relaxed">
+            To prevent the <em>&quot;redirect_uri query parameter value is invalid&quot;</em> error, copy this exact URI and add it under <strong className="text-white">Keys &amp; OAuth &gt; Redirect URIs</strong> on the <a href="https://developer.intuit.com" target="_blank" rel="noopener noreferrer" className="text-sky-300 underline font-semibold">Intuit Developer Portal</a>:
+          </p>
+
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <input
+              type="text"
+              readOnly
+              value={primaryCallback}
+              onClick={(e) => (e.target as HTMLInputElement).select()}
+              className="flex-1 px-3.5 py-2.5 rounded-lg bg-stone-950 border border-stone-700 text-stone-100 font-mono text-xs select-all focus:outline-none focus:border-sky-500"
+            />
+            <button
+              type="button"
+              onClick={() => handleCopy(primaryCallback, 'Main Redirect URI')}
+              className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer shrink-0"
+            >
+              {copiedField === 'Main Redirect URI' ? (
+                <>
+                  <Check className="w-4 h-4 text-white" />
+                  <span>COPIED TO CLIPBOARD!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-4 h-4" />
+                  <span>COPY REDIRECT URI</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {secondaryCallback !== primaryCallback && (
+            <div className="pt-2 border-t border-sky-900/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <span className="text-stone-400 text-[11px]">
+                Optional Root Path: <code className="text-stone-300 font-mono bg-stone-900 px-1.5 py-0.5 rounded">{secondaryCallback}</code>
+              </span>
+              <button
+                type="button"
+                onClick={() => handleCopy(secondaryCallback, 'Root Callback URI')}
+                className="px-3 py-1 rounded bg-stone-900 hover:bg-stone-800 text-sky-300 border border-stone-700 text-[11px] font-semibold flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+              >
+                {copiedField === 'Root Callback URI' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                Copy Root URI
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Quick KPI stats bar */}

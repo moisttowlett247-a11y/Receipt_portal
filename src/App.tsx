@@ -992,14 +992,32 @@ export default function App() {
                   </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setActiveTab('qbo')}
-                className="px-4 py-2 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white text-xs font-bold flex items-center gap-2 shrink-0 shadow transition-all cursor-pointer"
-              >
-                <Building2 className="w-4 h-4" />
-                <span>Open QuickBooks Center &rarr;</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cleanPath = typeof window !== 'undefined'
+                      ? window.location.pathname.replace(/\/admin.*$/, '').replace(/\/$/, '')
+                      : '';
+                    const uri = `${typeof window !== 'undefined' ? window.location.origin : ''}${cleanPath}/api/qbo/callback`;
+                    navigator.clipboard.writeText(uri);
+                    showToast('Copied Intuit Redirect URI to clipboard!');
+                  }}
+                  className="px-3.5 py-2 rounded-lg bg-stone-850 hover:bg-stone-800 text-sky-300 border border-stone-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm"
+                  title="Copy the exact Redirect URI required in your Intuit Developer Portal"
+                >
+                  <Copy className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Copy Intuit Redirect URI</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('qbo')}
+                  className="px-4 py-2 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white text-xs font-bold flex items-center gap-2 shrink-0 shadow transition-all cursor-pointer"
+                >
+                  <Building2 className="w-4 h-4" />
+                  <span>Open QuickBooks Center &rarr;</span>
+                </button>
+              </div>
             </div>
 
             {/* Explanatory Banner */}
