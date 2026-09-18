@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   CheckCircle2, 
   XCircle, 
@@ -25,7 +25,10 @@ import {
   Infinity as InfinityIcon,
   Globe,
   Settings,
-  Shield
+  Shield,
+  Mail,
+  Inbox,
+  UserPlus
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -70,9 +73,40 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'ACTIVE' | 'EXPIRED' | 'NOT ACTIVE' | 'IN_USE' | 'AVAILABLE'>('ALL');
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showInquiriesModal, setShowInquiriesModal] = useState(false);
+  const [inquiriesList, setInquiriesList] = useState<any[]>([]);
+  const [isLoadingInquiries, setIsLoadingInquiries] = useState(false);
   const [deleteConfirmKey, setDeleteConfirmKey] = useState<LicenseKeyRecord | null>(null);
   const [importStatusMsg, setImportStatusMsg] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Load inquiries from backend and localStorage
+  const fetchInquiries = async () => {
+    setIsLoadingInquiries(true);
+    let items: any[] = [];
+    try {
+      const res = await fetch(`/api/inquiries?_t=${Date.now()}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.inquiries && Array.isArray(data.inquiries)) {
+          items = data.inquiries;
+        }
+      }
+    } catch {}
+
+    if (items.length === 0) {
+      try {
+        const local = localStorage.getItem('receipt_processor_inquiries');
+        if (local) items = JSON.parse(local);
+      } catch {}
+    }
+    setInquiriesList(items);
+    setIsLoadingInquiries(false);
+  };
+
+  useEffect(() => {
+    fetchInquiries();
+  }, []);
 
   // Form state for manual addition
   const [manualKey, setManualKey] = useState('');
@@ -395,6 +429,23 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
             accept=".json,application/json"
             className="hidden"
           />
+
+          <button
+            onClick={() => {
+              fetchInquiries();
+              setShowInquiriesModal(true);
+            }}
+            title="View incoming client portal requests sent to moisttowlett247@gmail.com"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 rounded-md transition-colors cursor-pointer"
+          >
+            <Mail className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Access Requests</span>
+            {inquiriesList.length > 0 && (
+              <span className="inline-flex items-center px-1.5 py-0.2 rounded-full text-[9px] bg-emerald-500 text-stone-950 font-extrabold">
+                {inquiriesList.length}
+              </span>
+            )}
+          </button>
 
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -1035,6 +1086,129 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Access Requests & Inquiries Modal */}
+      {showInquiriesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-stone-900 border border-stone-800 rounded-xl max-w-2xl w-full p-6 shadow-2xl space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-800">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                  <Inbox className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-stone-100">Access Requests & Software Inquiries</h3>
+                  <p className="text-[11px] text-stone-400">Inquiries submitted via Client Portal to <span className="text-amber-400 font-mono">moisttowlett247@gmail.com</span></p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={fetchInquiries}
+                  className="px-2.5 py-1 text-xs bg-stone-800 hover:bg-stone-700 text-stone-300 rounded border border-stone-700 flex items-center gap-1 cursor-pointer"
+                >
+                  <Clock className="w-3 h-3 text-sky-400" />
+                  <span>Refresh</span>
+                </button>
+                <button
+                  onClick={() => setShowInquiriesModal(false)}
+                  className="text-stone-400 hover:text-stone-200 cursor-pointer p-1"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+              {inquiriesList.length === 0 ? (
+                <div className="text-center py-10 space-y-2">
+                  <Inbox className="w-8 h-8 text-stone-600 mx-auto" />
+                  <p className="text-xs text-stone-400">No customer access inquiries logged yet.</p>
+                  <p className="text-[11px] text-stone-500">When users submit the request form on the public portal, they will appear here with 1-click license issuance.</p>
+                </div>
+              ) : (
+                inquiriesList.map((inq: any) => (
+                  <div key={inq.id} className="p-4 bg-stone-950 border border-stone-800 rounded-xl space-y-2.5 text-xs">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-stone-100 text-sm">{inq.name}</span>
+                          {inq.company && (
+                            <span className="px-2 py-0.5 rounded bg-stone-900 border border-stone-800 text-[10px] text-stone-300 font-medium">
+                              {inq.company}
+                            </span>
+                          )}
+                          <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-300 font-semibold">
+                            {inq.interestedPlan || 'Standard'}
+                          </span>
+                        </div>
+                        <div className="text-stone-400 text-[11px] mt-0.5 flex items-center gap-2">
+                          <span>{inq.email}</span>
+                          <span>•</span>
+                          <span>Volume: {inq.receiptVolume || 'Unspecified'}</span>
+                          <span>•</span>
+                          <span>{new Date(inq.submittedAt).toLocaleDateString()} {new Date(inq.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setManualClient(inq.name);
+                            setManualEmail(inq.email);
+                            const matchedPlan: PlanTier = 
+                              inq.interestedPlan?.toUpperCase().includes('YEAR') || inq.interestedPlan?.toUpperCase().includes('ANNUAL') ? 'ANNUAL' :
+                              inq.interestedPlan?.toUpperCase().includes('6') ? '6MONTH' :
+                              inq.interestedPlan?.toUpperCase().includes('QUARTER') || inq.interestedPlan?.toUpperCase().includes('3') ? '3MONTH' :
+                              inq.interestedPlan?.toUpperCase().includes('FARM') ? 'FARM' :
+                              inq.interestedPlan?.toUpperCase().includes('PRO') ? 'PRO' :
+                              inq.interestedPlan?.toUpperCase().includes('DEMO') || inq.interestedPlan?.toUpperCase().includes('TRIAL') ? 'DEMO' : 'MONTHLY';
+                            setManualPlan(matchedPlan);
+                            setManualKey(generatePlanKey(matchedPlan));
+                            setShowInquiriesModal(false);
+                            setShowAddModal(true);
+                          }}
+                          className="px-2.5 py-1.5 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-lg flex items-center gap-1 shadow transition-colors cursor-pointer"
+                        >
+                          <UserPlus className="w-3.5 h-3.5" />
+                          <span>Issue Key</span>
+                        </button>
+
+                        <a
+                          href={`mailto:${inq.email}?subject=Your Receipt Processor Software Access&body=Hi ${encodeURIComponent(inq.name)},\n\nThank you for requesting software access for Receipt Processor Desktop!`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="p-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded-lg border border-stone-700 transition-colors"
+                          title="Reply via Email"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                        </a>
+                      </div>
+                    </div>
+
+                    {inq.notes && (
+                      <div className="p-2.5 bg-stone-900/80 rounded-lg border border-stone-800/80 text-[11px] text-stone-300">
+                        <strong className="text-stone-400">Notes from applicant:</strong> {inq.notes}
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-stone-800 flex justify-between items-center text-xs text-stone-500">
+              <span>All requests are forwarded to moisttowlett247@gmail.com</span>
+              <button
+                type="button"
+                onClick={() => setShowInquiriesModal(false)}
+                className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

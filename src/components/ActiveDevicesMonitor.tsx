@@ -52,25 +52,42 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const fetchSessions = useCallback(async (silent = false) => {
     if (!silent) setIsLoading(true);
     let loadedSessions: ActiveDeviceSession[] = [];
+    let serverSuccess = false;
     const now = Date.now();
 
-    // 1. Try server endpoint
+    // 1. Try server endpoint first (with cache-busting timestamp)
     try {
-      const res = await fetch('/api/licenses/sessions', {
-        headers: { 'Cache-Control': 'no-cache' }
+      const res = await fetch(`/api/licenses/sessions?_t=${now}`, {
+        headers: { 'Cache-Control': 'no-cache, no-store' }
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.sessions && Array.isArray(data.sessions)) {
-          loadedSessions = data.sessions;
+        if (data.success && Array.isArray(data.sessions)) {
+          loadedSessions = data.sessions.map((s: any) => {
+            const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
+            const diffMs = Math.max(0, now - lastPingMs);
+            const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
+            let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
+            if (diffMs < 90000) {
+              onlineState = 'ONLINE';
+            } else if (diffMs < 600000) {
+              onlineState = 'IDLE';
+            }
+            return {
+              ...s,
+              onlineState: s.onlineState || onlineState,
+              secondsSinceLastPing
+            };
+          });
+          serverSuccess = true;
         }
       }
     } catch (err) {
-      console.warn('Local sessions endpoint unreachable, trying GitHub raw fallback:', err);
+      console.warn('Local sessions endpoint unreachable:', err);
     }
 
-    // 2. If server has no sessions or is running on static hosting, fetch from GitHub raw
-    if (loadedSessions.length === 0) {
+    // 2. ONLY fallback to GitHub raw if local/server endpoint was completely unreachable
+    if (!serverSuccess) {
       try {
         const ghCfg = getStoredGitHubConfig();
         const ghUrl = `https://raw.githubusercontent.com/${ghCfg.owner}/${ghCfg.repo}/${ghCfg.branch}/public/licenses/active_sessions.json?t=${now}`;
@@ -80,7 +97,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
           if (rawDict && typeof rawDict === 'object') {
             const mapped: ActiveDeviceSession[] = Object.values(rawDict).map((s: any) => {
               const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
-              const diffMs = now - lastPingMs;
+              const diffMs = Math.max(0, now - lastPingMs);
               const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
               let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
               if (diffMs < 90000) {
@@ -111,18 +128,21 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
           }
         }
       } catch (ghErr) {
-        console.warn('Could not fetch sessions from GitHub raw:', ghErr);
+        console.warn('Could not fetch sessions from GitHub raw fallback:', ghErr);
       }
     }
 
     setSessions(loadedSessions);
     setLastFetched(new Date());
-    if (!silent) setIsLoading(false);
-  }, []);
+    if (!silent) {
+      setIsLoading(false);
+      if (showToast) showToast(`Device tracker refreshed (${loadedSessions.length} total workstation(s))`);
+    }
+  }, [showToast]);
 
   // Polling effect
   useEffect(() => {
-    fetchSessions();
+    fetchSessions(true);
 
     if (autoRefreshInterval <= 0) return;
 
@@ -143,6 +163,12 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
 
   // Prune offline or clear sessions
   const handlePruneSessions = async (clearAll = false) => {
+    if (clearAll) {
+      if (!window.confirm('Are you sure you want to clear all workstation session history?')) {
+        return;
+      }
+      setSessions([]);
+    }
     setIsPruning(true);
     try {
       const res = await fetch('/api/licenses/sessions/clear', {
@@ -152,11 +178,11 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       });
       if (res.ok) {
         const data = await res.json();
-        if (showToast) showToast(data.message || 'Sessions pruned successfully');
-        await fetchSessions();
+        if (showToast) showToast(data.message || (clearAll ? 'All sessions cleared' : 'Inactive sessions pruned'));
+        await fetchSessions(true);
       }
     } catch (err: any) {
-      if (showToast) showToast(`Failed to prune sessions: ${err.message}`);
+      if (showToast) showToast(`Failed to update sessions: ${err.message}`);
     } finally {
       setIsPruning(false);
     }

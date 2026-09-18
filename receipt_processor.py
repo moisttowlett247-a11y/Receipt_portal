@@ -165,16 +165,16 @@ LICENSE_SERVER_URL = os.getenv(
 LICENSE_FILE = ".license_vault.json"
 LICENSE_REGISTRY_FILE = os.getenv("LICENSE_REGISTRY_PATH", "license_registry.json")
 
-# Known portal endpoints for real-time license state synchronization
+# Known portal endpoints for real-time license state synchronization (Live Cloud portal is primary)
 DEFAULT_PORTAL_ENDPOINTS = [
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public",
+    "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
+    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
     os.getenv("PORTAL_URL", "").strip().rstrip("/"),
     os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/"),
     "http://localhost:3000",
     "http://127.0.0.1:3000",
-    "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
-    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app"
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
 ]
 
 def get_public_ip() -> str:
@@ -585,6 +585,7 @@ class SubscriptionLicenseManager:
             if "githubusercontent" in endpoint:
                 continue
             url = f"{endpoint}/api/licenses/heartbeat"
+            t_out = 0.6 if ("localhost" in endpoint or "127.0.0.1" in endpoint) else 2.5
             try:
                 payload = json.dumps({
                     "key": current_key,
@@ -607,7 +608,7 @@ class SubscriptionLicenseManager:
                     },
                     method="POST"
                 )
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                with urllib.request.urlopen(req, timeout=t_out) as resp:
                     if resp.status == 200:
                         return True
             except Exception:

@@ -364,16 +364,19 @@ function licenseSyncApiPlugin(): Plugin {
                 saveSessions({});
                 res.statusCode = 200;
                 res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify({ success: true, message: 'All active sessions cleared' }));
+                res.end(JSON.stringify({ success: true, message: 'All active sessions cleared successfully' }));
                 return;
               }
 
-              // Keep only sessions active within the last 15 minutes
+              // Prune Inactive: Keep ONLY actively connected devices pinging within the last 90 seconds
               const filtered: Record<string, any> = {};
+              let prunedCount = 0;
               for (const [id, s] of Object.entries(sessionsObj)) {
                 const diff = now - ((s as any).lastPingMs || 0);
-                if (diff < 900000) {
+                if (diff < 90000) {
                   filtered[id] = s;
+                } else {
+                  prunedCount++;
                 }
               }
               saveSessions(filtered);
@@ -382,8 +385,82 @@ function licenseSyncApiPlugin(): Plugin {
               res.setHeader('Content-Type', 'application/json');
               res.end(JSON.stringify({
                 success: true,
-                message: 'Stale offline sessions pruned',
-                remaining: Object.keys(filtered).length
+                message: prunedCount > 0 
+                  ? `Pruned ${prunedCount} inactive / idle session(s)` 
+                  : 'No inactive sessions to prune; all active devices retained',
+                remaining: Object.keys(filtered).length,
+                prunedCount
+              }));
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
+        }
+
+        // GET /api/inquiries - List all submitted access requests & customer inquiries
+        if (pathname === '/api/inquiries' && req.method === 'GET') {
+          try {
+            const inquiriesFile = path.join(licensesDir, 'inquiries.json');
+            let list: any[] = [];
+            if (fs.existsSync(inquiriesFile)) {
+              try {
+                list = JSON.parse(fs.readFileSync(inquiriesFile, 'utf-8'));
+              } catch {}
+            }
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: true, count: list.length, inquiries: list, recipient: 'moisttowlett247@gmail.com' }));
+            return;
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: err.message }));
+            return;
+          }
+        }
+
+        // POST /api/inquiries - Submit access request & inquiry for moisttowlett247@gmail.com
+        if (pathname === '/api/inquiries' && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', chunk => { bodyStr += chunk; });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const inquiriesFile = path.join(licensesDir, 'inquiries.json');
+              let list: any[] = [];
+              if (fs.existsSync(inquiriesFile)) {
+                try {
+                  list = JSON.parse(fs.readFileSync(inquiriesFile, 'utf-8'));
+                } catch {}
+              }
+
+              const newInquiry = {
+                id: body.id || `inquiry-${Date.now()}`,
+                name: body.name || 'Anonymous Client',
+                email: body.email || '',
+                company: body.company || '',
+                receiptVolume: body.receiptVolume || 'Not specified',
+                interestedPlan: body.interestedPlan || 'Standard',
+                notes: body.notes || '',
+                submittedAt: body.submittedAt || new Date().toISOString(),
+                recipient: 'moisttowlett247@gmail.com',
+                status: 'NEW'
+              };
+
+              list = [newInquiry, ...list.filter((x: any) => x.id !== newInquiry.id)];
+              fs.writeFileSync(inquiriesFile, JSON.stringify(list, null, 2), 'utf-8');
+
+              console.log(`[INQUIRY FOR moisttowlett247@gmail.com] From: ${newInquiry.name} <${newInquiry.email}> | Plan: ${newInquiry.interestedPlan} | Notes: ${newInquiry.notes}`);
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({
+                success: true,
+                message: 'Inquiry successfully submitted and queued for administrator moisttowlett247@gmail.com',
+                inquiry: newInquiry
               }));
             } catch (err: any) {
               res.statusCode = 500;

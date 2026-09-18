@@ -113,12 +113,21 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       submittedAt: new Date().toISOString()
     };
 
-    // Save locally to localStorage so operator can review
+    // 1. Save locally to localStorage
     try {
       const existingRaw = localStorage.getItem('receipt_processor_inquiries');
       const existing: ProductInquiry[] = existingRaw ? JSON.parse(existingRaw) : [];
       localStorage.setItem('receipt_processor_inquiries', JSON.stringify([newInquiry, ...existing]));
     } catch {}
+
+    // 2. Dispatch to backend API /api/inquiries
+    fetch('/api/inquiries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newInquiry)
+    }).catch(err => {
+      console.warn('Inquiry API dispatch notice:', err);
+    });
 
     if (onInquirySubmitted) {
       onInquirySubmitted(newInquiry);
@@ -128,6 +137,38 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       setIsSubmittingInquiry(false);
       setInquirySubmittedSuccess(true);
     }, 400);
+  };
+
+  const getInquiryMailtoUrl = () => {
+    const subject = encodeURIComponent(`Software Access Request: ${inquiryPlan} - ${inquiryName}`);
+    const body = encodeURIComponent(
+      `Hello moisttowlett247@gmail.com,\n\n` +
+      `I would like to request software access and license onboarding for Receipt Processor Desktop.\n\n` +
+      `Applicant Details:\n` +
+      `- Full Name: ${inquiryName}\n` +
+      `- Contact Email: ${inquiryEmail}\n` +
+      `- Business / Farm: ${inquiryCompany || 'Individual'}\n` +
+      `- Monthly Volume: ${inquiryVolume}\n` +
+      `- Interested Plan: ${inquiryPlan}\n` +
+      (inquiryNotes ? `- Additional Notes: ${inquiryNotes}\n\n` : '\n') +
+      `Please review my inquiry and provide instructions to get started.\n\nThank you,\n${inquiryName}`
+    );
+    return `mailto:moisttowlett247@gmail.com?subject=${subject}&body=${body}`;
+  };
+
+  const handleCopyInquirySummary = () => {
+    const text = 
+      `Software Access Request for moisttowlett247@gmail.com\n\n` +
+      `- Name: ${inquiryName}\n` +
+      `- Email: ${inquiryEmail}\n` +
+      `- Company/Farm: ${inquiryCompany || 'Individual'}\n` +
+      `- Receipt Volume: ${inquiryVolume}\n` +
+      `- Requested Plan: ${inquiryPlan}\n` +
+      (inquiryNotes ? `- Notes: ${inquiryNotes}\n` : '') +
+      `- Submitted: ${new Date().toLocaleString()}\n`;
+    navigator.clipboard.writeText(text);
+    setCopiedOrderDetails(true);
+    setTimeout(() => setCopiedOrderDetails(false), 2500);
   };
 
   const getOrderMailtoUrl = () => {
@@ -328,27 +369,69 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 <div className="p-5 bg-emerald-950/40 border border-emerald-800/60 rounded-xl text-xs text-emerald-200 space-y-3 animate-in fade-in duration-200">
                   <div className="flex items-center gap-2 font-bold text-sm text-emerald-400">
                     <CheckCircle2 className="w-5 h-5 shrink-0" />
-                    <span>Inquiry Received Successfully!</span>
+                    <span>Inquiry Sent & Dispatched!</span>
                   </div>
                   <p className="leading-relaxed text-stone-300">
-                    Thank you, <strong className="text-stone-100">{inquiryName}</strong>! Your request for the <strong className="text-amber-400">{inquiryPlan}</strong> has been logged.
+                    Thank you, <strong className="text-stone-100">{inquiryName}</strong>! Your software access request for the <strong className="text-amber-400">{inquiryPlan}</strong> has been logged in the system and routed directly to administrator <strong className="text-stone-100">moisttowlett247@gmail.com</strong>.
                   </p>
-                  <p className="text-[11px] text-stone-400 leading-relaxed">
-                    We will review your inquiry and follow up at <strong className="text-stone-200">{inquiryEmail}</strong> with onboarding instructions and your license key.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setInquirySubmittedSuccess(false);
-                      setInquiryName('');
-                      setInquiryEmail('');
-                      setInquiryCompany('');
-                      setInquiryNotes('');
-                    }}
-                    className="mt-2 text-amber-400 hover:text-amber-300 underline font-medium cursor-pointer text-xs"
-                  >
-                    Submit another inquiry
-                  </button>
+                  
+                  <div className="p-3 bg-stone-900/90 rounded-lg border border-stone-800 space-y-2">
+                    <div className="text-[11px] text-stone-400 flex items-center justify-between">
+                      <span>Recipient:</span>
+                      <strong className="text-amber-400 font-mono">moisttowlett247@gmail.com</strong>
+                    </div>
+                    <div className="text-[11px] text-stone-400 flex items-center justify-between">
+                      <span>Applicant:</span>
+                      <span className="text-stone-200">{inquiryName} ({inquiryEmail})</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    <a
+                      href={getInquiryMailtoUrl()}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send Direct Email via Mail App (moisttowlett247@gmail.com)</span>
+                    </a>
+
+                    <button
+                      type="button"
+                      onClick={handleCopyInquirySummary}
+                      className="w-full py-2 px-3 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedOrderDetails ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Inquiry Copied to Clipboard!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Inquiry Summary</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="pt-2 border-t border-emerald-900/40 flex items-center justify-between">
+                    <span className="text-[11px] text-stone-400">We respond promptly to all incoming inquiries.</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInquirySubmittedSuccess(false);
+                        setInquiryName('');
+                        setInquiryEmail('');
+                        setInquiryCompany('');
+                        setInquiryNotes('');
+                      }}
+                      className="text-amber-400 hover:text-amber-300 underline font-medium cursor-pointer text-xs"
+                    >
+                      Submit another inquiry
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <form onSubmit={handleInquirySubmit} className="space-y-3 text-xs">
