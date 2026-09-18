@@ -1122,6 +1122,8 @@ class ClientProfileManager:
                 decrypted_profiles[name] = {
                     "realm_id": self.vault.decrypt(data.get("enc_realm", "")),
                     "refresh_token": self.vault.decrypt(data.get("enc_token", "")),
+                    "client_id": self.vault.decrypt(data.get("enc_cid", "")),
+                    "client_secret": self.vault.decrypt(data.get("enc_csec", "")),
                     "env": data.get("env", "production"),
                     "default_pay_account": data.get("default_pay_account", "41"),
                     "last_used": data.get("last_used", "")
@@ -1134,8 +1136,10 @@ class ClientProfileManager:
         encrypted_blob = {}
         for name, data in self.profiles.items():
             encrypted_blob[name] = {
-                "enc_realm": self.vault.encrypt(data["realm_id"]),
-                "enc_token": self.vault.encrypt(data["refresh_token"]),
+                "enc_realm": self.vault.encrypt(data.get("realm_id", "")),
+                "enc_token": self.vault.encrypt(data.get("refresh_token", "")),
+                "enc_cid": self.vault.encrypt(data.get("client_id", "")),
+                "enc_csec": self.vault.encrypt(data.get("client_secret", "")),
                 "env": data.get("env", "production"),
                 "default_pay_account": data.get("default_pay_account", "41"),
                 "last_used": data.get("last_used", "")
@@ -1160,7 +1164,9 @@ class ClientProfileManager:
                         realm_id=d.get("realm_id", ""),
                         refresh_token=d.get("refresh_token", ""),
                         env=d.get("env", "production"),
-                        default_pay_acc=d.get("default_pay_account", "41")
+                        default_pay_acc=d.get("default_pay_account", "41"),
+                        client_id=d.get("client_id", ""),
+                        client_secret=d.get("client_secret", "")
                     )
                 os.remove(legacy_file)
                 return
@@ -1170,15 +1176,19 @@ class ClientProfileManager:
         if not self.profiles:
             realm_id = os.getenv("QBO_REALM_ID", "").strip()
             refresh_tok = os.getenv("QBO_REFRESH_TOKEN", "").strip()
+            client_id = os.getenv("QBO_CLIENT_ID", "").strip()
+            client_sec = os.getenv("QBO_CLIENT_SECRET", "").strip()
             env = os.getenv("QBO_ENVIRONMENT", "production").strip()
             if realm_id and refresh_tok:
-                self.add_or_update_client("Primary Client (Default)", realm_id, refresh_tok, env, "41")
+                self.add_or_update_client("Primary Client (Default)", realm_id, refresh_tok, env, "41", client_id, client_sec)
 
-    def add_or_update_client(self, client_name, realm_id, refresh_token, env="production", default_pay_acc="41"):
+    def add_or_update_client(self, client_name, realm_id, refresh_token, env="production", default_pay_acc="41", client_id="", client_secret=""):
         name = client_name.strip()
         self.profiles[name] = {
             "realm_id": realm_id.strip(),
             "refresh_token": refresh_token.strip(),
+            "client_id": client_id.strip() if client_id else "",
+            "client_secret": client_secret.strip() if client_secret else "",
             "env": env.strip(),
             "default_pay_account": str(default_pay_acc).strip() if default_pay_acc else "41",
             "last_used": datetime.now().isoformat()
@@ -1225,28 +1235,87 @@ class QuickBooksOnlineSync:
         if client_names:
             first_client = client_names[0]
             data = self.profile_mgr.profiles[first_client]
-            self.set_active_client(first_client, data["realm_id"], data["refresh_token"], data.get("env", "production"))
+            self.set_active_client(
+                first_client,
+                data["realm_id"],
+                data["refresh_token"],
+                data.get("env", "production"),
+                client_id=data.get("client_id", ""),
+                client_secret=data.get("client_secret", "")
+            )
 
     def is_configured(self):
-        # Fully configured if realm_id is known (via server broker) or if local direct keys exist
-        if self.realm_id and self.server_url:
+        # Fully configured if direct keys exist (client_id, client_secret, realm_id, refresh_token)
+        # OR if realm_id is known with a server token broker URL
+        if bool(self.client_id and self.client_secret and self.realm_id and self.refresh_token):
             return True
-        return bool(self.client_id and self.client_secret and self.realm_id and self.refresh_token)
+        if bool(self.realm_id and self.server_url):
+            return True
+        return False
 
-    def set_active_client(self, client_name: str, realm_id: str, refresh_token: str = "", env: str = "production"):
+    def set_active_client(self, client_name: str, realm_id: str, refresh_token: str = "", env: str = "production", client_id: str = "", client_secret: str = ""):
         self.active_client_name = client_name
         self.realm_id = realm_id.strip() if realm_id else ""
         self.refresh_token = refresh_token.strip() if refresh_token else ""
         self.env = env.strip().lower() if env else "production"
         self.base_api_url = "https://sandbox-quickbooks.api.intuit.com" if self.env == "sandbox" else "https://quickbooks.api.intuit.com"
+        
+        # Prefer client-specific Intuit credentials, fallback to global .env variables
+        self.client_id = (client_id.strip() if client_id else "") or os.getenv("QBO_CLIENT_ID", "").strip()
+        self.client_secret = (client_secret.strip() if client_secret else "") or os.getenv("QBO_CLIENT_SECRET", "").strip()
+        
         self.access_token = None
         self._cached_accounts.clear()
         self._cached_vendors.clear()
 
     def refresh_tokens(self) -> str:
-        # 1. First priority: Centralized Server Token Broker
-        # This keeps the Intuit Client Secret 100% server-side and satisfies Intuit App Store production policies.
-        if self.server_url and self.realm_id:
+        cid = (self.client_id or os.getenv("QBO_CLIENT_ID", "")).strip()
+        csec = (self.client_secret or os.getenv("QBO_CLIENT_SECRET", "")).strip()
+        tok = (self.refresh_token or "").strip()
+        rid = (self.realm_id or "").strip()
+
+        errors = []
+
+        # 1. Primary Direct Mode: If Intuit Client credentials & Refresh Token exist locally,
+        # perform direct OAuth token exchange with Intuit (independent of web server state).
+        if cid and csec and tok:
+            try:
+                resp = requests.post(
+                    self.token_url,
+                    auth=(cid, csec),
+                    data={
+                        "grant_type": "refresh_token",
+                        "refresh_token": tok
+                    },
+                    headers={"Accept": "application/json"},
+                    timeout=15
+                )
+                ctype = resp.headers.get("content-type", "").lower()
+                if resp.status_code == 200 and "application/json" in ctype:
+                    data = resp.json()
+                    self.access_token = data.get("access_token")
+                    new_refresh_token = data.get("refresh_token")
+                    if new_refresh_token and new_refresh_token != self.refresh_token:
+                        self.refresh_token = new_refresh_token
+                        if self.active_client_name:
+                            self.profile_mgr.update_refresh_token(self.active_client_name, new_refresh_token)
+                    return self.access_token
+                else:
+                    detail = ""
+                    if "application/json" in ctype:
+                        try:
+                            j = resp.json()
+                            detail = j.get("error_description") or j.get("error") or str(j)
+                        except Exception:
+                            detail = resp.text[:120]
+                    else:
+                        detail = f"Non-JSON response ({ctype or 'unknown'})"
+                    errors.append(f"Direct Intuit API (HTTP {resp.status_code}): {detail}")
+            except Exception as e:
+                errors.append(f"Direct Intuit connection error: {e}")
+
+        # 2. Server Token Broker Mode: If server URL is configured
+        if self.server_url and rid:
             try:
                 license_key = os.getenv("LICENSE_KEY", "").strip()
                 headers = {"Content-Type": "application/json"}
@@ -1255,51 +1324,45 @@ class QuickBooksOnlineSync:
 
                 resp = requests.post(
                     f"{self.server_url}/api/qbo/token",
-                    json={"realmId": self.realm_id, "licenseKey": license_key},
+                    json={"realmId": rid, "licenseKey": license_key},
                     headers=headers,
-                    timeout=12
+                    timeout=10,
+                    allow_redirects=False
                 )
-                if resp.status_code == 200:
+
+                ctype = resp.headers.get("content-type", "").lower()
+                if "application/json" in ctype:
                     data = resp.json()
-                    if data.get("accessToken"):
+                    if resp.status_code == 200 and data.get("accessToken"):
                         self.access_token = data.get("accessToken")
                         if data.get("environment"):
                             self.env = data.get("environment")
                             self.base_api_url = "https://sandbox-quickbooks.api.intuit.com" if self.env == "sandbox" else "https://quickbooks.api.intuit.com"
                         return self.access_token
+                    elif data.get("error"):
+                        errors.append(f"Server Broker: {data.get('error')}")
+                else:
+                    if resp.status_code == 302:
+                        errors.append(f"Server Token Broker ({self.server_url}) requires web portal login.")
+                    else:
+                        errors.append(f"Server Token Broker returned HTTP {resp.status_code} ({ctype or 'HTML'}).")
             except Exception as e:
-                # If server token broker fails or is unreachable, fallback to direct credentials if available
-                if not (self.client_id and self.client_secret and self.refresh_token):
-                    raise RuntimeError(f"QuickBooks Server Token Broker error: {e}")
+                errors.append(f"Server Token Broker error: {e}")
 
-        # 2. Local fallback if standalone client credentials are provided
-        if not (self.client_id and self.client_secret and self.realm_id and self.refresh_token):
-            raise ValueError(f"Client '{self.active_client_name}' is missing Realm ID or authorized tokens.")
+        # 3. If neither worked, provide clear actionable guidance
+        if not (cid and csec):
+            err_details = f" ({'; '.join(errors)})" if errors else ""
+            raise ValueError(
+                f"QuickBooks needs your Intuit Client ID & Client Secret to refresh tokens for '{self.active_client_name}'.\n"
+                f"Please click '🏢 Clients' -> '✏️ Edit Selected Client' and enter your Intuit Client ID & Secret "
+                f"(or set QBO_CLIENT_ID and QBO_CLIENT_SECRET in your .env file).{err_details}"
+            )
 
-        resp = requests.post(
-            self.token_url,
-            auth=(self.client_id, self.client_secret),
-            data={
-                "grant_type": "refresh_token",
-                "refresh_token": self.refresh_token
-            },
-            headers={"Accept": "application/json"},
-            timeout=15
-        )
+        if not tok:
+            raise ValueError(f"Client '{self.active_client_name}' is missing a valid Refresh Token.")
 
-        if resp.status_code != 200:
-            raise RuntimeError(f"QBO Token refresh failed for '{self.active_client_name}' ({resp.status_code}): {resp.text}")
-
-        data = resp.json()
-        self.access_token = data.get("access_token")
-
-        new_refresh_token = data.get("refresh_token")
-        if new_refresh_token and new_refresh_token != self.refresh_token:
-            self.refresh_token = new_refresh_token
-            if self.active_client_name:
-                self.profile_mgr.update_refresh_token(self.active_client_name, new_refresh_token)
-
-        return self.access_token
+        err_summary = "; ".join(errors) if errors else "Authentication failed"
+        raise RuntimeError(f"QuickBooks token refresh failed for '{self.active_client_name}': {err_summary}")
 
     def _get_headers(self) -> dict:
         if not self.access_token:
@@ -2390,7 +2453,9 @@ class FarmReceiptApp(_TK_BASE_TK):
                 client_name=selected_client,
                 realm_id=c_data["realm_id"],
                 refresh_token=c_data["refresh_token"],
-                env=c_data.get("env", "production")
+                env=c_data.get("env", "production"),
+                client_id=c_data.get("client_id", ""),
+                client_secret=c_data.get("client_secret", "")
             )
             self.qbo_badge.config(text=f"☁ QBO: {selected_client[:15]}", fg="#10b981")
             self.log(f"✅ Connected to client '{selected_client}'!", "success")
@@ -2399,16 +2464,26 @@ class FarmReceiptApp(_TK_BASE_TK):
             self.log(f"❌ Failed to switch to '{selected_client}': {e}", "error")
 
     def open_add_client_dialog(self):
+        self.open_add_or_edit_client_dialog(None)
+
+    def open_edit_client_dialog(self, client_name: str):
+        self.open_add_or_edit_client_dialog(client_name)
+
+    def open_add_or_edit_client_dialog(self, client_name_to_edit=None):
+        is_editing = client_name_to_edit is not None and client_name_to_edit in self.profile_mgr.profiles
+        existing_data = self.profile_mgr.profiles.get(client_name_to_edit, {}) if is_editing else {}
+
         dialog = tk.Toplevel(self)
-        dialog.title("Add New QuickBooks Client (AES-256 Encrypted)")
-        dialog.geometry("560x520")
+        dialog.title(f"{'Edit' if is_editing else 'Add'} QuickBooks Client Profile (AES-256 Encrypted)")
+        dialog.geometry("620x640")
         dialog.configure(bg="#1c1917", padx=18, pady=16)
         dialog.transient(self)
         dialog.grab_set()
 
+        title_text = f"✏️ Edit Profile: {client_name_to_edit}" if is_editing else "🏢 Onboard New QuickBooks Client"
         tk.Label(
             dialog,
-            text="🏢 Onboard New QuickBooks Client",
+            text=title_text,
             font=("Segoe UI", 12, "bold"),
             fg="#fafaf9",
             bg="#1c1917"
@@ -2416,44 +2491,51 @@ class FarmReceiptApp(_TK_BASE_TK):
 
         tk.Label(
             dialog,
-            text="Client credentials are automatically encrypted with AES-256 at rest.",
+            text="Client credentials are encrypted with AES-256 at rest. Supports direct Intuit sync & Server Broker.",
             font=("Segoe UI", 9),
             fg="#38bdf8",
             bg="#1c1917"
-        ).pack(anchor="w", pady=(0, 12))
+        ).pack(anchor="w", pady=(0, 10))
 
-        def add_row(lbl_text, show_secret=False):
+        def add_row(lbl_text, show_secret=False, default_val="", note=""):
             f = tk.Frame(dialog, bg="#1c1917")
-            f.pack(fill="x", pady=4)
-            tk.Label(f, text=lbl_text, fg="#d6d3d1", bg="#1c1917", width=18, anchor="w").pack(side="left")
+            f.pack(fill="x", pady=3)
+            tk.Label(f, text=lbl_text, fg="#d6d3d1", bg="#1c1917", width=20, anchor="w").pack(side="left")
             entry = tk.Entry(f, bg="#292524", fg="#fafaf9", insertbackground="white", font=("Consolas", 9), show="•" if show_secret else "")
             entry.pack(side="left", fill="x", expand=True)
+            if default_val:
+                entry.insert(0, default_val)
+            if note:
+                tk.Label(dialog, text=f"   ↳ {note}", font=("Segoe UI", 8), fg="#a8a29e", bg="#1c1917").pack(anchor="w")
             return entry
 
-        e_name = add_row("Client / Farm Name:")
-        e_realm = add_row("Company (Realm) ID:")
-        e_token = add_row("Refresh Token:", show_secret=True)
-        e_account = add_row("Default Account ID:")
-        e_account.insert(0, "41")
+        e_name = add_row("Client / Farm Name:", default_val=client_name_to_edit if is_editing else "")
+        e_realm = add_row("Company (Realm) ID:", default_val=existing_data.get("realm_id", ""), note="From your QuickBooks URL or App Center (9-12 digits)")
+        e_token = add_row("Refresh Token:", show_secret=True, default_val=existing_data.get("refresh_token", ""), note="Intuit OAuth2 Refresh Token (101-day rolling renewal)")
+        e_cid = add_row("Intuit Client ID:", default_val=existing_data.get("client_id", ""), note="Optional: Enter for direct sync (or leaves blank to use .env: QBO_CLIENT_ID)")
+        e_csec = add_row("Intuit Client Secret:", show_secret=True, default_val=existing_data.get("client_secret", ""), note="Optional: Enter for direct sync (or leaves blank to use .env: QBO_CLIENT_SECRET)")
+        e_account = add_row("Default Account ID:", default_val=existing_data.get("default_pay_account", "41"), note="Default QBO Payment Account ID (e.g., 41 or bank ID)")
 
         env_f = tk.Frame(dialog, bg="#1c1917")
         env_f.pack(fill="x", pady=4)
-        tk.Label(env_f, text="Environment:", fg="#d6d3d1", bg="#1c1917", width=18, anchor="w").pack(side="left")
-        env_var = tk.StringVar(value="production")
+        tk.Label(env_f, text="Environment:", fg="#d6d3d1", bg="#1c1917", width=20, anchor="w").pack(side="left")
+        env_var = tk.StringVar(value=existing_data.get("env", "production"))
         env_menu = ttk.Combobox(env_f, textvariable=env_var, values=["production", "sandbox"], state="readonly", width=16)
         env_menu.pack(side="left")
 
-        status_lbl = tk.Label(dialog, text="", font=("Segoe UI", 9), fg="#38bdf8", bg="#1c1917", wraplength=500, justify="left")
+        status_lbl = tk.Label(dialog, text="", font=("Segoe UI", 9), fg="#38bdf8", bg="#1c1917", wraplength=560, justify="left")
         status_lbl.pack(anchor="w", pady=(8, 4))
 
         def test_client_conn():
-            name = e_name.get().strip()
+            name = e_name.get().strip() or "Test Client"
             rid = e_realm.get().strip()
             tok = e_token.get().strip()
+            cid = e_cid.get().strip() or os.getenv("QBO_CLIENT_ID", "").strip()
+            csec = e_csec.get().strip() or os.getenv("QBO_CLIENT_SECRET", "").strip()
             env_mode = env_var.get().strip()
 
-            if not (name and rid and tok):
-                status_lbl.config(text="⚠️ Please enter Name, Company ID, and Refresh Token.", fg="#f59e0b")
+            if not (rid and tok):
+                status_lbl.config(text="⚠️ Please enter at least Company ID and Refresh Token.", fg="#f59e0b")
                 return
 
             status_lbl.config(text="⏳ Testing client connection with Intuit API...", fg="#38bdf8")
@@ -2462,7 +2544,7 @@ class FarmReceiptApp(_TK_BASE_TK):
             def run_test():
                 try:
                     tester = QuickBooksOnlineSync(self.profile_mgr)
-                    tester.set_active_client(name, rid, tok, env_mode)
+                    tester.set_active_client(name, rid, tok, env_mode, client_id=cid, client_secret=csec)
                     tester.refresh_tokens()
                     resp = tester._api_request("GET", f"companyinfo/{rid}")
                     if resp.status_code == 200:
@@ -2476,12 +2558,14 @@ class FarmReceiptApp(_TK_BASE_TK):
             threading.Thread(target=run_test, daemon=True).start()
 
         test_btn = tk.Button(dialog, text="🔌 Test Connection", command=test_client_conn, bg="#44403c", fg="white", relief="flat", padx=10, pady=4)
-        test_btn.pack(anchor="w", pady=(0, 10))
+        test_btn.pack(anchor="w", pady=(0, 8))
 
-        def save_new_client():
+        def save_client_profile():
             name = e_name.get().strip()
             rid = e_realm.get().strip()
             tok = e_token.get().strip()
+            cid = e_cid.get().strip()
+            csec = e_csec.get().strip()
             acc = e_account.get().strip() or "41"
             env_mode = env_var.get().strip()
 
@@ -2489,20 +2573,34 @@ class FarmReceiptApp(_TK_BASE_TK):
                 messagebox.showwarning("Incomplete Fields", "Client Name, Company ID, and Refresh Token are required.")
                 return
 
-            self.profile_mgr.add_or_update_client(name, rid, tok, env_mode, acc)
+            # If editing and name changed, remove the old key
+            if is_editing and client_name_to_edit != name:
+                self.profile_mgr.delete_client(client_name_to_edit)
+
+            self.profile_mgr.add_or_update_client(
+                client_name=name,
+                realm_id=rid,
+                refresh_token=tok,
+                env=env_mode,
+                default_pay_acc=acc,
+                client_id=cid,
+                client_secret=csec
+            )
 
             names = self.profile_mgr.get_client_names()
             self.client_dropdown['values'] = names
             self.client_var.set(name)
             self.on_client_switched()
 
-            self.log(f"🔒 [Vault] Stored AES-256 encrypted client profile: '{name}' (Realm: {rid})", "success")
+            action_verb = "Updated" if is_editing else "Stored"
+            self.log(f"🔒 [Vault] {action_verb} AES-256 encrypted profile: '{name}' (Realm: {rid})", "success")
             dialog.destroy()
 
+        btn_text = "Save Changes & Switch Now" if is_editing else "Save Encrypted Profile & Switch Now"
         save_btn = tk.Button(
             dialog,
-            text="Save Encrypted Profile & Switch Now",
-            command=save_new_client,
+            text=btn_text,
+            command=save_client_profile,
             bg="#b45309",
             fg="white",
             font=("Segoe UI", 10, "bold"),
@@ -2515,7 +2613,7 @@ class FarmReceiptApp(_TK_BASE_TK):
     def open_manage_clients_dialog(self):
         dialog = tk.Toplevel(self)
         dialog.title("Manage Client Profiles (Encrypted Vault)")
-        dialog.geometry("640x500")
+        dialog.geometry("680x520")
         dialog.configure(bg="#1c1917", padx=18, pady=16)
         dialog.transient(self)
         dialog.grab_set()
@@ -2533,7 +2631,8 @@ class FarmReceiptApp(_TK_BASE_TK):
         listbox.config(yscrollcommand=scrollbar.set)
 
         for name, data in self.profile_mgr.profiles.items():
-            listbox.insert(tk.END, f"{name} (Realm ID: {data['realm_id']}) - [{data.get('env', 'production')}]")
+            has_cid = "Direct Keys" if data.get("client_id") else "Server/Env"
+            listbox.insert(tk.END, f"{name} (Realm: {data['realm_id']}) - [{data.get('env', 'production')}] - ({has_cid})")
 
         btn_box = tk.Frame(dialog, bg="#1c1917")
         btn_box.pack(fill="x", pady=(4, 0))
@@ -2546,6 +2645,14 @@ class FarmReceiptApp(_TK_BASE_TK):
             self.client_var.set(name)
             self.on_client_switched()
             dialog.destroy()
+
+        def edit_selected():
+            sel = listbox.curselection()
+            if not sel: return
+            idx = sel[0]
+            name = list(self.profile_mgr.profiles.keys())[idx]
+            dialog.destroy()
+            self.open_edit_client_dialog(name)
 
         def delete_selected():
             sel = listbox.curselection()
@@ -2565,6 +2672,9 @@ class FarmReceiptApp(_TK_BASE_TK):
 
         act_btn = tk.Button(btn_box, text="Switch to Selected Client", command=activate_selected, bg="#b45309", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=5)
         act_btn.pack(side="left", padx=(0, 6))
+
+        edit_btn = tk.Button(btn_box, text="✏️ Edit Client", command=edit_selected, bg="#2563eb", fg="white", font=("Segoe UI", 9, "bold"), relief="flat", padx=10, pady=5)
+        edit_btn.pack(side="left", padx=(0, 6))
 
         del_btn = tk.Button(btn_box, text="Delete Client", command=delete_selected, bg="#7f1d1d", fg="white", font=("Segoe UI", 9), relief="flat", padx=10, pady=5)
         del_btn.pack(side="left")
