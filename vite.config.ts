@@ -28,31 +28,30 @@ function licenseSyncApiPlugin(): Plugin {
           }
         }
 
-        // Explicit download handler for ZIP bundle and desktop runtime package
-        if (pathname === '/receipt_processor_bundle.zip' || pathname === '/api/download/bundle') {
-          const zipPath = path.resolve(__dirname, 'public', 'receipt_processor_bundle.zip');
-          if (fs.existsSync(zipPath)) {
-            const stat = fs.statSync(zipPath);
-            res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/zip');
-            res.setHeader('Content-Length', stat.size);
-            res.setHeader('Content-Disposition', 'attachment; filename="receipt_processor_bundle.zip"');
-            res.setHeader('Cache-Control', 'no-cache');
-            const readStream = fs.createReadStream(zipPath);
-            readStream.pipe(res);
-            return;
-          }
-        }
+        // Explicit download handler for ZIP bundle and all desktop runtime package files
+        const normalizedPath = pathname.replace(/^\/Receipt_portal\/?/i, '/');
+        const desktopFilesMap: Record<string, { file: string; type: string }> = {
+          '/receipt_processor_bundle.zip': { file: 'receipt_processor_bundle.zip', type: 'application/zip' },
+          '/api/download/bundle': { file: 'receipt_processor_bundle.zip', type: 'application/zip' },
+          '/run_receipt_processor.bat': { file: 'run_receipt_processor.bat', type: 'application/x-bat; charset=utf-8' },
+          '/run_receipt_processor.sh': { file: 'run_receipt_processor.sh', type: 'application/x-sh; charset=utf-8' },
+          '/receipt_processor.py': { file: 'receipt_processor.py', type: 'text/x-python; charset=utf-8' },
+          '/requirements.txt': { file: 'requirements.txt', type: 'text/plain; charset=utf-8' },
+          '/.env.example': { file: '.env.example', type: 'text/plain; charset=utf-8' },
+          '/README_DESKTOP_APP.txt': { file: 'README_DESKTOP_APP.txt', type: 'text/plain; charset=utf-8' },
+        };
 
-        if (pathname === '/run_receipt_processor.bat') {
-          const batPath = path.resolve(__dirname, 'public', 'run_receipt_processor.bat');
-          if (fs.existsSync(batPath)) {
-            const stat = fs.statSync(batPath);
+        const targetDesktopFile = desktopFilesMap[normalizedPath];
+        if (targetDesktopFile) {
+          const filePath = path.resolve(__dirname, 'public', targetDesktopFile.file);
+          if (fs.existsSync(filePath)) {
+            const stat = fs.statSync(filePath);
             res.statusCode = 200;
-            res.setHeader('Content-Type', 'application/x-bat; charset=utf-8');
+            res.setHeader('Content-Type', targetDesktopFile.type);
             res.setHeader('Content-Length', stat.size);
-            res.setHeader('Content-Disposition', 'attachment; filename="run_receipt_processor.bat"');
-            const readStream = fs.createReadStream(batPath);
+            res.setHeader('Content-Disposition', `attachment; filename="${targetDesktopFile.file}"`);
+            res.setHeader('Cache-Control', 'no-cache');
+            const readStream = fs.createReadStream(filePath);
             readStream.pipe(res);
             return;
           }

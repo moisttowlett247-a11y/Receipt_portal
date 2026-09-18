@@ -1,4 +1,10 @@
 import JSZip from 'jszip';
+import receiptProcessorPy from '../receipt_processor.py?raw';
+import runReceiptProcessorBat from '../run_receipt_processor.bat?raw';
+import runReceiptProcessorSh from '../run_receipt_processor.sh?raw';
+import requirementsTxt from '../requirements.txt?raw';
+import envExample from '../.env.example?raw';
+import readmeDesktopApp from '../README_DESKTOP_APP.txt?raw';
 
 export interface BundleFileItem {
   id: string;
@@ -9,7 +15,41 @@ export interface BundleFileItem {
   recommendedFor: string;
   sizeEstimate: string;
   isExecutableOrBatch?: boolean;
+  mimeType: string;
 }
+
+export const EMBEDDED_FILES: Record<string, { content: string; name: string; mimeType: string }> = {
+  bat: {
+    name: 'run_receipt_processor.bat',
+    content: runReceiptProcessorBat,
+    mimeType: 'application/x-bat;charset=utf-8',
+  },
+  py: {
+    name: 'receipt_processor.py',
+    content: receiptProcessorPy,
+    mimeType: 'text/x-python;charset=utf-8',
+  },
+  sh: {
+    name: 'run_receipt_processor.sh',
+    content: runReceiptProcessorSh,
+    mimeType: 'application/x-sh;charset=utf-8',
+  },
+  req: {
+    name: 'requirements.txt',
+    content: requirementsTxt,
+    mimeType: 'text/plain;charset=utf-8',
+  },
+  env: {
+    name: '.env.example',
+    content: envExample,
+    mimeType: 'text/plain;charset=utf-8',
+  },
+  doc: {
+    name: 'README_DESKTOP_APP.txt',
+    content: readmeDesktopApp,
+    mimeType: 'text/plain;charset=utf-8',
+  },
+};
 
 export const BUNDLE_FILES: BundleFileItem[] = [
   {
@@ -21,6 +61,7 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     recommendedFor: 'Windows 10 / 11 Users',
     sizeEstimate: '~2.3 KB',
     isExecutableOrBatch: true,
+    mimeType: 'application/x-bat;charset=utf-8',
   },
   {
     id: 'py',
@@ -29,7 +70,8 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     type: 'script',
     description: 'Core desktop application with Tkinter GUI, Gemini OCR, QuickBooks Online sync, and live license checker.',
     recommendedFor: 'All Operating Systems (Windows, macOS, Linux)',
-    sizeEstimate: '~137 KB',
+    sizeEstimate: '~142 KB',
+    mimeType: 'text/x-python;charset=utf-8',
   },
   {
     id: 'sh',
@@ -40,6 +82,7 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     recommendedFor: 'macOS & Ubuntu / Linux Users',
     sizeEstimate: '~1.1 KB',
     isExecutableOrBatch: true,
+    mimeType: 'application/x-sh;charset=utf-8',
   },
   {
     id: 'req',
@@ -49,6 +92,7 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     description: 'Python package manifest (Pillow for image processing, requests, python-dotenv, cryptography).',
     recommendedFor: 'pip install -r requirements.txt',
     sizeEstimate: '~140 B',
+    mimeType: 'text/plain;charset=utf-8',
   },
   {
     id: 'env',
@@ -57,7 +101,8 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     type: 'config',
     description: 'Environment template for Gemini OCR API key and optional email IMAP credentials.',
     recommendedFor: 'Configuration Template',
-    sizeEstimate: '~560 B',
+    sizeEstimate: '~650 B',
+    mimeType: 'text/plain;charset=utf-8',
   },
   {
     id: 'doc',
@@ -67,79 +112,127 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     description: 'Setup instructions, system requirements, troubleshooting tips, and license activation walkthrough.',
     recommendedFor: 'Quickstart & Documentation',
     sizeEstimate: '~1.8 KB',
+    mimeType: 'text/plain;charset=utf-8',
   }
 ];
 
 /**
- * Triggers a direct browser file download for a static URL.
+ * Returns raw Python script content directly from memory
  */
-export function triggerFileDownload(url: string, filename: string): void {
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+export function getReceiptProcessorPyCode(): string {
+  return EMBEDDED_FILES.py.content;
 }
 
 /**
- * Downloads the full runtime package as a zip archive containing all scripts,
- * launchers, requirement manifests, and configs.
+ * Robust asset URL resolver that works on root domains, subpaths (like GitHub Pages /Receipt_portal/),
+ * and local development setups.
+ */
+export function resolveAssetUrl(filePath: string): string {
+  const clean = filePath.replace(/^\/+/, '');
+  if (typeof window !== 'undefined') {
+    const pathname = window.location.pathname;
+    const match = pathname.match(/^\/([^/]+)/);
+    if (match && match[1] && !match[1].includes('.') && match[1].toLowerCase() === 'receipt_portal') {
+      return `/${match[1]}/${clean}`;
+    }
+  }
+  const base = (typeof import.meta !== 'undefined' && import.meta.env?.BASE_URL) || './';
+  const cleanBase = base.endsWith('/') ? base : `${base}/`;
+  return `${cleanBase}${clean}`;
+}
+
+/**
+ * Helper to trigger file download in browser
+ */
+function triggerBlobDownload(href: string, filename: string): void {
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.setAttribute('download', filename);
+  link.style.display = 'none';
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    if (document.body.contains(link)) {
+      document.body.removeChild(link);
+    }
+  }, 300);
+}
+
+/**
+ * Triggers a guaranteed browser file download.
+ * If the filename or path matches any embedded desktop bundle file,
+ * it creates a local Blob immediately so the download NEVER fails,
+ * even if the user is offline, on GitHub Pages with subpaths, or if static routes 404.
+ */
+export function triggerFileDownload(urlOrPath: string, filename: string): void {
+  // 1. Check if we have embedded content for this file
+  const matchedKey = Object.keys(EMBEDDED_FILES).find(k => {
+    const item = EMBEDDED_FILES[k];
+    return item.name.toLowerCase() === filename.toLowerCase() ||
+           urlOrPath.toLowerCase().endsWith(item.name.toLowerCase());
+  });
+
+  if (matchedKey) {
+    const item = EMBEDDED_FILES[matchedKey];
+    const blob = new Blob([item.content], { type: item.mimeType });
+    const blobUrl = URL.createObjectURL(blob);
+    triggerBlobDownload(blobUrl, item.name);
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    return;
+  }
+
+  // 2. If it's already a blob: or data: URL, trigger directly
+  if (urlOrPath.startsWith('blob:') || urlOrPath.startsWith('data:')) {
+    triggerBlobDownload(urlOrPath, filename);
+    return;
+  }
+
+  // 3. Fallback: resolve relative path
+  const resolved = resolveAssetUrl(urlOrPath);
+  triggerBlobDownload(resolved, filename);
+}
+
+/**
+ * Downloads the full runtime package as a zip archive containing all 6 desktop application files.
+ * Generates the archive in memory via JSZip with guaranteed non-empty contents,
+ * ensuring all launchers, scripts, configs, and documentation are included.
  */
 export async function downloadFullBundleZip(
   onProgress?: (status: string) => void
 ): Promise<void> {
-  onProgress?.('Preparing package bundle...');
+  onProgress?.('Preparing desktop application package...');
 
   try {
-    // 1. Try downloading prebuilt static bundle first
-    const prebuiltResp = await fetch('/receipt_processor_bundle.zip', { method: 'HEAD' });
-    if (prebuiltResp.ok) {
-      onProgress?.('Downloading prebuilt ZIP archive...');
-      triggerFileDownload('/receipt_processor_bundle.zip', 'receipt_processor_bundle.zip');
-      onProgress?.('Download complete!');
-      return;
-    }
-  } catch {
-    // Fall back to client-side JSZip packaging
-  }
-
-  // 2. Client-side JSZip packaging fallback
-  try {
-    onProgress?.('Packaging files into ZIP...');
+    onProgress?.('Packaging files into complete ZIP bundle...');
     const zip = new JSZip();
 
-    for (const file of BUNDLE_FILES) {
-      onProgress?.(`Adding ${file.name}...`);
-      try {
-        const resp = await fetch(file.path);
-        if (resp.ok) {
-          const content = await resp.text();
-          zip.file(file.name, content);
-        }
-      } catch (err) {
-        console.warn(`Could not fetch ${file.name}:`, err);
-      }
-    }
+    // Add all 6 files directly from embedded verified source code
+    zip.file('receipt_processor.py', EMBEDDED_FILES.py.content);
+    zip.file('run_receipt_processor.bat', EMBEDDED_FILES.bat.content);
+    zip.file('run_receipt_processor.sh', EMBEDDED_FILES.sh.content);
+    zip.file('requirements.txt', EMBEDDED_FILES.req.content);
+    zip.file('.env.example', EMBEDDED_FILES.env.content);
+    zip.file('README_DESKTOP_APP.txt', EMBEDDED_FILES.doc.content);
 
-    onProgress?.('Compressing ZIP archive...');
+    onProgress?.('Compressing ZIP archive (6 complete files)...');
     const contentBlob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
       compressionOptions: { level: 9 },
     });
 
+    onProgress?.('Starting download...');
     const blobUrl = URL.createObjectURL(contentBlob);
-    triggerFileDownload(blobUrl, 'receipt_processor_bundle.zip');
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    triggerBlobDownload(blobUrl, 'receipt_processor_bundle.zip');
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
     onProgress?.('Download complete!');
   } catch (err) {
-    console.error('Failed to create bundle ZIP:', err);
-    // Ultimate fallback: download bat and py directly
-    triggerFileDownload('/run_receipt_processor.bat', 'run_receipt_processor.bat');
-    setTimeout(() => {
-      triggerFileDownload('/receipt_processor.py', 'receipt_processor.py');
-    }, 500);
+    console.error('Failed to generate bundle ZIP via JSZip:', err);
+    // Fallback: try downloading the prebuilt static zip
+    const staticUrl = resolveAssetUrl('receipt_processor_bundle.zip');
+    triggerBlobDownload(staticUrl, 'receipt_processor_bundle.zip');
     throw err;
   }
 }
+

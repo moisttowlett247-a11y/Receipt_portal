@@ -50,7 +50,7 @@ import { DesktopPackageCard } from './components/DesktopPackageCard';
 import { ActiveDevicesMonitor } from './components/ActiveDevicesMonitor';
 import { QuickBooksProductionCenter } from './components/QuickBooksProductionCenter';
 import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
-import { downloadFullBundleZip, triggerFileDownload } from './bundleDownloadService';
+import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
 
@@ -680,13 +680,14 @@ export default function App() {
 
   const copyPythonCode = async () => {
     try {
-      const resp = await fetch('/receipt_processor.py');
-      const text = await resp.text();
+      const text = getReceiptProcessorPyCode();
       await navigator.clipboard.writeText(text);
       setCopied(true);
+      showToast('Copied receipt_processor.py to clipboard!');
       setTimeout(() => setCopied(false), 2500);
     } catch {
-      alert('File ready for download below!');
+      triggerFileDownload('/receipt_processor.py', 'receipt_processor.py');
+      showToast('File downloaded below!');
     }
   };
 
