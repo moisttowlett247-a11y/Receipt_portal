@@ -162,9 +162,33 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [testingRealmId, setTestingRealmId] = useState<string | null>(null);
 
-  const getCleanRedirectUri = () => {
-    const cleanPath = window.location.pathname.replace(/\/admin.*$/, '').replace(/\/$/, '');
-    return `${window.location.origin}${cleanPath}/api/qbo/callback`;
+  const getDetectedRedirectUri = () => {
+    const cleanPath = typeof window !== 'undefined' 
+      ? window.location.pathname.replace(/\/admin.*$/, '').replace(/\/$/, '')
+      : '';
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
+    return `${origin}${cleanPath}/api/qbo/callback`;
+  };
+
+  const getRootRedirectUri = () => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
+    return `${origin}/api/qbo/callback`;
+  };
+
+  const [modalRedirectUri, setModalRedirectUri] = useState<string>(() => {
+    const local = getLocalConfig();
+    return local.redirectUri || getDetectedRedirectUri();
+  });
+  const [editRedirectUri, setEditRedirectUri] = useState<string>(() => {
+    const local = getLocalConfig();
+    return local.redirectUri || getDetectedRedirectUri();
+  });
+
+  const getCleanRedirectUri = (custom?: string) => {
+    if (custom && custom.trim()) return custom.trim();
+    if (modalRedirectUri && modalRedirectUri.trim()) return modalRedirectUri.trim();
+    if (config.redirectUri && config.redirectUri.trim()) return config.redirectUri.trim();
+    return getDetectedRedirectUri();
   };
 
   const fetchConfig = async () => {
@@ -175,6 +199,10 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       setEditEnv(result.data.environment || 'production');
       setModalClientId(result.data.clientId || DEFAULT_CLIENT_ID);
       setModalEnv(result.data.environment || 'production');
+      if (result.data.redirectUri) {
+        setModalRedirectUri(result.data.redirectUri);
+        setEditRedirectUri(result.data.redirectUri);
+      }
       saveLocalConfig(result.data);
     } else {
       // Fall back to localStorage (e.g. GitHub Pages static host)
@@ -185,6 +213,10 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         setEditEnv(local.environment || 'production');
         setModalClientId(local.clientId || DEFAULT_CLIENT_ID);
         setModalEnv(local.environment || 'production');
+        if (local.redirectUri) {
+          setModalRedirectUri(local.redirectUri);
+          setEditRedirectUri(local.redirectUri);
+        }
       }
     }
   };
@@ -302,6 +334,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     const updatedLocalConfig = {
       clientId: editClientId.trim(),
       environment: editEnv,
+      redirectUri: editRedirectUri.trim() || undefined,
       configured: Boolean(editClientId.trim()),
       hasSecret: Boolean(editClientSecret.trim() || config.hasSecret)
     };
@@ -316,6 +349,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         clientId: editClientId.trim(),
         clientSecret: editClientSecret.trim() || undefined,
         environment: editEnv,
+        redirectUri: editRedirectUri.trim() || undefined,
         webhookVerifierToken: editWebhookSecret.trim() || undefined
       })
     });
@@ -363,12 +397,14 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
 
   const handleSaveAndConnectFromModal = async () => {
     const targetClientId = (modalClientId.trim() || DEFAULT_CLIENT_ID);
+    const targetRedirectUri = getCleanRedirectUri(modalRedirectUri);
     setIsSavingModal(true);
     try {
       // Save locally
       const updated = {
         clientId: targetClientId,
         environment: modalEnv,
+        redirectUri: targetRedirectUri,
         configured: true,
         hasSecret: Boolean(modalClientSecret.trim() || config.hasSecret)
       };
@@ -382,12 +418,12 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         body: JSON.stringify({
           clientId: targetClientId,
           clientSecret: modalClientSecret.trim() || undefined,
-          environment: modalEnv
+          environment: modalEnv,
+          redirectUri: targetRedirectUri
         })
       });
 
-      const redirectUri = getCleanRedirectUri();
-      const authUrl = generateIntuitAuthUrl(targetClientId, redirectUri);
+      const authUrl = generateIntuitAuthUrl(targetClientId, targetRedirectUri);
       setGeneratedAuthUrl(authUrl);
 
       showToast('Opening Intuit OAuth authorization...');
@@ -519,7 +555,9 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   };
 
   const currentHost = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
-  const defaultCallback = `${currentHost}/api/qbo/callback`;
+  const primaryCallback = getDetectedRedirectUri();
+  const secondaryCallback = getRootRedirectUri();
+  const defaultCallback = primaryCallback;
   const defaultWebhook = `${currentHost}/api/qbo/webhook`;
 
   const connectedList = companies.filter(c => c.status === 'CONNECTED');
@@ -842,37 +880,93 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
             </div>
 
             {/* Quick Copy URIs for developer.intuit.com */}
-            <div className="p-3 rounded-lg bg-stone-900/90 border border-stone-800 space-y-2 text-xs">
-              <span className="text-[11px] font-bold text-stone-300 block">
-                Required URLs to paste in your Intuit Developer Dashboard:
-              </span>
-
-              <div className="flex items-center justify-between gap-2 p-1.5 rounded bg-stone-950 border border-stone-850">
-                <span className="text-stone-400 font-mono text-[11px] truncate">
-                  <strong className="text-stone-300">Redirect URI:</strong> {defaultCallback}
+            <div className="p-3.5 rounded-xl bg-stone-900/90 border border-stone-800 space-y-3 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-stone-200 block">
+                  Required URIs for your Intuit Developer Dashboard:
                 </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(defaultCallback, 'Redirect URI')}
-                  className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-[10px] text-stone-300 shrink-0 cursor-pointer flex items-center gap-1"
-                >
-                  {copiedField === 'Redirect URI' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  Copy
-                </button>
+                <span className="text-[10px] text-sky-400 bg-sky-950/60 border border-sky-800/60 px-2 py-0.5 rounded font-medium">
+                  Keys &amp; OAuth &gt; Redirect URIs
+                </span>
               </div>
 
-              <div className="flex items-center justify-between gap-2 p-1.5 rounded bg-stone-950 border border-stone-850">
-                <span className="text-stone-400 font-mono text-[11px] truncate">
-                  <strong className="text-stone-300">Webhook Endpoint:</strong> {defaultWebhook}
+              <div>
+                <label className="block text-stone-400 text-[11px] font-medium mb-1">
+                  Custom Redirect URI Override (optional)
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={editRedirectUri}
+                    onChange={e => setEditRedirectUri(e.target.value)}
+                    placeholder={primaryCallback}
+                    className="flex-1 px-3 py-1.5 rounded-lg bg-stone-950 border border-stone-700 text-stone-100 font-mono text-xs focus:outline-none focus:border-sky-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(editRedirectUri, 'Active Redirect URI')}
+                    className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold flex items-center gap-1.5 border border-stone-700 transition-colors cursor-pointer shrink-0"
+                  >
+                    {copiedField === 'Active Redirect URI' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    Copy
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5 pt-1">
+                <span className="text-[10px] text-stone-400 block font-semibold">
+                  Standard Redirect URIs to paste into Intuit:
                 </span>
-                <button
-                  type="button"
-                  onClick={() => handleCopy(defaultWebhook, 'Webhook Endpoint')}
-                  className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-[10px] text-stone-300 shrink-0 cursor-pointer flex items-center gap-1"
-                >
-                  {copiedField === 'Webhook Endpoint' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                  Copy
-                </button>
+
+                <div className="flex items-center justify-between gap-2 p-1.5 rounded bg-stone-950 border border-stone-850">
+                  <span className="text-stone-400 font-mono text-[11px] truncate">
+                    <strong className="text-stone-300">1. Primary Path:</strong> {primaryCallback}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditRedirectUri(primaryCallback);
+                      handleCopy(primaryCallback, 'Primary Redirect URI');
+                    }}
+                    className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-[10px] text-stone-300 shrink-0 cursor-pointer flex items-center gap-1"
+                  >
+                    {copiedField === 'Primary Redirect URI' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    Copy
+                  </button>
+                </div>
+
+                {secondaryCallback !== primaryCallback && (
+                  <div className="flex items-center justify-between gap-2 p-1.5 rounded bg-stone-950 border border-stone-850">
+                    <span className="text-stone-400 font-mono text-[11px] truncate">
+                      <strong className="text-stone-300">2. Root Path:</strong> {secondaryCallback}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditRedirectUri(secondaryCallback);
+                        handleCopy(secondaryCallback, 'Root Redirect URI');
+                      }}
+                      className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-[10px] text-stone-300 shrink-0 cursor-pointer flex items-center gap-1"
+                    >
+                      {copiedField === 'Root Redirect URI' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      Copy
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 p-1.5 rounded bg-stone-950 border border-stone-850">
+                  <span className="text-stone-400 font-mono text-[11px] truncate">
+                    <strong className="text-stone-300">Webhook Endpoint:</strong> {defaultWebhook}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopy(defaultWebhook, 'Webhook Endpoint')}
+                    className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-[10px] text-stone-300 shrink-0 cursor-pointer flex items-center gap-1"
+                  >
+                    {copiedField === 'Webhook Endpoint' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    Copy
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -1105,26 +1199,38 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                 </div>
 
                 {/* Redirect URI copy box */}
-                <div className="p-3 rounded-lg bg-stone-900 border border-stone-800 space-y-1.5">
-                  <span className="text-[11px] font-semibold text-stone-300 block">
-                    1. Registered Redirect URI (Add to Intuit Developer &gt; Keys &amp; OAuth):
-                  </span>
+                <div className="p-3.5 rounded-xl bg-stone-900 border border-stone-800 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-stone-200 flex items-center gap-1.5">
+                      <ExternalLink className="w-3.5 h-3.5 text-sky-400" />
+                      1. Redirect URI for Intuit Developer Dashboard
+                    </span>
+                    <span className="text-[10px] text-amber-400 font-semibold px-2 py-0.5 rounded bg-amber-950/60 border border-amber-800/60">
+                      Must match Intuit exactly
+                    </span>
+                  </div>
+
+                  <p className="text-[11px] text-stone-400 leading-relaxed">
+                    Under <strong className="text-stone-200">Keys &amp; OAuth &gt; Redirect URIs</strong> on developer.intuit.com, click <em>&quot;+ Add URI&quot;</em> and paste the URI below. Intuit requires an exact character match.
+                  </p>
+
                   <div className="flex items-center gap-2">
                     <input
                       type="text"
-                      readOnly
-                      value={`${window.location.origin}/api/qbo/callback`}
-                      className="flex-1 px-3 py-1.5 rounded bg-stone-950 border border-stone-800 text-stone-300 font-mono text-xs select-all focus:outline-none"
+                      value={modalRedirectUri}
+                      onChange={e => setModalRedirectUri(e.target.value)}
+                      placeholder="Redirect URI sent to Intuit"
+                      className="flex-1 px-3 py-2 rounded-lg bg-stone-950 border border-stone-700 text-stone-100 font-mono text-xs focus:outline-none focus:border-sky-500"
                     />
                     <button
                       type="button"
-                      onClick={() => handleCopy(`${window.location.origin}/api/qbo/callback`, 'redirect_uri_modal')}
-                      className="px-3 py-1.5 rounded bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold flex items-center gap-1.5 border border-stone-700 transition-colors cursor-pointer shrink-0"
+                      onClick={() => handleCopy(modalRedirectUri, 'Redirect URI')}
+                      className="px-3.5 py-2 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0 shadow-sm"
                     >
-                      {copiedField === 'redirect_uri_modal' ? (
+                      {copiedField === 'Redirect URI' ? (
                         <>
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Copied</span>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Copied</span>
                         </>
                       ) : (
                         <>
@@ -1133,6 +1239,43 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                         </>
                       )}
                     </button>
+                  </div>
+
+                  {/* Preset quick buttons */}
+                  <div className="pt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
+                    <span className="text-stone-500 font-medium">Quick switch:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const uri = getDetectedRedirectUri();
+                        setModalRedirectUri(uri);
+                        handleCopy(uri, 'Detected URI');
+                      }}
+                      className={`px-2 py-1 rounded border transition-colors cursor-pointer font-mono ${
+                        modalRedirectUri === getDetectedRedirectUri()
+                          ? 'bg-sky-950 text-sky-300 border-sky-600 font-bold'
+                          : 'bg-stone-950 text-stone-400 border-stone-800 hover:text-stone-200'
+                      }`}
+                    >
+                      Detected ({getDetectedRedirectUri().replace(window.location.origin, '')})
+                    </button>
+                    {getRootRedirectUri() !== getDetectedRedirectUri() && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const uri = getRootRedirectUri();
+                          setModalRedirectUri(uri);
+                          handleCopy(uri, 'Root URI');
+                        }}
+                        className={`px-2 py-1 rounded border transition-colors cursor-pointer font-mono ${
+                          modalRedirectUri === getRootRedirectUri()
+                            ? 'bg-sky-950 text-sky-300 border-sky-600 font-bold'
+                            : 'bg-stone-950 text-stone-400 border-stone-800 hover:text-stone-200'
+                        }`}
+                      >
+                        Root (/api/qbo/callback)
+                      </button>
+                    )}
                   </div>
                 </div>
 
