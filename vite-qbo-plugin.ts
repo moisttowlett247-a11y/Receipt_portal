@@ -79,14 +79,14 @@ function getStoredConfig(): QboConfig {
       fileCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     } catch {}
   }
-  const rawEnv = (fileCfg.environment || process.env.QBO_ENVIRONMENT || 'production').toString().toLowerCase().trim();
-  const environment: 'production' | 'sandbox' = rawEnv === 'sandbox' ? 'sandbox' : 'production';
+  const rawEnv = (fileCfg.environment || process.env.QBO_ENVIRONMENT || 'sandbox').toString().toLowerCase().trim();
+  const environment: 'production' | 'sandbox' = rawEnv === 'production' ? 'production' : 'sandbox';
 
   return {
     clientId: (fileCfg.clientId || process.env.QBO_CLIENT_ID || '').trim(),
     clientSecret: (fileCfg.clientSecret || process.env.QBO_CLIENT_SECRET || '').trim(),
     environment,
-    redirectUri: (fileCfg.redirectUri || process.env.QBO_REDIRECT_URI || '').trim(),
+    redirectUri: (fileCfg.redirectUri || process.env.QBO_REDIRECT_URI || 'https://moisttowlett247-a11y.github.io/Receipt_portal/api/qbo/callback').trim(),
     webhookVerifierToken: (fileCfg.webhookVerifierToken || process.env.QBO_WEBHOOK_VERIFIER_TOKEN || '').trim(),
     appTitle: fileCfg.appTitle || 'Receipt Processor Enterprise for QuickBooks'
   };
@@ -212,8 +212,8 @@ export function quickbooksApiPlugin(): Plugin {
           const hostHeader = (req.headers['host'] || 'localhost:3000').toString();
           const isCloud = hostHeader.includes('run.app') || hostHeader.includes('.app');
           const protocol = forwardedProto || (isCloud ? 'https' : 'http');
-          const defaultRedirectUri = `${protocol}://${hostHeader}/api/qbo/callback`;
-          const redirectUri = queryRedirectUri || (cfg.redirectUri && !cfg.redirectUri.includes('OAuth2Playground') ? cfg.redirectUri : defaultRedirectUri);
+          const defaultRedirectUri = 'https://moisttowlett247-a11y.github.io/Receipt_portal/api/qbo/callback';
+          const redirectUri = (queryRedirectUri || cfg.redirectUri || defaultRedirectUri).trim();
 
           const state = crypto.randomBytes(16).toString('hex');
           const scope = 'com.intuit.quickbooks.accounting';

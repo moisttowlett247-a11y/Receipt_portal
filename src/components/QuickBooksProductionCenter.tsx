@@ -107,7 +107,7 @@ function saveLocalCompanies(list: CompanyRecord[]) {
 }
 
 function generateIntuitAuthUrl(clientId: string, redirectUri: string, state?: string): string {
-  const cId = (clientId || DEFAULT_CLIENT_ID).trim();
+  const cId = clientId.trim();
   const st = state || (Math.random().toString(36).substring(2) + Date.now().toString(36));
   const params = new URLSearchParams({
     client_id: cId,
@@ -123,14 +123,16 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   showToast,
   onOpenLegal
 }) => {
+  const CANONICAL_REDIRECT_URI = 'https://moisttowlett247-a11y.github.io/Receipt_portal/api/qbo/callback';
+
   const [config, setConfig] = useState<QboConfigState>(() => {
     const local = getLocalConfig();
     return {
       configured: local.configured ?? true,
-      clientId: local.clientId || DEFAULT_CLIENT_ID,
-      environment: local.environment || 'production',
-      hasSecret: local.hasSecret ?? true,
-      redirectUri: local.redirectUri || '',
+      clientId: local.clientId || '',
+      environment: 'sandbox',
+      hasSecret: local.hasSecret ?? false,
+      redirectUri: CANONICAL_REDIRECT_URI,
       hasWebhookVerifier: local.hasWebhookVerifier ?? true,
       totalConnectedCompanies: local.totalConnectedCompanies ?? 0
     };
@@ -141,18 +143,18 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   // Settings Edit form
-  const [editClientId, setEditClientId] = useState(config.clientId || DEFAULT_CLIENT_ID);
+  const [editClientId, setEditClientId] = useState(config.clientId || '');
   const [editClientSecret, setEditClientSecret] = useState('');
-  const [editEnv, setEditEnv] = useState<'production' | 'sandbox'>(config.environment || 'production');
+  const [editEnv, setEditEnv] = useState<'production' | 'sandbox'>('sandbox');
   const [editWebhookSecret, setEditWebhookSecret] = useState(DEFAULT_WEBHOOK_VERIFIER);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
   const [showConfigForm, setShowConfigForm] = useState(false);
 
   // Connection Assistant Modal states
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [modalClientId, setModalClientId] = useState(config.clientId || DEFAULT_CLIENT_ID);
+  const [modalClientId, setModalClientId] = useState(config.clientId || '');
   const [modalClientSecret, setModalClientSecret] = useState('');
-  const [modalEnv, setModalEnv] = useState<'production' | 'sandbox'>(config.environment || 'production');
+  const [modalEnv, setModalEnv] = useState<'production' | 'sandbox'>('sandbox');
   const [isSavingModal, setIsSavingModal] = useState(false);
   const [generatedAuthUrl, setGeneratedAuthUrl] = useState<string | null>(null);
 
@@ -162,33 +164,11 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [testingRealmId, setTestingRealmId] = useState<string | null>(null);
 
-  const getDetectedRedirectUri = () => {
-    const cleanPath = typeof window !== 'undefined' 
-      ? window.location.pathname.replace(/\/admin.*$/, '').replace(/\/$/, '')
-      : '';
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
-    return `${origin}${cleanPath}/api/qbo/callback`;
-  };
+  const [modalRedirectUri, setModalRedirectUri] = useState<string>(CANONICAL_REDIRECT_URI);
+  const [editRedirectUri, setEditRedirectUri] = useState<string>(CANONICAL_REDIRECT_URI);
 
-  const getRootRedirectUri = () => {
-    const origin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
-    return `${origin}/api/qbo/callback`;
-  };
-
-  const [modalRedirectUri, setModalRedirectUri] = useState<string>(() => {
-    const local = getLocalConfig();
-    return local.redirectUri || getDetectedRedirectUri();
-  });
-  const [editRedirectUri, setEditRedirectUri] = useState<string>(() => {
-    const local = getLocalConfig();
-    return local.redirectUri || getDetectedRedirectUri();
-  });
-
-  const getCleanRedirectUri = (custom?: string) => {
-    if (custom && custom.trim()) return custom.trim();
-    if (modalRedirectUri && modalRedirectUri.trim()) return modalRedirectUri.trim();
-    if (config.redirectUri && config.redirectUri.trim()) return config.redirectUri.trim();
-    return getDetectedRedirectUri();
+  const getCleanRedirectUri = (_custom?: string) => {
+    return CANONICAL_REDIRECT_URI;
   };
 
   const fetchConfig = async () => {
@@ -361,14 +341,19 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   };
 
   const handleConnectIntuit = async () => {
+    const activeClientId = (config.clientId || modalClientId || editClientId || '').trim();
+    if (!activeClientId) {
+      showToast('Please paste your Development Client ID from Intuit Developer in the input field above.');
+      return;
+    }
+
     setIsConnecting(true);
     try {
-      const activeClientId = (config.clientId || modalClientId || editClientId || DEFAULT_CLIENT_ID).trim();
-      const redirectUri = getCleanRedirectUri();
+      const redirectUri = CANONICAL_REDIRECT_URI;
 
-      // Try server endpoint first with resilient safeFetchJson
+      // Try server endpoint first with resilient safeFetchJson, explicitly passing activeClientId and redirectUri
       const serverRes = await safeFetchJson<{ authUrl: string }>(
-        `/api/qbo/auth-url?redirect_uri=${encodeURIComponent(redirectUri)}`
+        `/api/qbo/auth-url?redirect_uri=${encodeURIComponent(redirectUri)}&client_id=${encodeURIComponent(activeClientId)}&environment=sandbox`
       );
 
       let authUrl = '';
@@ -384,7 +369,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       // Open official Intuit OAuth 2.0 popup
       const popup = window.open(authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
       if (!popup || popup.closed || typeof popup.closed === 'undefined') {
-        showToast('Opening Connection & OAuth Assistant...');
+        showToast('Popup blocked. Opening Connection Assistant with direct authorization link...');
         setShowConnectModal(true);
       }
     } catch (err: any) {
@@ -555,8 +540,8 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   };
 
   const currentHost = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
-  const primaryCallback = getDetectedRedirectUri();
-  const secondaryCallback = getRootRedirectUri();
+  const primaryCallback = CANONICAL_REDIRECT_URI;
+  const secondaryCallback = CANONICAL_REDIRECT_URI;
   const defaultCallback = primaryCallback;
   const defaultWebhook = `${currentHost}/api/qbo/webhook`;
 
@@ -564,135 +549,180 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
 
   return (
     <div className="space-y-6">
-      {/* Top Banner: Production Architecture Overview */}
-      <div className="p-6 rounded-2xl bg-gradient-to-r from-stone-900 via-stone-900 to-emerald-950/40 border border-emerald-500/30 shadow-xl relative overflow-hidden">
-        <div className="absolute -right-8 -bottom-8 w-56 h-56 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+      {/* Top Banner: Development Gateway Overview */}
+      <div className="p-6 rounded-2xl bg-gradient-to-r from-stone-900 via-stone-900 to-amber-950/30 border border-amber-500/30 shadow-xl relative overflow-hidden">
+        <div className="absolute -right-8 -bottom-8 w-56 h-56 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
         
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
           <div className="space-y-2 max-w-2xl">
             <div className="flex items-center gap-2.5">
-              <span className="px-2.5 py-1 text-[11px] font-bold font-mono tracking-wider uppercase rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                Intuit Production Gateway
+              <span className="px-2.5 py-1 text-[11px] font-bold font-mono tracking-wider uppercase rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                Intuit Development (Sandbox) Mode
               </span>
               <span className="text-xs text-stone-400 font-mono">
-                OAuth 2.0 • 101-Day Rolling Refresh • AES-256
+                OAuth 2.0 • Sandbox Test Environment
               </span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold text-stone-100 tracking-tight">
-              QuickBooks Online Production & Connected Companies
+              QuickBooks Online Development Connection
             </h2>
             <p className="text-sm text-stone-300 leading-relaxed">
-              Secure centralized OAuth 2.0 Token Broker. Intuit Client Secrets are stored strictly on your server,
-              allowing the local desktop application to sync receipts seamlessly without exposing sensitive API credentials.
+              Connect your sandbox company using your Intuit Development credentials and single registered endpoint URI.
             </p>
           </div>
 
-          {/* Official Intuit "Connect to QuickBooks" Button & Actions */}
+          {/* Connect & Test Buttons */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
-            {/* Official Intuit SVG Styled Button */}
             <button
               onClick={handleConnectIntuit}
               disabled={isConnecting}
               className="px-5 py-3 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white font-bold text-xs transition-all shadow-lg hover:shadow-emerald-900/30 flex items-center justify-center gap-3 cursor-pointer border border-[#238016]"
-              title="Official Intuit Connect to QuickBooks OAuth authorization flow"
+              title="Official Intuit Connect to QuickBooks Development OAuth authorization flow"
             >
-              {/* Intuit QB Icon SVG */}
               <svg className="w-5 h-5 fill-white shrink-0" viewBox="0 0 40 40">
                 <path d="M20 0C8.954 0 0 8.954 0 20s8.954 20 20 20 20-8.954 20-20S31.046 0 20 0zm0 36C11.163 36 4 28.837 4 20S11.163 4 20 4s16 7.163 16 16-7.163 16-16 16z" opacity="0.3"/>
                 <path d="M12.5 15.5c0-1.933 1.567-3.5 3.5-3.5h2v3h-2c-.276 0-.5.224-.5.5v9c0 .276.224.5.5.5h2v3h-2c-1.933 0-3.5-1.567-3.5-3.5v-9zm15 9c0 1.933-1.567 3.5-3.5 3.5h-2v-3h2c.276 0 .5-.224.5-.5v-9c0-.276-.224-.5-.5-.5h-2v-3h2c1.933 0 3.5 1.567 3.5 3.5v9z"/>
               </svg>
               <div className="text-left">
                 <div className="text-[10px] uppercase tracking-wider text-emerald-100 font-semibold leading-tight">Connect to</div>
-                <div className="text-sm font-bold text-white tracking-wide leading-tight">QuickBooks</div>
+                <div className="text-sm font-bold text-white tracking-wide leading-tight">QuickBooks Development</div>
               </div>
             </button>
 
-            {/* Test Simulation Button */}
             <button
               onClick={handleMockConnect}
               disabled={isSimulating}
               className="px-4 py-3 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold border border-stone-700 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-              title="Simulate an authorized QuickBooks company connection without needing developer keys"
+              title="Simulate a sandbox company connection for testing"
             >
               <Zap className="w-4 h-4 text-amber-400" />
-              <span>Simulate Account</span>
-            </button>
-
-            {/* Assistant / Keys button */}
-            <button
-              onClick={() => setShowConnectModal(true)}
-              className="px-4 py-3 rounded-lg bg-sky-950 hover:bg-sky-900 text-sky-200 text-xs font-semibold border border-sky-800 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-              title="Open Connection Assistant to review Redirect URIs and Client Keys"
-            >
-              <Key className="w-4 h-4 text-sky-400" />
-              <span>OAuth &amp; Keys Assistant</span>
+              <span>Simulate Sandbox</span>
             </button>
           </div>
         </div>
 
-        {/* Unmissable Redirect URI Banner for Intuit Developer Portal */}
-        <div className="p-4 sm:p-5 rounded-xl bg-sky-950/40 border-2 border-sky-500/70 shadow-lg space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-sky-500/20 border border-sky-400/40 flex items-center justify-center text-sky-300 font-bold text-xs shrink-0">
-                1
-              </div>
-              <h3 className="text-sm font-bold text-stone-100">
-                Intuit Redirect URI (Paste into developer.intuit.com)
-              </h3>
-            </div>
-            <span className="text-[10px] uppercase font-bold text-amber-300 bg-amber-950/90 border border-amber-600/70 px-2 py-0.5 rounded self-start sm:self-auto">
-              Required by Intuit
+        {/* Development Setup Panel: 1 Endpoint + Development Client ID */}
+        <div className="mt-6 p-4 sm:p-5 rounded-xl bg-stone-950/80 border border-amber-500/40 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-sm font-bold text-stone-100 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              Development Credentials &amp; Single Registered Endpoint
+            </h3>
+            <span className="text-[11px] font-mono text-amber-300">
+              Environment: Development / Sandbox
             </span>
           </div>
 
-          <p className="text-xs text-stone-300 leading-relaxed">
-            To prevent the <em>&quot;redirect_uri query parameter value is invalid&quot;</em> error, copy this exact URI and add it under <strong className="text-white">Keys &amp; OAuth &gt; Redirect URIs</strong> on the <a href="https://developer.intuit.com" target="_blank" rel="noopener noreferrer" className="text-sky-300 underline font-semibold">Intuit Developer Portal</a>:
-          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Development Client ID */}
+            <div>
+              <label className="block text-stone-300 text-xs font-semibold mb-1">
+                Development Client ID:
+              </label>
+              <input
+                type="text"
+                placeholder="Paste Client ID from Intuit Development > Keys & OAuth"
+                value={editClientId}
+                onChange={e => {
+                  setEditClientId(e.target.value);
+                  setModalClientId(e.target.value);
+                  saveLocalConfig({ clientId: e.target.value.trim() });
+                }}
+                className="w-full px-3.5 py-2.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-100 font-mono text-xs focus:outline-none focus:border-amber-500"
+              />
+              <p className="text-[11px] text-stone-400 mt-1">
+                Found on <a href="https://developer.intuit.com" target="_blank" rel="noopener noreferrer" className="text-sky-400 underline">Intuit Developer</a> under <strong>Development &gt; Keys &amp; OAuth</strong>.
+              </p>
+            </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-            <input
-              type="text"
-              readOnly
-              value={primaryCallback}
-              onClick={(e) => (e.target as HTMLInputElement).select()}
-              className="flex-1 px-3.5 py-2.5 rounded-lg bg-stone-950 border border-stone-700 text-stone-100 font-mono text-xs select-all focus:outline-none focus:border-sky-500"
-            />
-            <button
-              type="button"
-              onClick={() => handleCopy(primaryCallback, 'Main Redirect URI')}
-              className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer shrink-0"
-            >
-              {copiedField === 'Main Redirect URI' ? (
-                <>
-                  <Check className="w-4 h-4 text-white" />
-                  <span>COPIED TO CLIPBOARD!</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-4 h-4" />
-                  <span>COPY REDIRECT URI</span>
-                </>
-              )}
-            </button>
+            {/* Development Client Secret */}
+            <div>
+              <label className="block text-stone-300 text-xs font-semibold mb-1">
+                Development Client Secret:
+              </label>
+              <input
+                type="password"
+                placeholder="Paste Client Secret from Intuit Development > Keys & OAuth"
+                value={editClientSecret}
+                onChange={e => setEditClientSecret(e.target.value)}
+                className="w-full px-3.5 py-2.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-100 font-mono text-xs focus:outline-none focus:border-amber-500"
+              />
+              <p className="text-[11px] text-stone-400 mt-1">
+                Used securely on the server to exchange authorization tokens.
+              </p>
+            </div>
           </div>
 
-          {secondaryCallback !== primaryCallback && (
-            <div className="pt-2 border-t border-sky-900/50 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-              <span className="text-stone-400 text-[11px]">
-                Optional Root Path: <code className="text-stone-300 font-mono bg-stone-900 px-1.5 py-0.5 rounded">{secondaryCallback}</code>
-              </span>
+          {/* Single Registered Endpoint URL */}
+          <div className="pt-2 border-t border-stone-800">
+            <label className="block text-stone-300 text-xs font-semibold mb-1 flex items-center justify-between">
+              <span>Your Single Intuit Redirect URI (Matches your Intuit configuration exactly):</span>
+              <span className="text-emerald-400 text-[11px] font-mono font-bold">LOCKED TO REGISTERED ENDPOINT</span>
+            </label>
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={CANONICAL_REDIRECT_URI}
+                className="flex-1 px-3.5 py-2.5 rounded-lg bg-stone-900 border border-stone-700 text-emerald-300 font-mono text-xs select-all focus:outline-none"
+              />
               <button
                 type="button"
-                onClick={() => handleCopy(secondaryCallback, 'Root Callback URI')}
-                className="px-3 py-1 rounded bg-stone-900 hover:bg-stone-800 text-sky-300 border border-stone-700 text-[11px] font-semibold flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+                onClick={() => handleCopy(CANONICAL_REDIRECT_URI, 'Endpoint URI')}
+                className="px-4 py-2.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-semibold text-xs flex items-center justify-center gap-2 border border-stone-700 cursor-pointer shrink-0"
               >
-                {copiedField === 'Root Callback URI' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                Copy Root URI
+                {copiedField === 'Endpoint URI' ? (
+                  <>
+                    <Check className="w-4 h-4 text-emerald-400" />
+                    <span>COPIED!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4 text-stone-400" />
+                    <span>COPY URL</span>
+                  </>
+                )}
               </button>
             </div>
-          )}
+          </div>
+
+          {/* Action button to save credentials */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+            <span className="text-[11px] text-amber-200/80">
+              ⚡ When you click <strong>Connect to QuickBooks</strong>, it will authenticate against your Development Sandbox using this Client ID and URI.
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                const cId = editClientId.trim();
+                const sec = editClientSecret.trim();
+                if (!cId) {
+                  showToast('Please paste your Development Client ID first.');
+                  return;
+                }
+                saveLocalConfig({ clientId: cId, environment: 'sandbox', redirectUri: CANONICAL_REDIRECT_URI });
+                setConfig(prev => ({ ...prev, clientId: cId, environment: 'sandbox', redirectUri: CANONICAL_REDIRECT_URI }));
+                try {
+                  await safeFetchJson('/api/qbo/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      clientId: cId,
+                      clientSecret: sec,
+                      environment: 'sandbox',
+                      redirectUri: CANONICAL_REDIRECT_URI
+                    })
+                  });
+                } catch {}
+                showToast('Development configuration saved!');
+                handleConnectIntuit();
+              }}
+              className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-stone-950 font-bold text-xs flex items-center justify-center gap-2 shadow cursor-pointer shrink-0"
+            >
+              <span>Save &amp; Connect Now</span>
+            </button>
+          </div>
         </div>
 
         {/* Quick KPI stats bar */}
@@ -1315,41 +1345,19 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                     </button>
                   </div>
 
-                  {/* Preset quick buttons */}
+                  {/* Registered endpoint button */}
                   <div className="pt-1 flex flex-wrap items-center gap-1.5 text-[10px]">
-                    <span className="text-stone-500 font-medium">Quick switch:</span>
+                    <span className="text-stone-500 font-medium">Registered Endpoint:</span>
                     <button
                       type="button"
                       onClick={() => {
-                        const uri = getDetectedRedirectUri();
-                        setModalRedirectUri(uri);
-                        handleCopy(uri, 'Detected URI');
+                        setModalRedirectUri(CANONICAL_REDIRECT_URI);
+                        handleCopy(CANONICAL_REDIRECT_URI, 'Registered URI');
                       }}
-                      className={`px-2 py-1 rounded border transition-colors cursor-pointer font-mono ${
-                        modalRedirectUri === getDetectedRedirectUri()
-                          ? 'bg-sky-950 text-sky-300 border-sky-600 font-bold'
-                          : 'bg-stone-950 text-stone-400 border-stone-800 hover:text-stone-200'
-                      }`}
+                      className="px-2 py-1 rounded border transition-colors cursor-pointer font-mono bg-sky-950 text-sky-300 border-sky-600 font-bold"
                     >
-                      Detected ({getDetectedRedirectUri().replace(window.location.origin, '')})
+                      GitHub Pages Endpoint (/Receipt_portal/api/qbo/callback)
                     </button>
-                    {getRootRedirectUri() !== getDetectedRedirectUri() && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const uri = getRootRedirectUri();
-                          setModalRedirectUri(uri);
-                          handleCopy(uri, 'Root URI');
-                        }}
-                        className={`px-2 py-1 rounded border transition-colors cursor-pointer font-mono ${
-                          modalRedirectUri === getRootRedirectUri()
-                            ? 'bg-sky-950 text-sky-300 border-sky-600 font-bold'
-                            : 'bg-stone-950 text-stone-400 border-stone-800 hover:text-stone-200'
-                        }`}
-                      >
-                        Root (/api/qbo/callback)
-                      </button>
-                    )}
                   </div>
                 </div>
 
