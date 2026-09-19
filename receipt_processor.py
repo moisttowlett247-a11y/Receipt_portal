@@ -638,14 +638,11 @@ class SubscriptionLicenseManager:
         """
         Returns True ONLY if a valid license key is assigned, its status is explicitly ACTIVE,
         and its expiration date (if not Lifetime/Admin) is not past.
+        Instant 0ms in-memory verification without blocking the Tkinter UI thread.
         """
         current_key = (self.license_data.get("license_key") or "").strip().upper()
         if not current_key:
             return False
-
-        # Fresh sync if more than 1.5 seconds since last scan
-        if (time.time() - self._last_scan_ts) > 1.5:
-            self.scan_remote_status()
 
         status = str(self.license_data.get("status", "INACTIVE")).strip().upper()
         if status != "ACTIVE":
@@ -2594,24 +2591,43 @@ class FarmReceiptApp(_TK_BASE_TK):
                 return
 
             status_feedback.config(text="⏳ Verifying license status with website portal...", fg="#38bdf8")
-            dialog.update_idletasks()
+            act_btn.config(state="disabled")
+            scan_btn.config(state="disabled")
 
-            success, msg = self.license_mgr.verify_with_server(k, em)
-            if success:
-                status_feedback.config(text=f"✅ {msg}", fg="#34d399")
-                self.sub_badge.config(text="👑 Pro Subscription", fg="#34d399")
-                self.log(f"👑 License activated for: {em or k}", "success")
-            else:
-                status_feedback.config(text=f"❌ {msg}", fg="#f87171")
-                self.sub_badge.config(text="🔒 License Inactive", fg="#ef4444")
-            refresh_ui()
+            def worker():
+                success, msg = self.license_mgr.verify_with_server(k, em)
+                def finish():
+                    if dialog.winfo_exists():
+                        act_btn.config(state="normal")
+                        scan_btn.config(state="normal")
+                        if success:
+                            status_feedback.config(text=f"✅ {msg}", fg="#34d399")
+                            self.sub_badge.config(text="👑 Pro Subscription", fg="#34d399")
+                            self.log(f"👑 License activated for: {em or k}", "success")
+                        else:
+                            status_feedback.config(text=f"❌ {msg}", fg="#f87171")
+                            self.sub_badge.config(text="🔒 License Inactive", fg="#ef4444")
+                        refresh_ui()
+                self.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         def scan_now():
             status_feedback.config(text="📡 Scanning website portal for changes...", fg="#38bdf8")
-            dialog.update_idletasks()
-            res = self.license_mgr.scan_remote_status(force=True)
-            self.handle_remote_license_changed(res)
-            refresh_ui(res)
+            act_btn.config(state="disabled")
+            scan_btn.config(state="disabled")
+
+            def worker():
+                res = self.license_mgr.scan_remote_status(force=True)
+                def finish():
+                    if dialog.winfo_exists():
+                        act_btn.config(state="normal")
+                        scan_btn.config(state="normal")
+                        self.handle_remote_license_changed(res)
+                        refresh_ui(res)
+                self.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         def remove_key():
             if not self.license_mgr.license_data.get("license_key"):
