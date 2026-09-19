@@ -1,1 +1,8 @@
-{"key": "ADMIN-MASTER-8185-5819", "status": "ACTIVE", "plan": "ADMIN", "expires": "Never (Lifetime / Non-Expiring)"}
+{
+  "status": "REVOKED",
+  "plan": "ADMIN",
+  "expires": "Never (Lifetime / Non-Expiring)",
+  "issued": "2026-09-18",
+  "hwid": "HW-ADMIN-MASTER-6067",
+  "updatedAt": "2026-09-19T00:40:27.317Z"
+}
