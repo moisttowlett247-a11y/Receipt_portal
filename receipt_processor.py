@@ -77,7 +77,25 @@ except ImportError:
     Retry = None
 
 
-def http_get_json(url: str, timeout: float = 3.0) -> tuple:
+# -----------------------------------------------------------------------------
+# Version & Remote Update Manifest Configuration
+# -----------------------------------------------------------------------------
+APP_VERSION = "1.0.0"
+
+# You can host this version.json on GitHub (Raw), an S3 bucket, or your website.
+UPDATE_MANIFEST_URL = os.getenv(
+    "UPDATE_MANIFEST_URL",
+    "https://raw.githubusercontent.com/yourusername/receipt-processor-updates/main/version.json"
+)
+
+# Remote license verification endpoint (or fallback license logic)
+LICENSE_SERVER_URL = os.getenv(
+    "LICENSE_SERVER_URL",
+    "https://api.youraccountingdomain.com/v1/verify-license"
+)
+
+
+def http_get_json(url: str, timeout: float = 2.0) -> tuple:
     """
     Performs an HTTP GET request returning (status_code, data_dict_or_none).
     Filters out HTML error/redirect pages so only real JSON objects are returned.
@@ -141,23 +159,6 @@ def http_get_json(url: str, timeout: float = 3.0) -> tuple:
                 pass
         return 0, None
 
-# -----------------------------------------------------------------------------
-# Version & Remote Update Manifest Configuration
-# -----------------------------------------------------------------------------
-APP_VERSION = "1.0.0"
-
-# You can host this version.json on GitHub (Raw), an S3 bucket, or your website.
-UPDATE_MANIFEST_URL = os.getenv(
-    "UPDATE_MANIFEST_URL",
-    "https://raw.githubusercontent.com/yourusername/receipt-processor-updates/main/version.json"
-)
-
-# Remote license verification endpoint (or fallback license logic)
-LICENSE_SERVER_URL = os.getenv(
-    "LICENSE_SERVER_URL",
-    "https://api.youraccountingdomain.com/v1/verify-license"
-)
-
 
 # -----------------------------------------------------------------------------
 # Subscription & Licensing System (Allowed vs. Not Allowed Users)
@@ -177,24 +178,41 @@ DEFAULT_PORTAL_ENDPOINTS = [
     "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
 ]
 
+_CACHED_PUBLIC_IP = "127.0.0.1"
+_LAST_IP_FETCH_TS = 0
+_IP_FETCHING = False
+
+def _fetch_ip_worker():
+    global _CACHED_PUBLIC_IP, _LAST_IP_FETCH_TS, _IP_FETCHING
+    try:
+        ip_endpoints = [
+            "https://api.ipify.org",
+            "https://checkip.amazonaws.com",
+            "https://icanhazip.com",
+            "https://ifconfig.me/ip"
+        ]
+        for ep in ip_endpoints:
+            try:
+                req = urllib.request.Request(ep, headers={"User-Agent": "curl/7.68.0"})
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    ip = resp.read().decode("utf-8").strip()
+                    if ip and len(ip) <= 45 and ("." in ip or ":" in ip):
+                        _CACHED_PUBLIC_IP = ip
+                        _LAST_IP_FETCH_TS = time.time()
+                        break
+            except Exception:
+                continue
+    finally:
+        _IP_FETCHING = False
+
 def get_public_ip() -> str:
-    """Fetches the workstation's real public IP address via reliable external services."""
-    ip_endpoints = [
-        "https://api.ipify.org",
-        "https://checkip.amazonaws.com",
-        "https://icanhazip.com",
-        "https://ifconfig.me/ip"
-    ]
-    for ep in ip_endpoints:
-        try:
-            req = urllib.request.Request(ep, headers={"User-Agent": "curl/7.68.0"})
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                ip = resp.read().decode("utf-8").strip()
-                if ip and len(ip) <= 45 and ("." in ip or ":" in ip):
-                    return ip
-        except Exception:
-            continue
-    return "127.0.0.1"
+    """Returns the workstation public IP address instantly from cache, refreshing asynchronously."""
+    global _CACHED_PUBLIC_IP, _LAST_IP_FETCH_TS, _IP_FETCHING
+    now = time.time()
+    if (_CACHED_PUBLIC_IP == "127.0.0.1" or (now - _LAST_IP_FETCH_TS) > 300) and not _IP_FETCHING:
+        _IP_FETCHING = True
+        threading.Thread(target=_fetch_ip_worker, daemon=True).start()
+    return _CACHED_PUBLIC_IP
 
 
 def get_machine_hardware_id() -> str:
@@ -220,9 +238,6 @@ class SubscriptionLicenseManager:
         self.license_data = self.load_local_license()
         self._last_scan_ts = 0
         self.connected_portal = ""
-
-        # Perform initial sync
-        self.scan_remote_status(force=True)
 
     def get_active_portal_endpoints(self) -> list:
         """Returns non-empty, deduplicated portal endpoints."""
