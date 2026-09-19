@@ -3700,8 +3700,50 @@ class FarmReceiptApp(_TK_BASE_TK):
 # Entry Point
 # -----------------------------------------------------------------------------
 def main():
-    app = FarmReceiptApp()
-    app.mainloop()
+    # 1. Verify Tkinter availability
+    if tk is None:
+        err_msg = (
+            "\n" + "="*70 + "\n"
+            "[ERROR] Tkinter GUI library is not available in this Python installation.\n"
+            "On Windows: Run your Python installer again -> Click 'Modify' ->\n"
+            "Ensure the checkbox 'tcl/tk and IDLE' is checked, then finish setup.\n"
+            + "="*70 + "\n"
+        )
+        print(err_msg)
+        try:
+            with open(os.path.join(SCRIPT_DIR, "crash_log.txt"), "w", encoding="utf-8") as f:
+                f.write(err_msg)
+        except Exception:
+            pass
+        return
+
+    # 2. Launch GUI Application with top-level crash guard
+    try:
+        app = FarmReceiptApp()
+        app.mainloop()
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        err_report = (
+            "\n" + "="*70 + "\n"
+            f"[FATAL ERROR] Receipt Processor failed to initialize or encountered a crash:\n"
+            f"{tb}\n"
+            + "="*70 + "\n"
+        )
+        print(err_report)
+        try:
+            with open(os.path.join(SCRIPT_DIR, "crash_log.txt"), "w", encoding="utf-8") as f:
+                f.write(f"Timestamp: {datetime.now().isoformat()}\nError: {e}\n\nTraceback:\n{tb}")
+        except Exception:
+            pass
+        try:
+            if messagebox:
+                messagebox.showerror(
+                    "Receipt Processor Startup Error",
+                    f"The application encountered an error while starting:\n\n{e}\n\nDetails have been saved to crash_log.txt."
+                )
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()
