@@ -47,8 +47,13 @@ export interface LicenseHashFileContent {
 }
 
 export function getEffectiveStatus(k: LicenseKeyRecord): 'ACTIVE' | 'REVOKED' | 'EXPIRED' {
-  if (k.status === 'NOT ACTIVE') return 'REVOKED';
-  if (k.status === 'EXPIRED') return 'EXPIRED';
+  const s = String(k.status || '').toUpperCase();
+  if (s === 'NOT ACTIVE' || s === 'REVOKED' || s === 'INACTIVE' || s === 'SUSPENDED') {
+    return 'REVOKED';
+  }
+  if (s === 'EXPIRED') {
+    return 'EXPIRED';
+  }
   if (k.plan === 'ADMIN' || k.expiresDate?.includes('Never') || k.expiresDate?.includes('Lifetime')) {
     return 'ACTIVE';
   }

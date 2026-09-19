@@ -2,6 +2,20 @@ import { LicenseKeyRecord } from './types';
 import { computeSha256Hex } from './hashUtils';
 import { getEffectiveStatus } from './githubSyncService';
 
+export interface ServerLicenseItem {
+  hash: string;
+  key?: string;
+  clientName?: string;
+  clientEmail?: string;
+  plan?: string;
+  status?: string;
+  expires?: string;
+  issued?: string;
+  hwid?: string | null;
+  inUse?: boolean;
+  updatedAt?: string;
+}
+
 /**
  * Pushes or deletes a license record directly to the website backend (/api/licenses/sync)
  * so that any local desktop receipt processor running remotely or locally receives real-time updates.
@@ -17,11 +31,15 @@ export async function syncKeyToServer(
       key: k.key,
       hash,
       record: action === 'UPSERT' ? {
+        key: k.key,
+        clientName: k.clientName,
+        clientEmail: k.clientEmail,
         status: getEffectiveStatus(k),
         plan: k.plan,
         expires: k.expiresDate,
         issued: k.issuedDate,
-        hwid: k.hardwareId || null
+        hwid: k.hardwareId || null,
+        inUse: k.inUse
       } : undefined
     };
 
@@ -39,6 +57,24 @@ export async function syncKeyToServer(
     console.warn('Unable to sync license to server API (will retry on next status change):', err);
   }
   return { success: false, message: 'Server sync failed' };
+}
+
+/**
+ * Fetches all license records currently stored on the backend server.
+ */
+export async function fetchAllServerLicenses(): Promise<ServerLicenseItem[]> {
+  try {
+    const resp = await fetch('/api/licenses/all');
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.licenses)) {
+        return data.licenses;
+      }
+    }
+  } catch (err) {
+    console.warn('Unable to fetch licenses from server:', err);
+  }
+  return [];
 }
 
 /**

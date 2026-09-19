@@ -52,7 +52,7 @@ import { QuickBooksProductionCenter } from './components/QuickBooksProductionCen
 import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
-import { syncKeyToServer, batchSyncKeysToServer } from './licenseSyncService';
+import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses } from './licenseSyncService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -79,7 +79,7 @@ export default function App() {
     return INITIAL_KEYS;
   });
 
-  // Save changes to localStorage and ensure server sync
+  // Save changes to localStorage
   useEffect(() => {
     try {
       localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(licenseKeys));
@@ -88,11 +88,63 @@ export default function App() {
     }
   }, [licenseKeys]);
 
-  // Initial sync of existing keys to website server
+  // Bidirectional sync: Fetch authoritative licenses from server on mount and merge
   useEffect(() => {
-    if (licenseKeys && licenseKeys.length > 0) {
-      batchSyncKeysToServer(licenseKeys);
+    async function loadServerLicenses() {
+      try {
+        const serverItems = await fetchAllServerLicenses();
+        if (serverItems && serverItems.length > 0) {
+          setLicenseKeys(prev => {
+            const map = new Map<string, LicenseKeyRecord>();
+            for (const k of prev) {
+              map.set(k.key.trim().toUpperCase(), k);
+            }
+
+            for (const s of serverItems) {
+              const effectiveKey = (s.key || '').trim().toUpperCase();
+              const status: LicenseStatus = (s.status === 'REVOKED' || s.status === 'NOT ACTIVE' || s.status === 'INACTIVE' || s.status === 'SUSPENDED')
+                ? 'NOT ACTIVE'
+                : (s.status === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE');
+
+              if (effectiveKey) {
+                const existing = map.get(effectiveKey);
+                if (existing) {
+                  map.set(effectiveKey, {
+                    ...existing,
+                    status,
+                    plan: (s.plan as PlanTier) || existing.plan,
+                    expiresDate: s.expires || existing.expiresDate,
+                    issuedDate: s.issued || existing.issuedDate,
+                    hardwareId: s.hwid || existing.hardwareId,
+                    clientName: s.clientName || existing.clientName,
+                    clientEmail: s.clientEmail || existing.clientEmail,
+                  });
+                } else {
+                  map.set(effectiveKey, {
+                    id: `server-${s.hash.slice(0, 10)}`,
+                    key: effectiveKey,
+                    clientName: s.clientName || (effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`),
+                    clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : 'client@example.com'),
+                    plan: (s.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
+                    status,
+                    inUse: s.inUse ?? true,
+                    issuedDate: s.issued || new Date().toISOString().split('T')[0],
+                    activatedDate: s.issued || new Date().toISOString().split('T')[0],
+                    expiresDate: s.expires || (effectiveKey.includes('ADMIN') ? 'Never (Lifetime / Non-Expiring)' : ''),
+                    hardwareId: s.hwid || undefined,
+                    notes: `Synced from Server Database (${s.hash.slice(0, 8)}...)`
+                  });
+                }
+              }
+            }
+            return Array.from(map.values());
+          });
+        }
+      } catch (err) {
+        console.warn('Initial server license load failed:', err);
+      }
     }
+    loadServerLicenses();
   }, []);
 
   // Licensing generator state

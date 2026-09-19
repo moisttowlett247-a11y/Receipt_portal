@@ -297,8 +297,8 @@ function licenseSyncApiPlugin(): Plugin {
           return;
         }
 
-        // GET /api/licenses/sessions - Retrieve all active/recent connected devices
-        if (pathname === '/api/licenses/sessions' && req.method === 'GET') {
+        // GET /api/licenses/sessions or /api/devices/sessions - Retrieve all active/recent connected devices
+        if ((pathname === '/api/licenses/sessions' || pathname === '/api/devices/sessions') && req.method === 'GET') {
           try {
             const sessionsObj = loadSessions();
             const now = Date.now();
@@ -349,14 +349,14 @@ function licenseSyncApiPlugin(): Plugin {
           }
         }
 
-        // POST /api/licenses/sessions/clear - Prune offline/all sessions
-        if (pathname === '/api/licenses/sessions/clear' && req.method === 'POST') {
+        // POST /api/licenses/sessions/clear or /api/devices/sessions/clear - Prune offline/all sessions
+        if ((pathname === '/api/licenses/sessions/clear' || pathname === '/api/devices/sessions/clear' || pathname === '/api/devices/sessions/prune') && (req.method === 'POST' || req.method === 'DELETE')) {
           let bodyStr = '';
           req.on('data', chunk => { bodyStr += chunk; });
           req.on('end', () => {
             try {
               const body = JSON.parse(bodyStr || '{}');
-              const clearAll = Boolean(body.clearAll);
+              const clearAll = Boolean(body.clearAll) || req.method === 'DELETE';
               const sessionsObj = loadSessions();
               const now = Date.now();
 
@@ -514,16 +514,49 @@ function licenseSyncApiPlugin(): Plugin {
               }
 
               // UPSERT
+              const statusUpper = rec?.status ? String(rec.status).toUpperCase() : 'ACTIVE';
+              const normalizedStatus = (statusUpper === 'NOT ACTIVE' || statusUpper === 'REVOKED' || statusUpper === 'INACTIVE' || statusUpper === 'SUSPENDED')
+                ? 'REVOKED'
+                : (statusUpper === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE');
+
+              // Read existing record if present to merge metadata
+              let existing: any = {};
+              if (fs.existsSync(targetFile)) {
+                try {
+                  existing = JSON.parse(fs.readFileSync(targetFile, 'utf-8'));
+                } catch {}
+              }
+
               const content = {
-                status: rec?.status ? String(rec.status).toUpperCase() : 'ACTIVE',
-                plan: rec?.plan || 'Standard',
-                expires: rec?.expires || '',
-                issued: rec?.issued || new Date().toISOString().split('T')[0],
-                hwid: rec?.hwid || null,
+                key: key || rec?.key || existing.key || '',
+                clientName: rec?.clientName || existing.clientName || '',
+                clientEmail: rec?.clientEmail || existing.clientEmail || '',
+                status: normalizedStatus,
+                plan: rec?.plan || existing.plan || 'Standard',
+                expires: rec?.expires || rec?.expiresDate || existing.expires || '',
+                issued: rec?.issued || rec?.issuedDate || existing.issued || new Date().toISOString().split('T')[0],
+                hwid: rec?.hwid || rec?.hardwareId || existing.hwid || null,
+                inUse: rec?.inUse !== undefined ? Boolean(rec.inUse) : (existing.inUse !== undefined ? existing.inUse : true),
                 updatedAt: new Date().toISOString()
               };
 
               fs.writeFileSync(targetFile, JSON.stringify(content, null, 2), 'utf-8');
+
+              // Also update active session status if present
+              try {
+                const sessionsObj = loadSessions();
+                let sessionsChanged = false;
+                for (const s of Object.values(sessionsObj) as any[]) {
+                  if (s.hash === hash) {
+                    s.status = normalizedStatus;
+                    if (content.key && !s.rawKey) s.rawKey = content.key;
+                    sessionsChanged = true;
+                  }
+                }
+                if (sessionsChanged) {
+                  saveSessions(sessionsObj);
+                }
+              } catch {}
 
               res.statusCode = 200;
               res.setHeader('Content-Type', 'application/json');
@@ -532,6 +565,7 @@ function licenseSyncApiPlugin(): Plugin {
                 action: 'UPSERT',
                 hash,
                 status: content.status,
+                record: content,
                 message: `License hash ${hash.slice(0, 12)}... saved (${content.status})`
               }));
             } catch (err: any) {
@@ -546,12 +580,34 @@ function licenseSyncApiPlugin(): Plugin {
         // GET /api/licenses/all - List all active server records
         if (pathname === '/api/licenses/all' && req.method === 'GET') {
           try {
-            const files = fs.readdirSync(licensesDir).filter(f => f.endsWith('.json') && f !== 'registry.json');
+            const files = fs.readdirSync(licensesDir).filter(f => 
+              f.endsWith('.json') && 
+              f !== 'registry.json' && 
+              f !== 'active_sessions.json' && 
+              f !== 'inquiries.json'
+            );
+            const sessionsObj = loadSessions();
+            const sessionValues = Object.values(sessionsObj) as any[];
+
             const items = files.map(file => {
               const hash = file.replace('.json', '');
               try {
                 const data = JSON.parse(fs.readFileSync(path.join(licensesDir, file), 'utf-8'));
-                return { hash, ...data };
+                // Find matching session if raw key or client name is missing
+                const matchSession = sessionValues.find(s => s.hash === hash);
+                return { 
+                  hash, 
+                  key: data.key || matchSession?.rawKey || '',
+                  clientName: data.clientName || (matchSession ? `Device ${matchSession.machineName || matchSession.ip}` : ''),
+                  clientEmail: data.clientEmail || '',
+                  plan: data.plan || matchSession?.plan || 'Standard',
+                  status: data.status || 'ACTIVE',
+                  expires: data.expires || '',
+                  issued: data.issued || '',
+                  hwid: data.hwid || matchSession?.hwid || null,
+                  inUse: data.inUse !== undefined ? data.inUse : true,
+                  updatedAt: data.updatedAt || ''
+                };
               } catch {
                 return { hash, status: 'UNKNOWN' };
               }

@@ -1,65 +1,146 @@
 @echo off
+setlocal enabledelayedexpansion
 title Farm & Small Business Receipt Processor Launcher
 color 0b
+
 echo =====================================================================
 echo  FARM ^& SMALL BUSINESS RECEIPT PROCESSOR
 echo  High-Speed AI Receipt OCR, QuickBooks Integration ^& License Manager
 echo =====================================================================
 echo.
 
-:: 1. Check if Python is installed and accessible in PATH
+:: 1. Navigate directly to the directory containing this batch script
+cd /d "%~dp0"
+echo [INFO] Working directory: %cd%
+echo.
+
+:: 2. Search for Python / Py launcher
+set "PY_CMD="
+
+:: Check standard 'python'
 python --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo [ERROR] Python is not detected in your system PATH!
+if %errorlevel% equ 0 (
+    set "PY_CMD=python"
+    goto :PYTHON_FOUND
+)
+
+:: Check Windows Python Launcher 'py'
+py --version >nul 2>&1
+if %errorlevel% equ 0 (
+    set "PY_CMD=py"
+    goto :PYTHON_FOUND
+)
+
+:: Check python3
+python3 --version >nul 2>&1
+if %errorlevel% equ 0 (
+    set "PY_CMD=python3"
+    goto :PYTHON_FOUND
+)
+
+:: Check common Windows installation paths
+if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
+    set "PY_CMD=%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
+    goto :PYTHON_FOUND
+)
+if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
+    set "PY_CMD=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
+    goto :PYTHON_FOUND
+)
+if exist "%LOCALAPPDATA%\Programs\Python\Python310\python.exe" (
+    set "PY_CMD=%LOCALAPPDATA%\Programs\Python\Python310\python.exe"
+    goto :PYTHON_FOUND
+)
+if exist "C:\Python312\python.exe" (
+    set "PY_CMD=C:\Python312\python.exe"
+    goto :PYTHON_FOUND
+)
+if exist "C:\Python311\python.exe" (
+    set "PY_CMD=C:\Python311\python.exe"
+    goto :PYTHON_FOUND
+)
+if exist "C:\Python310\python.exe" (
+    set "PY_CMD=C:\Python310\python.exe"
+    goto :PYTHON_FOUND
+)
+
+:: If not found:
+echo [ERROR] Python was not found in your system PATH or standard folders!
+echo.
+echo Please install Python (version 3.10, 3.11, or 3.12) from:
+echo   https://www.python.org/downloads/
+echo.
+echo *** CRITICAL ***:
+echo During installation, be sure to CHECK the box:
+echo   [X] "Add python.exe to PATH"
+echo.
+pause
+exit /b 1
+
+:PYTHON_FOUND
+echo [OK] Python executable detected:
+%PY_CMD% --version
+echo.
+
+:: 3. Verify that receipt_processor.py exists in the current folder
+if not exist "%~dp0receipt_processor.py" (
+    echo [ERROR] Could not find 'receipt_processor.py' in this folder:
+    echo   %~dp0
     echo.
-    echo Please install Python 3.10 or newer from https://www.python.org/
-    echo IMPORTANT: Make sure to check the box "Add Python to PATH" during installation.
+    echo Please make sure you extracted all files from the downloaded ZIP folder
+    echo and that 'receipt_processor.py' sits alongside this .bat file.
     echo.
     pause
     exit /b 1
 )
 
-echo [OK] Python found:
-python --version
-echo.
+:: 4. Check for Tkinter GUI support
+%PY_CMD% -c "import tkinter" >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [WARNING] Tkinter GUI module not found in this Python installation.
+    echo On Windows, re-run Python setup and choose 'Modify' -> ensure 'tcl/tk and IDLE' is checked.
+    echo.
+)
 
-:: 2. Check for requirements.txt and install missing dependencies
+:: 5. Install / verify dependencies
 if exist "%~dp0requirements.txt" (
-    echo [INFO] Checking and installing required dependencies from requirements.txt...
-    python -m pip install --quiet --upgrade pip
-    python -m pip install -r "%~dp0requirements.txt"
+    echo [INFO] Verifying and installing required packages from requirements.txt...
+    %PY_CMD% -m pip install -r "%~dp0requirements.txt" --disable-pip-version-check
     if %errorlevel% neq 0 (
-        echo [WARNING] Some dependencies could not be automatically installed.
-        echo Attempting to launch application with standard library fallbacks...
-    ) else (
-        echo [OK] All Python dependencies are satisfied!
+        echo [WARNING] Some dependencies failed to install. Continuing anyway...
     )
 ) else (
     echo [INFO] Installing essential dependencies (Pillow, requests, python-dotenv, cryptography)...
-    python -m pip install --quiet Pillow requests python-dotenv cryptography
+    %PY_CMD% -m pip install Pillow requests python-dotenv cryptography --disable-pip-version-check
 )
 echo.
 
-:: 3. Check for .env file; create from .env.example if missing
+:: 6. Check for .env template
 if not exist "%~dp0.env" (
     if exist "%~dp0.env.example" (
-        echo [INFO] Creating initial .env file from template...
         copy "%~dp0.env.example" "%~dp0.env" >nul
-        echo [INFO] .env created. You can add your GEMINI_API_KEY in this file if desired.
+        echo [INFO] Created default .env file from template.
     )
 )
 
-:: 4. Launch the receipt processor desktop app
+:: 7. Launch application
 echo =====================================================================
 echo  Starting Receipt Processor GUI...
 echo =====================================================================
 echo.
-cd /d "%~dp0"
-python receipt_processor.py
 
-if %errorlevel% neq 0 (
-    echo.
-    echo [ERROR] Application exited with error code %errorlevel%.
-    echo Press any key to close this console.
-    pause >nul
+%PY_CMD% "%~dp0receipt_processor.py"
+set "APP_EXIT=%errorlevel%"
+
+echo.
+echo =====================================================================
+if %APP_EXIT% equ 0 (
+    echo  Receipt Processor closed normally.
+) else (
+    echo  [NOTICE] Receipt Processor closed with code %APP_EXIT%.
 )
+echo =====================================================================
+echo.
+echo Press any key to exit this window...
+pause >nul
+

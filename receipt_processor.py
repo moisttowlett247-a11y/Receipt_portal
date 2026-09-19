@@ -675,6 +675,57 @@ class SubscriptionLicenseManager:
             return False, "Please enter a valid license key."
 
         key_hash = hashlib.sha256(clean_key.encode('utf-8')).hexdigest().lower()
+
+        # 0. Check local files in project workspace for zero-latency verification
+        possible_local_paths = [
+            os.path.join(os.getcwd(), "public", "licenses", f"{key_hash}.json"),
+            os.path.join(os.getcwd(), "dist", "licenses", f"{key_hash}.json"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "licenses", f"{key_hash}.json"),
+            os.path.join(os.getcwd(), "licenses", f"{key_hash}.json")
+        ]
+        for lpath in possible_local_paths:
+            if os.path.isfile(lpath):
+                try:
+                    with open(lpath, "r", encoding="utf-8") as lf:
+                        ldata = json.load(lf)
+                    if isinstance(ldata, dict) and "status" in ldata:
+                        l_status = str(ldata.get("status", "")).strip().upper()
+                        l_plan = str(ldata.get("plan", "Standard")).strip()
+                        l_expires = str(ldata.get("expires", "")).strip()
+
+                        is_admin = ("ADMIN" in clean_key or "MASTER" in clean_key or "ADMIN" in l_plan.upper())
+                        plan_display = "Admin (Lifetime)" if is_admin else (l_plan if l_plan not in ["Unregistered", "Unknown", "Standard", ""] else "Pro Subscription")
+
+                        if l_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                            self.license_data["license_key"] = clean_key
+                            self.license_data["status"] = "REVOKED"
+                            self.license_data["plan_tier"] = plan_display
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+                            return False, f"❌ License key '{clean_key}' is REVOKED / INACTIVE on the portal. Activation denied."
+                        elif l_status == "EXPIRED":
+                            self.license_data["license_key"] = clean_key
+                            self.license_data["status"] = "EXPIRED"
+                            self.license_data["plan_tier"] = plan_display
+                            self.license_data["expires_at"] = l_expires or "Expired"
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+                            return False, f"⏳ License key '{clean_key}' has EXPIRED. Subscription renewal required."
+                        elif l_status == "ACTIVE":
+                            self.license_data["license_key"] = clean_key
+                            self.license_data["status"] = "ACTIVE"
+                            self.license_data["plan_tier"] = plan_display
+                            if email:
+                                self.license_data["user_email"] = email
+                            self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                            self.license_data["expires_at"] = l_expires or ("Never (Lifetime / Non-Expiring)" if is_admin else "")
+                            self.license_data["last_verified"] = datetime.now().isoformat()
+                            self.save_local_license()
+                            self.send_heartbeat()
+                            return True, f"✅ Verified Active on Website! Plan: {plan_display} • Machine ID Locked."
+                except Exception:
+                    pass
+
         endpoints = self.get_active_portal_endpoints()
         pub_ip = get_public_ip()
 
