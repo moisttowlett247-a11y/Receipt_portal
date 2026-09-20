@@ -169,6 +169,7 @@ LICENSE_REGISTRY_FILE = os.getenv("LICENSE_REGISTRY_PATH", "license_registry.jso
 
 # Known portal endpoints for real-time license state synchronization (Live Cloud portal is primary)
 RAW_PORTAL_ENDPOINTS = [
+    "https://receipt-license-api.moisttowlett247.workers.dev",
     "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
     "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
     os.getenv("PORTAL_URL", "").strip().rstrip("/"),
