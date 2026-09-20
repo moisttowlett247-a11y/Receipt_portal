@@ -21,10 +21,20 @@ import {
   Activity,
   AlertTriangle,
   Play,
-  Pause
+  Pause,
+  Unlock,
+  Zap,
+  MapPin
 } from 'lucide-react';
 import { ActiveDeviceSession, LicenseKeyRecord } from '../types';
 import { getStoredGitHubConfig } from '../githubSyncService';
+import {
+  fetchCloudflareLicenses,
+  fetchCloudflareHealth,
+  unlockHwidOnCloudflare,
+  revokeLicenseOnCloudflare,
+  CLOUDFLARE_WORKER_URL
+} from '../licenseSyncService';
 
 interface ActiveDevicesMonitorProps {
   licenseKeys: LicenseKeyRecord[];
@@ -46,16 +56,74 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [isPruning, setIsPruning] = useState<boolean>(false);
   const [isRevokingKey, setIsRevokingKey] = useState<string | null>(null);
+  const [isUnlockingHwid, setIsUnlockingHwid] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState<boolean>(false);
+  const [cfHealth, setCfHealth] = useState<{ online: boolean; ip?: string; location?: string; hasDb?: boolean }>({
+    online: true,
+    hasDb: true
+  });
 
-  // Fetch active sessions from server and/or GitHub Raw repository
+  // Fetch active sessions from Cloudflare KV Edge API, server, and fallback
   const fetchSessions = useCallback(async (silent = false) => {
     if (!silent) setIsLoading(true);
     let loadedSessions: ActiveDeviceSession[] = [];
-    let serverSuccess = false;
     const now = Date.now();
+    const sessionMap = new Map<string, ActiveDeviceSession>();
 
-    // 1. Try server endpoint first (with cache-busting timestamp)
+    // 1. Fetch from Cloudflare KV Edge API (Zero-latency global IP & machine tracker)
+    try {
+      const [cfLicenses, health] = await Promise.all([
+        fetchCloudflareLicenses(),
+        fetchCloudflareHealth()
+      ]);
+      if (health) setCfHealth(health);
+
+      if (Array.isArray(cfLicenses) && cfLicenses.length > 0) {
+        for (const cf of cfLicenses) {
+          if (!cf.key) continue;
+          const lastPingMs = cf.last_seen_at ? new Date(cf.last_seen_at).getTime() : 0;
+          const diffMs = lastPingMs > 0 ? Math.max(0, now - lastPingMs) : 999999999;
+          const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
+          let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
+          if (secondsSinceLastPing < 90) {
+            onlineState = 'ONLINE';
+          } else if (secondsSinceLastPing < 600) {
+            onlineState = 'IDLE';
+          }
+
+          const rawKey = cf.key;
+          const keyMasked = rawKey.length > 8 ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}` : rawKey;
+          const machineName = cf.last_machine || cf.first_activated_machine || 'Workstation';
+          const ip = cf.last_ip || 'Pending Connection';
+          const id = `cf_${rawKey}`;
+
+          sessionMap.set(rawKey, {
+            id,
+            ip,
+            hash: '',
+            keyMasked,
+            rawKey,
+            hwid: cf.hwid || 'Pending First Activation',
+            machineName,
+            appVersion: '2.4.0',
+            plan: cf.plan || 'Pro',
+            status: cf.status || 'ACTIVE',
+            lastPing: cf.last_seen_at || cf.created_at || new Date().toISOString(),
+            lastPingMs: lastPingMs || now,
+            firstSeen: cf.first_activated_at || cf.created_at || new Date().toISOString(),
+            pingCount: cf.last_seen_at ? 5 : 1,
+            secondsSinceLastPing,
+            onlineState,
+            location: cf.last_location || undefined,
+            isCloudflare: true
+          });
+        }
+      }
+    } catch (cfErr) {
+      console.warn('Cloudflare KV edge fetch notice:', cfErr);
+    }
+
+    // 2. Try server endpoint (local sessions)
     try {
       const res = await fetch(`/api/licenses/sessions?_t=${now}`, {
         headers: { 'Cache-Control': 'no-cache, no-store' }
@@ -63,7 +131,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.sessions)) {
-          loadedSessions = data.sessions.map((s: any) => {
+          for (const s of data.sessions) {
             const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
             const diffMs = Math.max(0, now - lastPingMs);
             const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
@@ -73,21 +141,36 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
             } else if (diffMs < 600000) {
               onlineState = 'IDLE';
             }
-            return {
-              ...s,
-              onlineState: s.onlineState || onlineState,
-              secondsSinceLastPing
-            };
-          });
-          serverSuccess = true;
+
+            const k = s.rawKey || s.keyMasked;
+            if (sessionMap.has(k)) {
+              // Merge details
+              const existing = sessionMap.get(k)!;
+              sessionMap.set(k, {
+                ...existing,
+                ip: s.ip && s.ip !== '127.0.0.1' ? s.ip : existing.ip,
+                machineName: s.machineName || existing.machineName,
+                hwid: s.hwid && s.hwid !== 'Pending HWID' ? s.hwid : existing.hwid,
+                pingCount: Math.max(existing.pingCount, s.pingCount || 1),
+                secondsSinceLastPing: Math.min(existing.secondsSinceLastPing, secondsSinceLastPing),
+                onlineState: existing.onlineState === 'ONLINE' ? 'ONLINE' : onlineState
+              });
+            } else {
+              sessionMap.set(s.id || `${s.ip}_${s.hash}`, {
+                ...s,
+                onlineState: s.onlineState || onlineState,
+                secondsSinceLastPing
+              });
+            }
+          }
         }
       }
     } catch (err) {
       console.warn('Local sessions endpoint unreachable:', err);
     }
 
-    // 2. ONLY fallback to GitHub raw if local/server endpoint was completely unreachable
-    if (!serverSuccess) {
+    // 3. Fallback to GitHub raw if nothing found
+    if (sessionMap.size === 0) {
       try {
         const ghCfg = getStoredGitHubConfig();
         const ghUrl = `https://raw.githubusercontent.com/${ghCfg.owner}/${ghCfg.repo}/${ghCfg.branch}/public/licenses/active_sessions.json?t=${now}`;
@@ -95,42 +178,34 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
         if (ghRes.ok) {
           const rawDict = await ghRes.json();
           if (rawDict && typeof rawDict === 'object') {
-            const mapped: ActiveDeviceSession[] = Object.values(rawDict).map((s: any) => {
+            for (const s of Object.values(rawDict) as any[]) {
               const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
               const diffMs = Math.max(0, now - lastPingMs);
               const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
               let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
-              if (diffMs < 90000) {
-                onlineState = 'ONLINE';
-              } else if (diffMs < 600000) {
-                onlineState = 'IDLE';
-              }
-              return {
-                id: s.id || `${s.ip}_${s.hash}`,
-                ip: s.ip || '127.0.0.1',
-                hash: s.hash || '',
-                keyMasked: s.keyMasked || s.rawKey || '••••-••••',
-                rawKey: s.rawKey || '',
-                hwid: s.hwid || 'Desktop-PC',
-                machineName: s.machineName || 'Workstation',
-                appVersion: s.appVersion || '1.0.0',
-                plan: s.plan || 'Standard',
-                status: s.status || 'ACTIVE',
-                lastPing: s.lastPing || new Date().toISOString(),
-                lastPingMs,
-                firstSeen: s.firstSeen || s.lastPing || new Date().toISOString(),
-                pingCount: s.pingCount || 1,
-                secondsSinceLastPing,
-                onlineState
-              };
-            });
-            loadedSessions = mapped;
+              if (diffMs < 90000) onlineState = 'ONLINE';
+              else if (diffMs < 600000) onlineState = 'IDLE';
+
+              sessionMap.set(s.id || `${s.ip}_${s.hash}`, {
+                ...s,
+                onlineState,
+                secondsSinceLastPing
+              });
+            }
           }
         }
       } catch (ghErr) {
         console.warn('Could not fetch sessions from GitHub raw fallback:', ghErr);
       }
     }
+
+    loadedSessions = Array.from(sessionMap.values());
+    // Sort online first, then by last ping
+    loadedSessions.sort((a, b) => {
+      if (a.onlineState === 'ONLINE' && b.onlineState !== 'ONLINE') return -1;
+      if (b.onlineState === 'ONLINE' && a.onlineState !== 'ONLINE') return 1;
+      return (b.lastPingMs || 0) - (a.lastPingMs || 0);
+    });
 
     setSessions(loadedSessions);
     setLastFetched(new Date());
@@ -199,11 +274,14 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       // 1. If key is in local registry, trigger parent onRevokeKey
       if (session.rawKey) {
         onRevokeKey(session.rawKey);
+        // Also revoke on Cloudflare KV database directly
+        await revokeLicenseOnCloudflare(session.rawKey);
       } else {
         // Find matching key by hash
         const matched = licenseKeys.find(k => k.key.toUpperCase() === session.rawKey?.toUpperCase());
         if (matched) {
           onRevokeKey(matched.key);
+          await revokeLicenseOnCloudflare(matched.key);
         }
       }
 
@@ -223,12 +301,36 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
         })
       });
 
-      if (showToast) showToast(`License revoked! Workstation ${session.ip} will be locked within seconds.`);
-      await fetchSessions();
+      if (showToast) showToast(`License revoked! Workstation ${session.ip} locked across Edge KV & Portal.`);
+      await fetchSessions(true);
     } catch (err: any) {
       if (showToast) showToast(`Revoke error: ${err.message}`);
     } finally {
       setIsRevokingKey(null);
+    }
+  };
+
+  // Instant unlock Hardware ID (HWID) so user can switch PCs
+  const handleUnlockHwid = async (session: ActiveDeviceSession) => {
+    const key = session.rawKey || session.keyMasked;
+    if (!key) return;
+    if (!window.confirm(`Unlock hardware ID (HWID) for ${key}?\n\nThis frees the machine lock so the customer can activate on their new PC.`)) {
+      return;
+    }
+
+    setIsUnlockingHwid(session.id);
+    try {
+      const res = await unlockHwidOnCloudflare(key);
+      if (res.success) {
+        if (showToast) showToast(`✅ HWID unlocked for ${key}! Ready for new computer.`);
+      } else {
+        if (showToast) showToast(`⚠️ ${res.message}`);
+      }
+      await fetchSessions(true);
+    } catch (err: any) {
+      if (showToast) showToast(`Unlock error: ${err.message}`);
+    } finally {
+      setIsUnlockingHwid(null);
     }
   };
 
@@ -295,9 +397,19 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
                     <span>Real-Time Ingestion</span>
                   </span>
+                  <a
+                    href={CLOUDFLARE_WORKER_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="hidden sm:flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-950/80 border border-amber-800/70 text-amber-300 hover:bg-amber-900 transition-colors"
+                    title={`Connected to Cloudflare Worker KV: ${CLOUDFLARE_WORKER_URL}`}
+                  >
+                    <Zap className="w-3 h-3 text-amber-400" />
+                    <span>Cloudflare Edge KV</span>
+                  </a>
                 </div>
                 <p className="text-xs text-stone-400 mt-0.5">
-                  Tracks actual public IP addresses, hostnames, and hardware fingerprints of desktop computers running your application.
+                  Tracks actual public IP addresses, hostnames, and hardware fingerprints via Cloudflare Edge KV database.
                 </p>
               </div>
             </div>
@@ -652,6 +764,12 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                             ? 'Localhost / Developer loopback'
                             : 'External Public IP'}
                         </span>
+                        {session.location && (
+                          <span className="text-[10px] text-amber-400/90 flex items-center gap-1 mt-0.5">
+                            <MapPin className="w-3 h-3 text-amber-400 shrink-0" />
+                            <span>{session.location}</span>
+                          </span>
+                        )}
                       </td>
 
                       {/* Workstation Hostname & OS */}
@@ -741,12 +859,25 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                       {/* Actions */}
                       <td className="py-3.5 px-4 whitespace-nowrap text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {/* Unlock HWID Button (if device has a bound machine) */}
+                          {session.hwid && session.hwid !== 'Pending First Activation' && session.hwid !== 'Desktop-PC' && (
+                            <button
+                              onClick={() => handleUnlockHwid(session)}
+                              disabled={isUnlockingHwid === session.id}
+                              className="px-2.5 py-1 text-xs font-semibold bg-amber-950/80 hover:bg-amber-900 border border-amber-800/80 text-amber-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                              title="Unlock hardware lock so user can activate on a new machine"
+                            >
+                              <Unlock className="w-3 h-3 text-amber-400" />
+                              <span>{isUnlockingHwid === session.id ? 'Unlocking...' : 'Unlock PC'}</span>
+                            </button>
+                          )}
+
                           {/* Revoke / Kick Button */}
                           <button
                             onClick={() => handleInstantRevoke(session)}
                             disabled={isRevokingKey === session.id}
                             className="px-2.5 py-1 text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 border border-rose-800/80 text-rose-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
-                            title="Instantly revoke this license key to kick the desktop instance"
+                            title="Instantly revoke this license key across Edge KV & Portal"
                           >
                             <Ban className="w-3 h-3 text-rose-400" />
                             <span>{isRevokingKey === session.id ? 'Revoking...' : 'Revoke'}</span>

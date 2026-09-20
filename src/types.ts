@@ -128,5 +128,7 @@ export interface ActiveDeviceSession {
   pingCount: number;
   onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE';
   secondsSinceLastPing: number;
+  location?: string;
+  isCloudflare?: boolean;
 }
 

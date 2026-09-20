@@ -52,7 +52,7 @@ import { QuickBooksProductionCenter } from './components/QuickBooksProductionCen
 import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
-import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses } from './licenseSyncService';
+import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses } from './licenseSyncService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -88,9 +88,60 @@ export default function App() {
     }
   }, [licenseKeys]);
 
-  // Bidirectional sync: Fetch authoritative licenses from server on mount and merge
+  // Bidirectional sync: Fetch authoritative licenses from Cloudflare KV and server on mount and merge
   useEffect(() => {
     async function loadServerLicenses() {
+      // 1. Fetch from Cloudflare KV Edge API
+      try {
+        const cfItems = await fetchCloudflareLicenses();
+        if (cfItems && cfItems.length > 0) {
+          setLicenseKeys(prev => {
+            const map = new Map<string, LicenseKeyRecord>();
+            for (const k of prev) {
+              map.set(k.key.trim().toUpperCase(), k);
+            }
+            for (const cf of cfItems) {
+              const effectiveKey = (cf.key || '').trim().toUpperCase();
+              if (!effectiveKey) continue;
+              const status: LicenseStatus = (cf.status === 'REVOKED' || cf.status === 'NOT ACTIVE' || cf.status === 'INACTIVE' || cf.status === 'SUSPENDED')
+                ? 'NOT ACTIVE'
+                : (cf.status === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE');
+
+              const existing = map.get(effectiveKey);
+              if (existing) {
+                map.set(effectiveKey, {
+                  ...existing,
+                  status,
+                  plan: (cf.plan as PlanTier) || existing.plan,
+                  expiresDate: cf.expires || existing.expiresDate,
+                  hardwareId: cf.hwid || existing.hardwareId,
+                  clientEmail: cf.user_email || existing.clientEmail
+                });
+              } else {
+                map.set(effectiveKey, {
+                  id: `cf-${effectiveKey}`,
+                  key: effectiveKey,
+                  clientName: effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`,
+                  clientEmail: cf.user_email || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : 'client@example.com'),
+                  plan: (cf.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
+                  status,
+                  inUse: true,
+                  issuedDate: cf.created_at ? cf.created_at.split('T')[0] : new Date().toISOString().split('T')[0],
+                  activatedDate: cf.first_activated_at ? cf.first_activated_at.split('T')[0] : (cf.created_at ? cf.created_at.split('T')[0] : new Date().toISOString().split('T')[0]),
+                  expiresDate: cf.expires || (effectiveKey.includes('ADMIN') ? 'Never (Lifetime / Non-Expiring)' : ''),
+                  hardwareId: cf.hwid || undefined,
+                  notes: 'Synced from Cloudflare Edge KV'
+                });
+              }
+            }
+            return Array.from(map.values());
+          });
+        }
+      } catch (cfErr) {
+        console.warn('Initial Cloudflare KV load notice:', cfErr);
+      }
+
+      // 2. Fetch from local server
       try {
         const serverItems = await fetchAllServerLicenses();
         if (serverItems && serverItems.length > 0) {
