@@ -31,6 +31,17 @@ async function sha256Hex(str) {
     .join("");
 }
 
+// Constant-time string comparison to prevent timing attacks
+function constantTimeEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i++) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
 // Extract client IP with multi-source fallback
 function getClientIp(request, fallbackParam) {
   return (
@@ -103,9 +114,25 @@ export default {
     // -------------------------------------------------------------------------
     if (pathname === "/api/admin/login" && request.method === "POST") {
       try {
+        const clientIp = getClientIp(request);
+        const rateLimitKey = `SYS:RATE_LIMIT:LOGIN:${clientIp}`;
+        const attemptsRaw = await env.LICENSES.get(rateLimitKey);
+        const failedAttempts = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
+
+        if (failedAttempts >= 10) {
+          return jsonResponse({
+            success: false,
+            error: "Too many failed login attempts. Access temporarily locked for 15 minutes to protect security."
+          }, 429);
+        }
+
         const body = await request.json();
-        const inputUser = String(body.username || "").trim();
-        const inputPass = String(body.password || "").trim();
+        const inputUser = String(body.username || "admin").trim();
+        const inputPass = String(body.password || body.passphrase || "").trim();
+
+        if (!inputPass) {
+          return jsonResponse({ success: false, error: "Password is required." }, 400);
+        }
 
         let storedUser = await env.LICENSES.get("SYS:ADMIN_USER");
         let storedHash = await env.LICENSES.get("SYS:ADMIN_PASS_HASH");
@@ -119,7 +146,15 @@ export default {
         }
 
         const inputHash = await sha256Hex(inputPass);
-        if (inputUser.toLowerCase() === storedUser.toLowerCase() && inputHash === storedHash) {
+        const userMatches = constantTimeEqual(inputUser.toLowerCase(), storedUser.toLowerCase());
+        const passMatches = constantTimeEqual(inputHash, storedHash);
+
+        if (userMatches && passMatches) {
+          // Clear any failed attempts on success
+          if (failedAttempts > 0) {
+            await env.LICENSES.delete(rateLimitKey);
+          }
+
           // Generate new cryptographically secure session token
           const sessionToken = "cf_sec_" + crypto.randomUUID().replace(/-/g, "");
           // Save session token with 7 days expiration (604800 seconds)
@@ -133,7 +168,10 @@ export default {
           });
         }
 
-        return jsonResponse({ success: false, error: "Invalid username or password." }, 401);
+        // Record failed attempt with 15-minute window (900 seconds)
+        await env.LICENSES.put(rateLimitKey, String(failedAttempts + 1), { expirationTtl: 900 });
+
+        return jsonResponse({ success: false, error: "Invalid username or password. Access Denied." }, 401);
       } catch (err) {
         return jsonResponse({ success: false, error: err.message }, 400);
       }
@@ -158,7 +196,7 @@ export default {
         const storedHash = await env.LICENSES.get("SYS:ADMIN_PASS_HASH");
         const curHash = await sha256Hex(curPass);
 
-        if (storedHash && curHash !== storedHash) {
+        if (storedHash && !constantTimeEqual(curHash, storedHash)) {
           return jsonResponse({ success: false, error: "Current password does not match." }, 403);
         }
 
@@ -644,7 +682,7 @@ export default {
     // -------------------------------------------------------------------------
     // 6. Active Device Sessions (IP Monitor)
     // -------------------------------------------------------------------------
-    if ((pathname === "/api/devices/sessions" || pathname === "/api/licenses/sessions") && request.method === "GET") {
+    if ((pathname === "/api/devices/sessions" || pathname === "/api/licenses/sessions" || pathname === "/api/admin/devices" || pathname === "/api/devices") && request.method === "GET") {
       const isAuth = await verifyAdminAuth(request, env);
       if (!isAuth) {
         return jsonResponse({ success: false, error: "Unauthorized. Admin session required." }, 401);

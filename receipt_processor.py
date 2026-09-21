@@ -263,9 +263,8 @@ class SubscriptionLicenseManager:
         remote_url = os.getenv("LICENSE_REGISTRY_URL", "").strip()
         if remote_url and remote_url.startswith("http"):
             try:
-                resp = requests.get(remote_url, timeout=4)
-                if resp.status_code == 200:
-                    data = resp.json()
+                st_code, data = http_get_json(remote_url, timeout=4)
+                if st_code == 200 and data is not None:
                     if isinstance(data, list):
                         return data
                     if isinstance(data, dict) and "keys" in data:
@@ -776,6 +775,7 @@ class SubscriptionLicenseManager:
             else:
                 all_check_targets.append((endpoint, f"{endpoint}/licenses/{key_hash}.json"))
                 all_check_targets.append((endpoint, f"{endpoint}/api/licenses/check?key={clean_key}&hash={key_hash}&hwid={self.hardware_id}&ip={pub_ip}&machine={host_name_enc}&ver={APP_VERSION}"))
+                all_check_targets.append((endpoint, f"{endpoint}/api/verify?key={clean_key}&hwid={self.hardware_id}&ip={pub_ip}&machine={host_name_enc}"))
 
         def fetch_target(target):
             ep, url = target
