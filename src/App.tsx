@@ -802,6 +802,10 @@ export default function App() {
           onInquirySubmitted={(inquiry) => {
             showToast(`Inquiry from ${inquiry.name} received!`);
           }}
+          onOpenLegal={(tab) => {
+            setLegalTab(tab);
+            setLegalModalOpen(true);
+          }}
         />
 
         {/* Global Toast */}
@@ -817,6 +821,14 @@ export default function App() {
             </button>
           </div>
         )}
+
+        {/* Privacy, Terms & EULA, and Support Compliance Modal for Client Portal */}
+        <LegalAndComplianceModal
+          isOpen={legalModalOpen}
+          activeTab={legalTab}
+          onClose={() => setLegalModalOpen(false)}
+          onTabChange={(tab) => setLegalTab(tab)}
+        />
       </>
     );
   }

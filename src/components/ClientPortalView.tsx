@@ -73,6 +73,9 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [orderEmail, setOrderEmail] = useState('');
   const [orderNote, setOrderNote] = useState('');
   const [copiedOrderDetails, setCopiedOrderDetails] = useState(false);
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [orderSubmittedSuccess, setOrderSubmittedSuccess] = useState(false);
+  const [orderError, setOrderError] = useState<string | null>(null);
 
   const handleOpenOrderModal = (plan: {
     id: string;
@@ -85,6 +88,66 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   }) => {
     setSelectedPlanForOrder(plan);
     setCopiedOrderDetails(false);
+    setOrderSubmittedSuccess(false);
+    setOrderError(null);
+  };
+
+  const handleOrderSubmitOnline = (e: React.FormEvent) => {
+    e.preventDefault();
+    setOrderError(null);
+    if (!selectedPlanForOrder) return;
+
+    const cleanName = orderName.trim();
+    const cleanEmail = orderEmail.trim();
+
+    if (!cleanName) {
+      setOrderError('Please enter your name.');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setOrderError('Please enter a valid email address.');
+      return;
+    }
+
+    setIsSubmittingOrder(true);
+
+    const newInquiry: ProductInquiry = {
+      id: `order-${Date.now()}`,
+      name: cleanName,
+      email: cleanEmail,
+      company: 'Key Order Request',
+      receiptVolume: 'License Order',
+      interestedPlan: `${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`,
+      notes: orderNote.trim() || undefined,
+      submittedAt: new Date().toISOString()
+    };
+
+    try {
+      const existingRaw = localStorage.getItem('receipt_processor_inquiries');
+      const existing: ProductInquiry[] = existingRaw ? JSON.parse(existingRaw) : [];
+      localStorage.setItem('receipt_processor_inquiries', JSON.stringify([newInquiry, ...existing]));
+    } catch {}
+
+    fetch('/api/inquiries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newInquiry)
+    }).catch(() => {});
+
+    fetch(`${CLOUDFLARE_WORKER_URL}/api/inquiries`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newInquiry)
+    }).catch(() => {});
+
+    if (onInquirySubmitted) {
+      onInquirySubmitted(newInquiry);
+    }
+
+    setTimeout(() => {
+      setIsSubmittingOrder(false);
+      setOrderSubmittedSuccess(true);
+    }, 400);
   };
 
   const handleInquirySubmit = (e: React.FormEvent) => {
@@ -431,44 +494,33 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   </div>
 
                   <div className="space-y-2 pt-1">
-                    <a
-                      href={getInquiryGmailWebUrl()}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-2.5 px-3 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Mail className="w-3.5 h-3.5" />
-                      <span>Send Direct via Web Gmail (Pre-filled)</span>
-                    </a>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        window.location.href = getInquiryMailtoUrl();
-                      }}
-                      className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Open in Desktop Email App</span>
-                    </button>
-
                     <button
                       type="button"
                       onClick={handleCopyInquirySummary}
-                      className="w-full py-2 px-3 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                      className="w-full py-2.5 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white text-xs font-semibold rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       {copiedOrderDetails ? (
                         <>
                           <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Inquiry Copied to Clipboard!</span>
+                          <span className="text-emerald-400">Request Details Copied to Clipboard!</span>
                         </>
                       ) : (
                         <>
                           <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Inquiry Summary</span>
+                          <span>Copy Request Summary</span>
                         </>
                       )}
                     </button>
+
+                    <a
+                      href={getInquiryGmailWebUrl()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2 px-3 bg-stone-900 hover:bg-stone-800 text-stone-300 hover:text-stone-100 font-medium text-xs rounded-xl border border-stone-800 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Mail className="w-3.5 h-3.5 text-red-400" />
+                      <span>Optional: Send Follow-up via Web Gmail</span>
+                    </a>
                   </div>
 
                   <div className="pt-2 border-t border-emerald-900/40 flex items-center justify-between">
@@ -1012,83 +1064,113 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </div>
               </div>
 
-              {/* Contact Form Details */}
-              <div className="space-y-3 text-xs">
-                <div>
-                  <label className="text-stone-300 font-medium block mb-1">Your Name</label>
-                  <input
-                    type="text"
-                    value={orderName}
-                    onChange={(e) => setOrderName(e.target.value)}
-                    placeholder="e.g. John Miller"
-                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                  />
+              {orderSubmittedSuccess ? (
+                <div className="p-4 bg-emerald-950/40 border border-emerald-800/60 rounded-xl space-y-3">
+                  <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    <span>License Request Received!</span>
+                  </div>
+                  <p className="text-stone-300 text-xs leading-relaxed">
+                    Thank you, <strong className="text-stone-100">{orderName}</strong>. Your request for the <strong className="text-amber-400">{selectedPlanForOrder.name}</strong> ({selectedPlanForOrder.price}) has been securely logged. The administrator will contact you at <strong className="text-stone-100">{orderEmail}</strong> with activation instructions.
+                  </p>
+                  <div className="pt-2 flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCopyOrderSummary}
+                      className="w-full py-2 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {copiedOrderDetails ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Copied to Clipboard!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy Request Summary</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPlanForOrder(null)}
+                      className="w-full py-2 px-3 bg-stone-900 hover:bg-stone-800 text-stone-300 text-xs rounded-xl border border-stone-800 transition-colors cursor-pointer"
+                    >
+                      Close Window
+                    </button>
+                  </div>
                 </div>
-
-                <div>
-                  <label className="text-stone-300 font-medium block mb-1">Your Email (for license delivery)</label>
-                  <input
-                    type="email"
-                    value={orderEmail}
-                    onChange={(e) => setOrderEmail(e.target.value)}
-                    placeholder="e.g. name@example.com"
-                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-stone-300 font-medium block mb-1">Optional Message / Questions</label>
-                  <textarea
-                    rows={2}
-                    value={orderNote}
-                    onChange={(e) => setOrderNote(e.target.value)}
-                    placeholder="Any specific questions or preferred payment methods..."
-                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 resize-none"
-                  />
-                </div>
-              </div>
-
-              {/* Actions: Send Email or Copy Details */}
-              <div className="pt-2 space-y-2">
-                <a
-                  href={getOrderGmailWebUrl()}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <Mail className="w-4 h-4" />
-                  <span>Send via Web Gmail (Pre-filled to moisttowlett247@gmail.com)</span>
-                </a>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.location.href = getOrderMailtoUrl();
-                  }}
-                  className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <Send className="w-4 h-4" />
-                  <span>Open in Desktop Email App</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleCopyOrderSummary}
-                  className="w-full py-2 px-4 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  {copiedOrderDetails ? (
-                    <>
-                      <Check className="w-4 h-4 text-emerald-400" />
-                      <span className="text-emerald-400">Order Details Copied to Clipboard!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4" />
-                      <span>Copy Request Details to Clipboard</span>
-                    </>
+              ) : (
+                <form onSubmit={handleOrderSubmitOnline} className="space-y-3 text-xs">
+                  {orderError && (
+                    <div className="p-2.5 bg-rose-950/50 border border-rose-800/60 rounded-lg text-rose-300 flex items-center gap-2">
+                      <XCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                      <span>{orderError}</span>
+                    </div>
                   )}
-                </button>
-              </div>
+
+                  <div>
+                    <label className="text-stone-300 font-medium block mb-1">
+                      Your Name <span className="text-amber-400">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={orderName}
+                      onChange={(e) => setOrderName(e.target.value)}
+                      placeholder="e.g. John Miller"
+                      required
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-stone-300 font-medium block mb-1">
+                      Your Email (for license delivery) <span className="text-amber-400">*</span>
+                    </label>
+                    <input
+                      type="email"
+                      value={orderEmail}
+                      onChange={(e) => setOrderEmail(e.target.value)}
+                      placeholder="e.g. name@example.com"
+                      required
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-stone-300 font-medium block mb-1">Optional Message / Questions</label>
+                    <textarea
+                      rows={2}
+                      value={orderNote}
+                      onChange={(e) => setOrderNote(e.target.value)}
+                      placeholder="Any specific questions or preferred payment methods..."
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 resize-none"
+                    />
+                  </div>
+
+                  {/* Actions: Send Email or Copy Details */}
+                  <div className="pt-2 space-y-2">
+                    <button
+                      type="submit"
+                      disabled={isSubmittingOrder}
+                      className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>{isSubmittingOrder ? 'Submitting Request...' : 'Submit License Request Online'}</span>
+                    </button>
+
+                    <a
+                      href={getOrderGmailWebUrl()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="w-full py-2 px-4 bg-stone-900 hover:bg-stone-800 text-stone-300 hover:text-stone-100 text-xs font-medium rounded-xl border border-stone-800 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Mail className="w-3.5 h-3.5 text-red-400" />
+                      <span>Optional: Send Direct via Web Gmail</span>
+                    </a>
+                  </div>
+                </form>
+              )}
 
               <p className="text-[11px] text-stone-500 text-center leading-relaxed">
                 Keys are issued and emailed promptly upon order confirmation and review.

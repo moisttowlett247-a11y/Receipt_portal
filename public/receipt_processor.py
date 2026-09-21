@@ -443,6 +443,7 @@ class SubscriptionLicenseManager:
             else:
                 all_check_targets.append((endpoint, f"{endpoint}/licenses/{key_hash}.json"))
                 all_check_targets.append((endpoint, f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}&hwid={self.hardware_id}&machine={host_name_enc}&ver={APP_VERSION}&ip={public_ip}"))
+                all_check_targets.append((endpoint, f"{endpoint}/api/verify?key={current_key}&hwid={self.hardware_id}&machine={host_name_enc}&ip={public_ip}"))
 
         saw_404_count = 0
         total_targets = len(all_check_targets)
@@ -628,7 +629,28 @@ class SubscriptionLicenseManager:
                     if resp.status == 200:
                         return True
             except Exception:
-                pass
+                try:
+                    verify_url = f"{endpoint}/api/verify"
+                    verify_payload = json.dumps({
+                        "key": current_key,
+                        "ip": pub_ip,
+                        "hwid": self.hardware_id,
+                        "machine": socket.gethostname()
+                    }).encode("utf-8")
+                    req_v = urllib.request.Request(
+                        verify_url,
+                        data=verify_payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            "User-Agent": f"ReceiptProcessorDesktop/{APP_VERSION}"
+                        },
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(req_v, timeout=t_out) as resp_v:
+                        if resp_v.status == 200:
+                            return True
+                except Exception:
+                    pass
         return False
 
     def sync_with_registry(self):
