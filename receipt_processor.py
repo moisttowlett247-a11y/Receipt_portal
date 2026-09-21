@@ -167,15 +167,12 @@ def http_get_json(url: str, timeout: float = 2.0) -> tuple:
 LICENSE_FILE = ".license_vault.json"
 LICENSE_REGISTRY_FILE = os.getenv("LICENSE_REGISTRY_PATH", "license_registry.json")
 
-# Known portal endpoints for real-time license state synchronization (Live Cloud portal is primary)
+# Known portal endpoints for real-time license state synchronization (Cloudflare Worker KV Edge is primary)
 RAW_PORTAL_ENDPOINTS = [
     "https://receipt-license-api.moisttowlett247.workers.dev",
-    "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
-    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
     os.getenv("PORTAL_URL", "").strip().rstrip("/"),
     os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/"),
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public"
 ]
 
 _CACHED_PUBLIC_IP = "127.0.0.1"
@@ -489,7 +486,50 @@ class SubscriptionLicenseManager:
                     except Exception:
                         pass
 
-        # Priority 1: Active
+        # Priority 1: Revoked / Inactive (Administrative lockout always supersedes cached/stale active states)
+        if revoked_res:
+            ep, remote_plan = revoked_res
+            self.connected_portal = ep
+            prev_status = self.license_data.get("status", "INACTIVE")
+            was_active = (prev_status == "ACTIVE")
+            self.license_data["status"] = "REVOKED"
+            self.license_data["plan_tier"] = remote_plan
+            self.license_data["last_verified"] = datetime.now().isoformat()
+            self.save_local_license()
+            return {
+                "result": "REVOKED",
+                "status": "INACTIVE",
+                "changed": was_active or (prev_status != "REVOKED"),
+                "plan": remote_plan,
+                "key": current_key,
+                "portal": ep,
+                "message": f"License key '{current_key}' was revoked on website portal (Inactive)."
+            }
+
+        # Priority 2: Expired
+        if expired_res:
+            ep, remote_plan, remote_expires = expired_res
+            self.connected_portal = ep
+            prev_status = self.license_data.get("status", "INACTIVE")
+            was_active = (prev_status == "ACTIVE")
+            self.license_data["license_key"] = current_key
+            self.license_data["status"] = "EXPIRED"
+            self.license_data["plan_tier"] = remote_plan
+            self.license_data["expires_at"] = remote_expires or "Expired"
+            self.license_data["last_verified"] = datetime.now().isoformat()
+            self.save_local_license()
+            return {
+                "result": "EXPIRED",
+                "status": "EXPIRED",
+                "changed": was_active or (prev_status != "EXPIRED"),
+                "key": current_key,
+                "expires": remote_expires,
+                "plan": remote_plan,
+                "portal": ep,
+                "message": f"License expired on {remote_expires}. Subscription renewal required."
+            }
+
+        # Priority 3: Active
         if active_res:
             ep, remote_plan, remote_expires, is_admin = active_res
             self.connected_portal = ep
@@ -511,49 +551,6 @@ class SubscriptionLicenseManager:
                 "key": current_key,
                 "portal": ep,
                 "message": f"License is registered as ACTIVE on website ({remote_plan})"
-            }
-
-        # Priority 2: Revoked
-        if revoked_res:
-            ep, remote_plan = revoked_res
-            self.connected_portal = ep
-            prev_status = self.license_data.get("status", "INACTIVE")
-            was_active = (prev_status == "ACTIVE")
-            self.license_data["status"] = "REVOKED"
-            self.license_data["plan_tier"] = remote_plan
-            self.license_data["last_verified"] = datetime.now().isoformat()
-            self.save_local_license()
-            return {
-                "result": "REVOKED",
-                "status": "INACTIVE",
-                "changed": was_active or (prev_status != "REVOKED"),
-                "plan": remote_plan,
-                "key": current_key,
-                "portal": ep,
-                "message": f"License key '{current_key}' was revoked on website portal (Inactive)."
-            }
-
-        # Priority 3: Expired
-        if expired_res:
-            ep, remote_plan, remote_expires = expired_res
-            self.connected_portal = ep
-            prev_status = self.license_data.get("status", "INACTIVE")
-            was_active = (prev_status == "ACTIVE")
-            self.license_data["license_key"] = current_key
-            self.license_data["status"] = "EXPIRED"
-            self.license_data["plan_tier"] = remote_plan
-            self.license_data["expires_at"] = remote_expires or "Expired"
-            self.license_data["last_verified"] = datetime.now().isoformat()
-            self.save_local_license()
-            return {
-                "result": "EXPIRED",
-                "status": "EXPIRED",
-                "changed": was_active or (prev_status != "EXPIRED"),
-                "key": current_key,
-                "expires": remote_expires,
-                "plan": remote_plan,
-                "portal": ep,
-                "message": f"License expired on {remote_expires}. Subscription renewal required."
             }
 
         # 3. If every endpoint explicitly returned 404 (deleted from website):
@@ -593,7 +590,7 @@ class SubscriptionLicenseManager:
             if "githubusercontent" in endpoint:
                 continue
             url = f"{endpoint}/api/licenses/heartbeat"
-            t_out = 0.6 if ("localhost" in endpoint or "127.0.0.1" in endpoint) else 2.5
+            t_out = 0.8 if ("localhost" in endpoint or "127.0.0.1" in endpoint) else 3.0
             try:
                 payload = json.dumps({
                     "key": current_key,
@@ -617,6 +614,17 @@ class SubscriptionLicenseManager:
                     method="POST"
                 )
                 with urllib.request.urlopen(req, timeout=t_out) as resp:
+                    raw_content = resp.read().decode("utf-8", errors="ignore").strip()
+                    if raw_content:
+                        try:
+                            parsed = json.loads(raw_content)
+                            if isinstance(parsed, dict):
+                                remote_status = str(parsed.get("status", "")).strip().upper()
+                                if remote_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                                    self.license_data["status"] = "REVOKED"
+                                    self.save_local_license()
+                        except Exception:
+                            pass
                     if resp.status == 200:
                         return True
             except Exception:

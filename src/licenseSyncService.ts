@@ -34,6 +34,124 @@ export interface CloudflareLicenseRecord {
   last_machine?: string | null;
 }
 
+export interface InquiryRecord {
+  id: string;
+  name: string;
+  email: string;
+  company?: string;
+  receiptVolume?: string;
+  interestedPlan?: string;
+  notes?: string;
+  submittedAt: string;
+  status?: string;
+  ip?: string;
+  location?: string;
+}
+
+/**
+ * Gets the current session token for Cloudflare admin API requests
+ */
+export function getAdminToken(): string | null {
+  try {
+    return sessionStorage.getItem('receipt_processor_admin_token') || localStorage.getItem('receipt_processor_admin_token');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Clears the session token on logout
+ */
+export function clearAdminToken(): void {
+  try {
+    sessionStorage.removeItem('receipt_processor_admin_token');
+    sessionStorage.removeItem('receipt_processor_admin_auth');
+    localStorage.removeItem('receipt_processor_admin_token');
+    localStorage.removeItem('receipt_processor_admin_auth');
+  } catch {}
+}
+
+/**
+ * Helper to build auth headers
+ */
+function getAuthHeaders(): Record<string, string> {
+  const token = getAdminToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+/**
+ * Logs into Cloudflare Worker Admin API
+ */
+export async function loginToCloudflareAdmin(
+  user: string,
+  pass: string
+): Promise<{ success: boolean; token?: string; error?: string }> {
+  try {
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: user.trim(), password: pass.trim() })
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success && data.token) {
+      try {
+        sessionStorage.setItem('receipt_processor_admin_token', data.token);
+        sessionStorage.setItem('receipt_processor_admin_auth', 'true');
+        sessionStorage.setItem('receipt_processor_admin_user', data.username || user.trim());
+        localStorage.setItem('receipt_processor_admin_token', data.token);
+        localStorage.setItem('receipt_processor_admin_auth', 'true');
+        localStorage.setItem('receipt_processor_admin_user', data.username || user.trim());
+      } catch {}
+      return { success: true, token: data.token };
+    }
+    return { success: false, error: data.error || 'Invalid administrator credentials.' };
+  } catch (err: any) {
+    return { success: false, error: 'Authentication request failed. Please check network connection.' };
+  }
+}
+
+/**
+ * Updates administrator credentials stored on Cloudflare Worker KV
+ */
+export async function updateCloudflareAdminCredentials(
+  currentPass: string,
+  newUser: string,
+  newPass: string
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/change-credentials`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({
+        currentPassword: currentPass.trim(),
+        newUsername: newUser.trim(),
+        newPassword: newPass.trim()
+      })
+    });
+    const data = await resp.json();
+    if (resp.ok && data.success) {
+      if (data.token) {
+        try {
+          sessionStorage.setItem('receipt_processor_admin_token', data.token);
+          sessionStorage.setItem('receipt_processor_admin_user', newUser.trim());
+          localStorage.setItem('receipt_processor_admin_token', data.token);
+          localStorage.setItem('receipt_processor_admin_user', newUser.trim());
+        } catch {}
+      }
+      return { success: true, message: data.message || 'Admin credentials updated successfully on Cloudflare.' };
+    }
+    return { success: false, message: data.error || 'Failed to update credentials on Cloudflare.' };
+  } catch (err: any) {
+    return { success: false, message: 'Could not contact Cloudflare to update credentials.' };
+  }
+}
+
 /**
  * Syncs a key to the Cloudflare Worker KV database
  */
@@ -45,17 +163,17 @@ export async function syncKeyToCloudflare(
     if (action === 'DELETE') {
       const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/licenses/action`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: k.key, action: 'REVOKE' })
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ key: k.key, action: 'DELETE' })
       });
       if (resp.ok) {
-        return { success: true, message: `Revoked ${k.key} in Cloudflare KV` };
+        return { success: true, message: `Deleted ${k.key} from Cloudflare KV` };
       }
     } else {
       const effectiveStatus = getEffectiveStatus(k);
       const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/licenses/create`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           key: k.key,
           plan: k.plan,
@@ -66,7 +184,7 @@ export async function syncKeyToCloudflare(
         })
       });
       if (resp.ok) {
-        return { success: true, message: `Synced ${k.key} to Cloudflare KV` };
+        return { success: true, message: `Synced ${k.key} (${effectiveStatus}) to Cloudflare KV` };
       }
     }
   } catch (err) {
@@ -76,13 +194,76 @@ export async function syncKeyToCloudflare(
 }
 
 /**
+ * Fetches all inquiries / access requests from Cloudflare KV and local backend
+ */
+export async function fetchAllInquiries(): Promise<InquiryRecord[]> {
+  const list: InquiryRecord[] = [];
+  const seenIds = new Set<string>();
+
+  // 1. Fetch from Cloudflare KV Edge API
+  try {
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/inquiries`, {
+      headers: getAuthHeaders()
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.inquiries)) {
+        for (const inq of data.inquiries) {
+          if (!seenIds.has(inq.id)) {
+            seenIds.add(inq.id);
+            list.push(inq);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Cloudflare inquiries fetch notice:', err);
+  }
+
+  // 2. Fetch from local backend server
+  try {
+    const resp = await fetch('/api/inquiries');
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.inquiries)) {
+        for (const inq of data.inquiries) {
+          if (!seenIds.has(inq.id)) {
+            seenIds.add(inq.id);
+            list.push(inq);
+          }
+        }
+      }
+    }
+  } catch (err) {}
+
+  // 3. Fallback / merge with local storage
+  try {
+    const localRaw = localStorage.getItem('receipt_processor_inquiries');
+    if (localRaw) {
+      const parsed = JSON.parse(localRaw);
+      if (Array.isArray(parsed)) {
+        for (const inq of parsed) {
+          if (!seenIds.has(inq.id)) {
+            seenIds.add(inq.id);
+            list.push(inq);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  list.sort((a, b) => new Date(b.submittedAt || 0).getTime() - new Date(a.submittedAt || 0).getTime());
+  return list;
+}
+
+/**
  * Unlocks the HWID on Cloudflare KV so a user can transfer to a new PC
  */
 export async function unlockHwidOnCloudflare(key: string): Promise<{ success: boolean; message?: string }> {
   try {
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/licenses/action`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ key, action: 'UNLOCK_HWID' })
     });
     if (resp.ok) {
@@ -102,7 +283,7 @@ export async function revokeLicenseOnCloudflare(key: string): Promise<{ success:
   try {
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/licenses/action`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ key, action: 'REVOKE' })
     });
     if (resp.ok) {
@@ -121,7 +302,10 @@ export async function revokeLicenseOnCloudflare(key: string): Promise<{ success:
 export async function fetchCloudflareLicenses(): Promise<CloudflareLicenseRecord[]> {
   try {
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/licenses`, {
-      headers: { 'Cache-Control': 'no-cache' }
+      headers: {
+        'Cache-Control': 'no-cache',
+        ...getAuthHeaders()
+      }
     });
     if (resp.ok) {
       const data = await resp.json();

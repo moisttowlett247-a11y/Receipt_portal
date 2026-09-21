@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Lock, User, KeyRound, X, Check, AlertCircle, Eye, EyeOff } from 'lucide-react';
+import { Lock, User, KeyRound, X, Check, AlertCircle, Eye, EyeOff, Zap } from 'lucide-react';
 import { computeCredentialsHash } from '../hashUtils';
+import { updateCloudflareAdminCredentials } from '../licenseSyncService';
 
 interface AdminCredentialsModalProps {
   isOpen: boolean;
@@ -74,17 +75,25 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     setLoading(true);
 
     try {
-      // Verify current credentials
+      // 1. Attempt update on Cloudflare Worker KV
+      const cfRes = await updateCloudflareAdminCredentials(cleanCurrentPass, cleanNewUser, cleanNewPass);
+      if (cfRes.success) {
+        const newHash = await computeCredentialsHash(cleanNewUser, cleanNewPass);
+        onUpdateCredentials(cleanNewUser, newHash);
+        onClose();
+        return;
+      }
+
+      // 2. Fallback to local cryptographic check
       const currentHash = await computeCredentialsHash(cleanUser, cleanCurrentPass);
       const defaultHash = await computeCredentialsHash('admin', '1995');
 
       if ((savedHash && currentHash === savedHash) || currentHash === defaultHash) {
-        // Compute new hash
         const newHash = await computeCredentialsHash(cleanNewUser, cleanNewPass);
         onUpdateCredentials(cleanNewUser, newHash);
         onClose();
       } else {
-        triggerError('Current password is incorrect.');
+        triggerError(cfRes.message || 'Current password is incorrect.');
       }
     } catch {
       triggerError('Error updating credentials. Please try again.');

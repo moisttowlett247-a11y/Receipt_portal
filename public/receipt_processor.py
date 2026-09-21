@@ -33,6 +33,7 @@ import platform
 import urllib.request
 import urllib.error
 import urllib.parse
+import concurrent.futures
 from datetime import datetime, timedelta
 
 # PIL / Pillow Image imports with fallback
@@ -77,7 +78,25 @@ except ImportError:
     Retry = None
 
 
-def http_get_json(url: str, timeout: float = 3.0) -> tuple:
+# -----------------------------------------------------------------------------
+# Version & Remote Update Manifest Configuration
+# -----------------------------------------------------------------------------
+APP_VERSION = "1.0.0"
+
+# You can host this version.json on GitHub (Raw), an S3 bucket, or your website.
+UPDATE_MANIFEST_URL = os.getenv(
+    "UPDATE_MANIFEST_URL",
+    "https://raw.githubusercontent.com/yourusername/receipt-processor-updates/main/version.json"
+)
+
+# Remote license verification endpoint (or fallback license logic)
+LICENSE_SERVER_URL = os.getenv(
+    "LICENSE_SERVER_URL",
+    "https://api.youraccountingdomain.com/v1/verify-license"
+)
+
+
+def http_get_json(url: str, timeout: float = 2.0) -> tuple:
     """
     Performs an HTTP GET request returning (status_code, data_dict_or_none).
     Filters out HTML error/redirect pages so only real JSON objects are returned.
@@ -141,23 +160,6 @@ def http_get_json(url: str, timeout: float = 3.0) -> tuple:
                 pass
         return 0, None
 
-# -----------------------------------------------------------------------------
-# Version & Remote Update Manifest Configuration
-# -----------------------------------------------------------------------------
-APP_VERSION = "1.0.0"
-
-# You can host this version.json on GitHub (Raw), an S3 bucket, or your website.
-UPDATE_MANIFEST_URL = os.getenv(
-    "UPDATE_MANIFEST_URL",
-    "https://raw.githubusercontent.com/yourusername/receipt-processor-updates/main/version.json"
-)
-
-# Remote license verification endpoint (or fallback license logic)
-LICENSE_SERVER_URL = os.getenv(
-    "LICENSE_SERVER_URL",
-    "https://api.youraccountingdomain.com/v1/verify-license"
-)
-
 
 # -----------------------------------------------------------------------------
 # Subscription & Licensing System (Allowed vs. Not Allowed Users)
@@ -165,36 +167,49 @@ LICENSE_SERVER_URL = os.getenv(
 LICENSE_FILE = ".license_vault.json"
 LICENSE_REGISTRY_FILE = os.getenv("LICENSE_REGISTRY_PATH", "license_registry.json")
 
-# Known portal endpoints for real-time license state synchronization (Live Cloud portal is primary)
-DEFAULT_PORTAL_ENDPOINTS = [
-    "https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
-    "https://ais-pre-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app",
+# Known portal endpoints for real-time license state synchronization (Cloudflare Worker KV Edge is primary)
+RAW_PORTAL_ENDPOINTS = [
+    "https://receipt-license-api.moisttowlett247.workers.dev",
     os.getenv("PORTAL_URL", "").strip().rstrip("/"),
     os.getenv("LICENSE_SERVER_URL", "").strip().rstrip("/"),
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public",
-    "https://raw.githubusercontent.com/moisttowlett247-a11y/receipt-processor-portal/main/public"
+    "https://raw.githubusercontent.com/moisttowlett247-a11y/Receipt_portal/main/public"
 ]
 
+_CACHED_PUBLIC_IP = "127.0.0.1"
+_LAST_IP_FETCH_TS = 0
+_IP_FETCHING = False
+
+def _fetch_ip_worker():
+    global _CACHED_PUBLIC_IP, _LAST_IP_FETCH_TS, _IP_FETCHING
+    try:
+        ip_endpoints = [
+            "https://api.ipify.org",
+            "https://checkip.amazonaws.com",
+            "https://icanhazip.com",
+            "https://ifconfig.me/ip"
+        ]
+        for ep in ip_endpoints:
+            try:
+                req = urllib.request.Request(ep, headers={"User-Agent": "curl/7.68.0"})
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    ip = resp.read().decode("utf-8").strip()
+                    if ip and len(ip) <= 45 and ("." in ip or ":" in ip):
+                        _CACHED_PUBLIC_IP = ip
+                        _LAST_IP_FETCH_TS = time.time()
+                        break
+            except Exception:
+                continue
+    finally:
+        _IP_FETCHING = False
+
 def get_public_ip() -> str:
-    """Fetches the workstation's real public IP address via reliable external services."""
-    ip_endpoints = [
-        "https://api.ipify.org",
-        "https://checkip.amazonaws.com",
-        "https://icanhazip.com",
-        "https://ifconfig.me/ip"
-    ]
-    for ep in ip_endpoints:
-        try:
-            req = urllib.request.Request(ep, headers={"User-Agent": "curl/7.68.0"})
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                ip = resp.read().decode("utf-8").strip()
-                if ip and len(ip) <= 45 and ("." in ip or ":" in ip):
-                    return ip
-        except Exception:
-            continue
-    return "127.0.0.1"
+    """Returns the workstation public IP address instantly from cache, refreshing asynchronously."""
+    global _CACHED_PUBLIC_IP, _LAST_IP_FETCH_TS, _IP_FETCHING
+    now = time.time()
+    if (_CACHED_PUBLIC_IP == "127.0.0.1" or (now - _LAST_IP_FETCH_TS) > 300) and not _IP_FETCHING:
+        _IP_FETCHING = True
+        threading.Thread(target=_fetch_ip_worker, daemon=True).start()
+    return _CACHED_PUBLIC_IP
 
 
 def get_machine_hardware_id() -> str:
@@ -221,16 +236,13 @@ class SubscriptionLicenseManager:
         self._last_scan_ts = 0
         self.connected_portal = ""
 
-        # Perform initial sync
-        self.scan_remote_status(force=True)
-
     def get_active_portal_endpoints(self) -> list:
-        """Returns non-empty, deduplicated portal endpoints."""
+        """Returns non-empty, deduplicated, valid portal endpoints."""
         seen = set()
         endpoints = []
-        for ep in DEFAULT_PORTAL_ENDPOINTS:
+        for ep in RAW_PORTAL_ENDPOINTS:
             clean = (ep or "").strip().rstrip("/")
-            if clean and clean not in seen:
+            if clean and "youraccountingdomain" not in clean and clean not in seen:
                 seen.add(clean)
                 endpoints.append(clean)
         return endpoints
@@ -415,141 +427,134 @@ class SubscriptionLicenseManager:
                 except Exception:
                     pass
 
-        # 2. Remote portal and GitHub endpoints
+        # 2. Remote portal and GitHub endpoints (Parallel execution)
         endpoints = self.get_active_portal_endpoints()
-        found_remote_record = False
-        saw_404_count = 0
-        total_endpoints_checked = 0
-
         public_ip = get_public_ip()
+        all_check_targets = []
+
+        try:
+            host_name_enc = urllib.parse.quote(socket.gethostname())
+        except Exception:
+            host_name_enc = "Unknown-PC"
 
         for endpoint in endpoints:
-            check_urls = []
             if "githubusercontent" in endpoint:
-                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
+                all_check_targets.append((endpoint, f"{endpoint}/licenses/{key_hash}.json"))
             else:
-                try:
-                    host_name_enc = urllib.parse.quote(socket.gethostname())
-                except Exception:
-                    host_name_enc = "Unknown-PC"
-                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
-                check_urls.append(f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}&hwid={self.hardware_id}&machine={host_name_enc}&ver={APP_VERSION}&ip={public_ip}")
+                all_check_targets.append((endpoint, f"{endpoint}/licenses/{key_hash}.json"))
+                all_check_targets.append((endpoint, f"{endpoint}/api/licenses/check?key={current_key}&hash={key_hash}&hwid={self.hardware_id}&machine={host_name_enc}&ver={APP_VERSION}&ip={public_ip}"))
 
-            for check_url in check_urls:
-                total_endpoints_checked += 1
-                try:
-                    status_code, data = http_get_json(check_url, timeout=3.0)
-                    if status_code == 404:
-                        saw_404_count += 1
-                        continue
+        saw_404_count = 0
+        total_targets = len(all_check_targets)
 
-                    if not isinstance(data, dict):
-                        continue
+        def fetch_target(target):
+            ep, url = target
+            st_code, data = http_get_json(url, timeout=1.8)
+            return ep, url, st_code, data
 
-                    if status_code == 200:
-                        remote_status = str(data.get("status", "")).strip().upper()
-                        if not remote_status or remote_status not in ["ACTIVE", "EXPIRED", "REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+        active_res = None
+        revoked_res = None
+        expired_res = None
+
+        if total_targets > 0:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, max(1, total_targets))) as executor:
+                future_to_target = {executor.submit(fetch_target, t): t for t in all_check_targets}
+                for future in concurrent.futures.as_completed(future_to_target):
+                    try:
+                        ep, url, status_code, data = future.result()
+                        if status_code == 404:
+                            saw_404_count += 1
                             continue
+                        if status_code == 200 and isinstance(data, dict):
+                            remote_status = str(data.get("status", "")).strip().upper()
+                            if remote_status in ["ACTIVE", "EXPIRED", "REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                                raw_remote_plan = data.get("plan", "")
+                                is_admin = ("ADMIN" in current_key.upper() or "MASTER" in current_key.upper() or "ADMIN" in str(raw_remote_plan).upper())
+                                remote_plan = "Admin (Lifetime)" if is_admin else (str(raw_remote_plan).strip() if str(raw_remote_plan).strip() not in ["Unregistered", "Unknown", "Standard", ""] else "Pro Subscription")
+                                remote_expires = data.get("expires", "")
+                                if is_admin and (not remote_expires or "Never" not in str(remote_expires)):
+                                    remote_expires = "Never (Lifetime / Non-Expiring)"
+                                elif not remote_expires:
+                                    remote_expires = self.license_data.get("expires_at", "")
 
-                        found_remote_record = True
-                        self.connected_portal = endpoint
+                                if remote_status == "ACTIVE" and not active_res:
+                                    active_res = (ep, remote_plan, remote_expires, is_admin)
+                                elif remote_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"] and not revoked_res:
+                                    revoked_res = (ep, remote_plan)
+                                elif remote_status == "EXPIRED" and not expired_res:
+                                    expired_res = (ep, remote_plan, remote_expires)
+                    except Exception:
+                        pass
 
-                        raw_remote_plan = data.get("plan", "")
-                        is_admin = ("ADMIN" in current_key.upper() or "MASTER" in current_key.upper() or "ADMIN" in str(raw_remote_plan).upper())
+        # Priority 1: Revoked / Inactive (Administrative lockout always supersedes cached/stale active states)
+        if revoked_res:
+            ep, remote_plan = revoked_res
+            self.connected_portal = ep
+            prev_status = self.license_data.get("status", "INACTIVE")
+            was_active = (prev_status == "ACTIVE")
+            self.license_data["status"] = "REVOKED"
+            self.license_data["plan_tier"] = remote_plan
+            self.license_data["last_verified"] = datetime.now().isoformat()
+            self.save_local_license()
+            return {
+                "result": "REVOKED",
+                "status": "INACTIVE",
+                "changed": was_active or (prev_status != "REVOKED"),
+                "plan": remote_plan,
+                "key": current_key,
+                "portal": ep,
+                "message": f"License key '{current_key}' was revoked on website portal (Inactive)."
+            }
 
-                        if is_admin:
-                            remote_plan = "Admin (Lifetime)"
-                        elif raw_remote_plan and str(raw_remote_plan).strip() not in ["Unregistered", "Unknown", "Standard", ""]:
-                            remote_plan = str(raw_remote_plan).strip()
-                        else:
-                            remote_plan = "Pro Subscription"
+        # Priority 2: Expired
+        if expired_res:
+            ep, remote_plan, remote_expires = expired_res
+            self.connected_portal = ep
+            prev_status = self.license_data.get("status", "INACTIVE")
+            was_active = (prev_status == "ACTIVE")
+            self.license_data["license_key"] = current_key
+            self.license_data["status"] = "EXPIRED"
+            self.license_data["plan_tier"] = remote_plan
+            self.license_data["expires_at"] = remote_expires or "Expired"
+            self.license_data["last_verified"] = datetime.now().isoformat()
+            self.save_local_license()
+            return {
+                "result": "EXPIRED",
+                "status": "EXPIRED",
+                "changed": was_active or (prev_status != "EXPIRED"),
+                "key": current_key,
+                "expires": remote_expires,
+                "plan": remote_plan,
+                "portal": ep,
+                "message": f"License expired on {remote_expires}. Subscription renewal required."
+            }
 
-                        remote_expires = data.get("expires", "")
-                        if is_admin and (not remote_expires or "Never" not in str(remote_expires)):
-                            remote_expires = "Never (Lifetime / Non-Expiring)"
-                        elif not remote_expires:
-                            remote_expires = self.license_data.get("expires_at", "")
-
-                        # Check date expiration
-                        is_date_expired = False
-                        if remote_expires and not ("Never" in str(remote_expires) or "Lifetime" in str(remote_expires) or is_admin):
-                            try:
-                                exp_clean = str(remote_expires).split("T")[0].strip()
-                                exp_d = datetime.strptime(exp_clean, "%Y-%m-%d").date()
-                                if datetime.now().date() > exp_d:
-                                    is_date_expired = True
-                            except Exception:
-                                pass
-
-                        if remote_status == "EXPIRED" or is_date_expired:
-                            prev_status = self.license_data.get("status", "INACTIVE")
-                            was_active = (prev_status == "ACTIVE")
-
-                            self.license_data["license_key"] = current_key
-                            self.license_data["status"] = "EXPIRED"
-                            self.license_data["plan_tier"] = remote_plan
-                            self.license_data["expires_at"] = remote_expires or "Expired"
-                            self.license_data["last_verified"] = datetime.now().isoformat()
-                            self.save_local_license()
-
-                            return {
-                                "result": "EXPIRED",
-                                "status": "EXPIRED",
-                                "changed": was_active or (prev_status != "EXPIRED"),
-                                "key": current_key,
-                                "expires": remote_expires,
-                                "plan": remote_plan,
-                                "portal": endpoint,
-                                "message": f"License expired on {remote_expires}. Subscription renewal required."
-                            }
-
-                        elif remote_status == "ACTIVE":
-                            prev_status = self.license_data.get("status", "INACTIVE")
-                            was_inactive = (prev_status != "ACTIVE")
-
-                            self.license_data["license_key"] = current_key
-                            self.license_data["status"] = "ACTIVE"
-                            self.license_data["plan_tier"] = remote_plan
-                            self.license_data["expires_at"] = remote_expires or ("Never (Lifetime / Non-Expiring)" if is_admin else "")
-                            if not self.license_data.get("activated_at"):
-                                self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            self.license_data["last_verified"] = datetime.now().isoformat()
-                            self.save_local_license()
-
-                            return {
-                                "result": "ACTIVE",
-                                "status": "ACTIVE",
-                                "changed": was_inactive,
-                                "plan": remote_plan,
-                                "key": current_key,
-                                "portal": endpoint,
-                                "message": f"License is registered as ACTIVE on website ({remote_plan})"
-                            }
-
-                        elif remote_status in ["NOT ACTIVE", "REVOKED", "INACTIVE", "SUSPENDED"]:
-                            prev_status = self.license_data.get("status", "INACTIVE")
-                            was_active = (prev_status == "ACTIVE")
-
-                            self.license_data["status"] = "REVOKED"
-                            self.license_data["plan_tier"] = remote_plan
-                            self.license_data["last_verified"] = datetime.now().isoformat()
-                            self.save_local_license()
-
-                            return {
-                                "result": "REVOKED",
-                                "status": "INACTIVE",
-                                "changed": was_active or (prev_status != "REVOKED"),
-                                "plan": remote_plan,
-                                "key": current_key,
-                                "portal": endpoint,
-                                "message": f"License key '{current_key}' was revoked on website portal (Inactive)."
-                            }
-
-                except Exception:
-                    continue
+        # Priority 3: Active
+        if active_res:
+            ep, remote_plan, remote_expires, is_admin = active_res
+            self.connected_portal = ep
+            prev_status = self.license_data.get("status", "INACTIVE")
+            was_inactive = (prev_status != "ACTIVE")
+            self.license_data["license_key"] = current_key
+            self.license_data["status"] = "ACTIVE"
+            self.license_data["plan_tier"] = remote_plan
+            self.license_data["expires_at"] = remote_expires or ("Never (Lifetime / Non-Expiring)" if is_admin else "")
+            if not self.license_data.get("activated_at"):
+                self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            self.license_data["last_verified"] = datetime.now().isoformat()
+            self.save_local_license()
+            return {
+                "result": "ACTIVE",
+                "status": "ACTIVE",
+                "changed": was_inactive,
+                "plan": remote_plan,
+                "key": current_key,
+                "portal": ep,
+                "message": f"License is registered as ACTIVE on website ({remote_plan})"
+            }
 
         # 3. If every endpoint explicitly returned 404 (deleted from website):
-        if not found_remote_record and saw_404_count > 0 and saw_404_count >= (total_endpoints_checked // 2):
+        if total_targets > 0 and saw_404_count >= (total_targets // 2):
             was_assigned = bool(self.license_data.get("license_key"))
             removed_key = self.remove_license_key()
             return {
@@ -585,7 +590,7 @@ class SubscriptionLicenseManager:
             if "githubusercontent" in endpoint:
                 continue
             url = f"{endpoint}/api/licenses/heartbeat"
-            t_out = 0.6 if ("localhost" in endpoint or "127.0.0.1" in endpoint) else 2.5
+            t_out = 0.8 if ("localhost" in endpoint or "127.0.0.1" in endpoint) else 3.0
             try:
                 payload = json.dumps({
                     "key": current_key,
@@ -609,6 +614,17 @@ class SubscriptionLicenseManager:
                     method="POST"
                 )
                 with urllib.request.urlopen(req, timeout=t_out) as resp:
+                    raw_content = resp.read().decode("utf-8", errors="ignore").strip()
+                    if raw_content:
+                        try:
+                            parsed = json.loads(raw_content)
+                            if isinstance(parsed, dict):
+                                remote_status = str(parsed.get("status", "")).strip().upper()
+                                if remote_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                                    self.license_data["status"] = "REVOKED"
+                                    self.save_local_license()
+                        except Exception:
+                            pass
                     if resp.status == 200:
                         return True
             except Exception:
@@ -623,14 +639,11 @@ class SubscriptionLicenseManager:
         """
         Returns True ONLY if a valid license key is assigned, its status is explicitly ACTIVE,
         and its expiration date (if not Lifetime/Admin) is not past.
+        Instant 0ms in-memory verification without blocking the Tkinter UI thread.
         """
         current_key = (self.license_data.get("license_key") or "").strip().upper()
         if not current_key:
             return False
-
-        # Fresh sync if more than 1.5 seconds since last scan
-        if (time.time() - self._last_scan_ts) > 1.5:
-            self.scan_remote_status()
 
         status = str(self.license_data.get("status", "INACTIVE")).strip().upper()
         if status != "ACTIVE":
@@ -675,66 +688,120 @@ class SubscriptionLicenseManager:
             return False, "Please enter a valid license key."
 
         key_hash = hashlib.sha256(clean_key.encode('utf-8')).hexdigest().lower()
-        endpoints = self.get_active_portal_endpoints()
-        pub_ip = get_public_ip()
 
-        # 1. Query remote portal and GitHub endpoints
-        for endpoint in endpoints:
-            check_urls = []
-            if "githubusercontent" in endpoint:
-                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
-            else:
+        # 0. Check local files in project workspace for zero-latency verification
+        possible_local_paths = [
+            os.path.join(os.getcwd(), "public", "licenses", f"{key_hash}.json"),
+            os.path.join(os.getcwd(), "dist", "licenses", f"{key_hash}.json"),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "public", "licenses", f"{key_hash}.json"),
+            os.path.join(os.getcwd(), "licenses", f"{key_hash}.json")
+        ]
+        for lpath in possible_local_paths:
+            if os.path.isfile(lpath):
                 try:
-                    host_name_enc = urllib.parse.quote(socket.gethostname())
-                except Exception:
-                    host_name_enc = "Unknown-PC"
-                check_urls.append(f"{endpoint}/licenses/{key_hash}.json")
-                check_urls.append(f"{endpoint}/api/licenses/check?key={clean_key}&hash={key_hash}&hwid={self.hardware_id}&ip={pub_ip}&machine={host_name_enc}&ver={APP_VERSION}")
+                    with open(lpath, "r", encoding="utf-8") as lf:
+                        ldata = json.load(lf)
+                    if isinstance(ldata, dict) and "status" in ldata:
+                        l_status = str(ldata.get("status", "")).strip().upper()
+                        l_plan = str(ldata.get("plan", "Standard")).strip()
+                        l_expires = str(ldata.get("expires", "")).strip()
 
-            for check_url in check_urls:
-                try:
-                    status_code, data = http_get_json(check_url, timeout=4.0)
-                    if not isinstance(data, dict):
-                        continue
+                        is_admin = ("ADMIN" in clean_key or "MASTER" in clean_key or "ADMIN" in l_plan.upper())
+                        plan_display = "Admin (Lifetime)" if is_admin else (l_plan if l_plan not in ["Unregistered", "Unknown", "Standard", ""] else "Pro Subscription")
 
-                    if status_code == 200:
-                        remote_status = str(data.get("status", "")).strip().upper()
-                        if remote_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                        if l_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
                             self.license_data["license_key"] = clean_key
                             self.license_data["status"] = "REVOKED"
+                            self.license_data["plan_tier"] = plan_display
                             self.license_data["last_verified"] = datetime.now().isoformat()
                             self.save_local_license()
                             return False, f"❌ License key '{clean_key}' is REVOKED / INACTIVE on the portal. Activation denied."
-
-                        if remote_status == "EXPIRED":
+                        elif l_status == "EXPIRED":
                             self.license_data["license_key"] = clean_key
                             self.license_data["status"] = "EXPIRED"
+                            self.license_data["plan_tier"] = plan_display
+                            self.license_data["expires_at"] = l_expires or "Expired"
                             self.license_data["last_verified"] = datetime.now().isoformat()
                             self.save_local_license()
                             return False, f"⏳ License key '{clean_key}' has EXPIRED. Subscription renewal required."
-
-                        if remote_status == "ACTIVE":
-                            raw_plan = data.get("plan", "")
-                            is_admin = ("ADMIN" in clean_key or "MASTER" in clean_key or "ADMIN" in str(raw_plan).upper())
-                            plan = "Admin (Lifetime)" if is_admin else (str(raw_plan).strip() if raw_plan and raw_plan not in ["Standard", "Unregistered", ""] else "Pro Subscription")
-                            expires = "Never (Lifetime / Non-Expiring)" if is_admin else (data.get("expires") or "Never (Lifetime / Non-Expiring)")
-
+                        elif l_status == "ACTIVE":
                             self.license_data["license_key"] = clean_key
                             self.license_data["status"] = "ACTIVE"
-                            self.license_data["plan_tier"] = plan
+                            self.license_data["plan_tier"] = plan_display
                             if email:
                                 self.license_data["user_email"] = email
                             self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-                            self.license_data["expires_at"] = expires
+                            self.license_data["expires_at"] = l_expires or ("Never (Lifetime / Non-Expiring)" if is_admin else "")
                             self.license_data["last_verified"] = datetime.now().isoformat()
                             self.save_local_license()
                             self.send_heartbeat()
-
-                            return True, f"✅ Verified Active on Website! Plan: {plan} • Machine ID Locked."
-                    elif status_code == 404 or data.get("exists") is False:
-                        continue
+                            return True, f"✅ Verified Active on Website! Plan: {plan_display} • Machine ID Locked."
                 except Exception:
-                    continue
+                    pass
+
+        endpoints = self.get_active_portal_endpoints()
+        pub_ip = get_public_ip()
+        all_check_targets = []
+
+        try:
+            host_name_enc = urllib.parse.quote(socket.gethostname())
+        except Exception:
+            host_name_enc = "Unknown-PC"
+
+        for endpoint in endpoints:
+            if "githubusercontent" in endpoint:
+                all_check_targets.append((endpoint, f"{endpoint}/licenses/{key_hash}.json"))
+            else:
+                all_check_targets.append((endpoint, f"{endpoint}/licenses/{key_hash}.json"))
+                all_check_targets.append((endpoint, f"{endpoint}/api/licenses/check?key={clean_key}&hash={key_hash}&hwid={self.hardware_id}&ip={pub_ip}&machine={host_name_enc}&ver={APP_VERSION}"))
+
+        def fetch_target(target):
+            ep, url = target
+            st_code, data = http_get_json(url, timeout=1.8)
+            return ep, url, st_code, data
+
+        if all_check_targets:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(12, max(1, len(all_check_targets)))) as executor:
+                future_to_target = {executor.submit(fetch_target, t): t for t in all_check_targets}
+                for future in concurrent.futures.as_completed(future_to_target):
+                    try:
+                        ep, url, status_code, data = future.result()
+                        if status_code == 200 and isinstance(data, dict):
+                            remote_status = str(data.get("status", "")).strip().upper()
+                            if remote_status in ["REVOKED", "NOT ACTIVE", "INACTIVE", "SUSPENDED"]:
+                                self.license_data["license_key"] = clean_key
+                                self.license_data["status"] = "REVOKED"
+                                self.license_data["last_verified"] = datetime.now().isoformat()
+                                self.save_local_license()
+                                return False, f"❌ License key '{clean_key}' is REVOKED / INACTIVE on the portal. Activation denied."
+
+                            if remote_status == "EXPIRED":
+                                self.license_data["license_key"] = clean_key
+                                self.license_data["status"] = "EXPIRED"
+                                self.license_data["last_verified"] = datetime.now().isoformat()
+                                self.save_local_license()
+                                return False, f"⏳ License key '{clean_key}' has EXPIRED. Subscription renewal required."
+
+                            if remote_status == "ACTIVE":
+                                raw_plan = data.get("plan", "")
+                                is_admin = ("ADMIN" in clean_key or "MASTER" in clean_key or "ADMIN" in str(raw_plan).upper())
+                                plan = "Admin (Lifetime)" if is_admin else (str(raw_plan).strip() if raw_plan and raw_plan not in ["Standard", "Unregistered", ""] else "Pro Subscription")
+                                expires = "Never (Lifetime / Non-Expiring)" if is_admin else (data.get("expires") or "Never (Lifetime / Non-Expiring)")
+
+                                self.license_data["license_key"] = clean_key
+                                self.license_data["status"] = "ACTIVE"
+                                self.license_data["plan_tier"] = plan
+                                if email:
+                                    self.license_data["user_email"] = email
+                                self.license_data["activated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                self.license_data["expires_at"] = expires
+                                self.license_data["last_verified"] = datetime.now().isoformat()
+                                self.save_local_license()
+                                self.send_heartbeat()
+
+                                return True, f"✅ Verified Active on Website! Plan: {plan} • Machine ID Locked."
+                    except Exception:
+                        pass
 
         # 2. Check local authorized registry if offline
         registry = self.load_registry()
@@ -2528,24 +2595,43 @@ class FarmReceiptApp(_TK_BASE_TK):
                 return
 
             status_feedback.config(text="⏳ Verifying license status with website portal...", fg="#38bdf8")
-            dialog.update_idletasks()
+            act_btn.config(state="disabled")
+            scan_btn.config(state="disabled")
 
-            success, msg = self.license_mgr.verify_with_server(k, em)
-            if success:
-                status_feedback.config(text=f"✅ {msg}", fg="#34d399")
-                self.sub_badge.config(text="👑 Pro Subscription", fg="#34d399")
-                self.log(f"👑 License activated for: {em or k}", "success")
-            else:
-                status_feedback.config(text=f"❌ {msg}", fg="#f87171")
-                self.sub_badge.config(text="🔒 License Inactive", fg="#ef4444")
-            refresh_ui()
+            def worker():
+                success, msg = self.license_mgr.verify_with_server(k, em)
+                def finish():
+                    if dialog.winfo_exists():
+                        act_btn.config(state="normal")
+                        scan_btn.config(state="normal")
+                        if success:
+                            status_feedback.config(text=f"✅ {msg}", fg="#34d399")
+                            self.sub_badge.config(text="👑 Pro Subscription", fg="#34d399")
+                            self.log(f"👑 License activated for: {em or k}", "success")
+                        else:
+                            status_feedback.config(text=f"❌ {msg}", fg="#f87171")
+                            self.sub_badge.config(text="🔒 License Inactive", fg="#ef4444")
+                        refresh_ui()
+                self.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         def scan_now():
             status_feedback.config(text="📡 Scanning website portal for changes...", fg="#38bdf8")
-            dialog.update_idletasks()
-            res = self.license_mgr.scan_remote_status(force=True)
-            self.handle_remote_license_changed(res)
-            refresh_ui(res)
+            act_btn.config(state="disabled")
+            scan_btn.config(state="disabled")
+
+            def worker():
+                res = self.license_mgr.scan_remote_status(force=True)
+                def finish():
+                    if dialog.winfo_exists():
+                        act_btn.config(state="normal")
+                        scan_btn.config(state="normal")
+                        self.handle_remote_license_changed(res)
+                        refresh_ui(res)
+                self.after(0, finish)
+
+            threading.Thread(target=worker, daemon=True).start()
 
         def remove_key():
             if not self.license_mgr.license_data.get("license_key"):
@@ -3649,8 +3735,50 @@ class FarmReceiptApp(_TK_BASE_TK):
 # Entry Point
 # -----------------------------------------------------------------------------
 def main():
-    app = FarmReceiptApp()
-    app.mainloop()
+    # 1. Verify Tkinter availability
+    if tk is None:
+        err_msg = (
+            "\n" + "="*70 + "\n"
+            "[ERROR] Tkinter GUI library is not available in this Python installation.\n"
+            "On Windows: Run your Python installer again -> Click 'Modify' ->\n"
+            "Ensure the checkbox 'tcl/tk and IDLE' is checked, then finish setup.\n"
+            + "="*70 + "\n"
+        )
+        print(err_msg)
+        try:
+            with open(os.path.join(SCRIPT_DIR, "crash_log.txt"), "w", encoding="utf-8") as f:
+                f.write(err_msg)
+        except Exception:
+            pass
+        return
+
+    # 2. Launch GUI Application with top-level crash guard
+    try:
+        app = FarmReceiptApp()
+        app.mainloop()
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        err_report = (
+            "\n" + "="*70 + "\n"
+            f"[FATAL ERROR] Receipt Processor failed to initialize or encountered a crash:\n"
+            f"{tb}\n"
+            + "="*70 + "\n"
+        )
+        print(err_report)
+        try:
+            with open(os.path.join(SCRIPT_DIR, "crash_log.txt"), "w", encoding="utf-8") as f:
+                f.write(f"Timestamp: {datetime.now().isoformat()}\nError: {e}\n\nTraceback:\n{tb}")
+        except Exception:
+            pass
+        try:
+            if messagebox:
+                messagebox.showerror(
+                    "Receipt Processor Startup Error",
+                    f"The application encountered an error while starting:\n\n{e}\n\nDetails have been saved to crash_log.txt."
+                )
+        except Exception:
+            pass
 
 if __name__ == "__main__":
     main()

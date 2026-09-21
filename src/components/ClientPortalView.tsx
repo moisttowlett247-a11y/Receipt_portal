@@ -23,17 +23,20 @@ import {
 } from 'lucide-react';
 import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel } from '../types';
 import { computeSha256Hex } from '../hashUtils';
+import { CLOUDFLARE_WORKER_URL } from '../licenseSyncService';
 
 interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
   currentVersion: string;
   onInquirySubmitted?: (inquiry: ProductInquiry) => void;
+  onOpenLegal?: (tab: 'privacy' | 'terms' | 'support') => void;
 }
 
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   licenseKeys,
   currentVersion,
-  onInquirySubmitted
+  onInquirySubmitted,
+  onOpenLegal
 }) => {
   const [clientKeyInput, setClientKeyInput] = useState('');
   const [checkResult, setCheckResult] = useState<{
@@ -126,7 +129,16 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newInquiry)
     }).catch(err => {
-      console.warn('Inquiry API dispatch notice:', err);
+      console.warn('Local Inquiry API dispatch notice:', err);
+    });
+
+    // 3. Simultaneously dispatch to Cloudflare KV Edge API
+    fetch(`${CLOUDFLARE_WORKER_URL}/api/inquiries`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newInquiry)
+    }).catch(cfErr => {
+      console.warn('Cloudflare Inquiry dispatch notice:', cfErr);
     });
 
     if (onInquirySubmitted) {
@@ -156,6 +168,23 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return `mailto:moisttowlett247@gmail.com?subject=${subject}&body=${body}`;
   };
 
+  const getInquiryGmailWebUrl = () => {
+    const subject = encodeURIComponent(`Software Access Request: ${inquiryPlan} - ${inquiryName}`);
+    const body = encodeURIComponent(
+      `Hello moisttowlett247@gmail.com,\n\n` +
+      `I would like to request software access and license onboarding for Receipt Processor Desktop.\n\n` +
+      `Applicant Details:\n` +
+      `- Full Name: ${inquiryName}\n` +
+      `- Contact Email: ${inquiryEmail}\n` +
+      `- Business / Farm: ${inquiryCompany || 'Individual'}\n` +
+      `- Monthly Volume: ${inquiryVolume}\n` +
+      `- Interested Plan: ${inquiryPlan}\n` +
+      (inquiryNotes ? `- Additional Notes: ${inquiryNotes}\n\n` : '\n') +
+      `Please review my inquiry and provide instructions to get started.\n\nThank you,\n${inquiryName}`
+    );
+    return `https://mail.google.com/mail/?view=cm&fs=1&to=moisttowlett247@gmail.com&su=${subject}&body=${body}`;
+  };
+
   const handleCopyInquirySummary = () => {
     const text = 
       `Software Access Request for moisttowlett247@gmail.com\n\n` +
@@ -175,7 +204,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     if (!selectedPlanForOrder) return '';
     const subject = encodeURIComponent(`License Key Request: ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`);
     const body = encodeURIComponent(
-      `Hello,\n\nI would like to purchase an activation key for Receipt Processor Desktop.\n\n` +
+      `Hello moisttowlett247@gmail.com,\n\nI would like to purchase an activation key for Receipt Processor Desktop.\n\n` +
       `Selected Plan: ${selectedPlanForOrder.name}\n` +
       `Price: ${selectedPlanForOrder.price} (${selectedPlanForOrder.period})\n` +
       `Name: ${orderName || 'Not specified'}\n` +
@@ -185,6 +214,21 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     );
     const contactEmail = 'moisttowlett247@gmail.com';
     return `mailto:${contactEmail}?subject=${subject}&body=${body}`;
+  };
+
+  const getOrderGmailWebUrl = () => {
+    if (!selectedPlanForOrder) return '';
+    const subject = encodeURIComponent(`License Key Request: ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`);
+    const body = encodeURIComponent(
+      `Hello moisttowlett247@gmail.com,\n\nI would like to purchase an activation key for Receipt Processor Desktop.\n\n` +
+      `Selected Plan: ${selectedPlanForOrder.name}\n` +
+      `Price: ${selectedPlanForOrder.price} (${selectedPlanForOrder.period})\n` +
+      `Name: ${orderName || 'Not specified'}\n` +
+      `Email: ${orderEmail || 'Not specified'}\n` +
+      (orderNote ? `Notes: ${orderNote}\n\n` : '\n') +
+      `Please provide instructions to complete payment and receive my license key.\n\nThank you!`
+    );
+    return `https://mail.google.com/mail/?view=cm&fs=1&to=moisttowlett247@gmail.com&su=${subject}&body=${body}`;
   };
 
   const handleCopyOrderSummary = () => {
@@ -388,14 +432,25 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
                   <div className="space-y-2 pt-1">
                     <a
-                      href={getInquiryMailtoUrl()}
+                      href={getInquiryGmailWebUrl()}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
+                      className="w-full py-2.5 px-3 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      <Mail className="w-3.5 h-3.5" />
+                      <span>Send Direct via Web Gmail (Pre-filled)</span>
+                    </a>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        window.location.href = getInquiryMailtoUrl();
+                      }}
                       className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Send className="w-3.5 h-3.5" />
-                      <span>Send Direct Email via Mail App (moisttowlett247@gmail.com)</span>
-                    </a>
+                      <span>Open in Desktop Email App</span>
+                    </button>
 
                     <button
                       type="button"
@@ -996,14 +1051,25 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               {/* Actions: Send Email or Copy Details */}
               <div className="pt-2 space-y-2">
                 <a
-                  href={getOrderMailtoUrl()}
+                  href={getOrderGmailWebUrl()}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
+                  className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Mail className="w-4 h-4" />
+                  <span>Send via Web Gmail (Pre-filled to moisttowlett247@gmail.com)</span>
+                </a>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.location.href = getOrderMailtoUrl();
+                  }}
                   className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Send className="w-4 h-4" />
-                  <span>Send Request to Developer (moisttowlett247@gmail.com)</span>
-                </a>
+                  <span>Open in Desktop Email App</span>
+                </button>
 
                 <button
                   type="button"
@@ -1040,11 +1106,38 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
 
         <div className="flex items-center gap-3 text-stone-400 text-[11px]">
-          <a href="#privacy" className="hover:text-emerald-400 hover:underline">Privacy Policy</a>
+          <button
+            type="button"
+            onClick={() => {
+              if (onOpenLegal) onOpenLegal('privacy');
+              else window.location.hash = 'privacy';
+            }}
+            className="hover:text-emerald-400 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[11px]"
+          >
+            Privacy Policy
+          </button>
           <span>•</span>
-          <a href="#terms" className="hover:text-amber-400 hover:underline">Terms & EULA</a>
+          <button
+            type="button"
+            onClick={() => {
+              if (onOpenLegal) onOpenLegal('terms');
+              else window.location.hash = 'terms';
+            }}
+            className="hover:text-amber-400 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[11px]"
+          >
+            Terms & EULA
+          </button>
           <span>•</span>
-          <a href="#support" className="hover:text-sky-400 hover:underline">Support & SLA</a>
+          <button
+            type="button"
+            onClick={() => {
+              if (onOpenLegal) onOpenLegal('support');
+              else window.location.hash = 'support';
+            }}
+            className="hover:text-sky-400 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[11px]"
+          >
+            Support & SLA
+          </button>
         </div>
 
         <div className="flex items-center gap-4">

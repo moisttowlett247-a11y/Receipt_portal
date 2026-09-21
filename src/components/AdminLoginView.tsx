@@ -1,25 +1,22 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Lock, Unlock, ArrowLeft, AlertCircle, ShieldCheck, Check, User, Eye, EyeOff } from 'lucide-react';
+import { Lock, ArrowLeft, AlertCircle, ShieldCheck, User, Eye, EyeOff, Zap } from 'lucide-react';
+import { loginToCloudflareAdmin, CLOUDFLARE_WORKER_URL } from '../licenseSyncService';
 import { computeCredentialsHash } from '../hashUtils';
 
 interface AdminLoginViewProps {
   onUnlock: () => void;
   savedHash: string | null;
-  onSaveCredentials: (username: string, passwordHash: string) => void;
+  onSaveCredentials?: (username: string, passwordHash: string) => void;
   onGoToClientPortal: () => void;
 }
 
 export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
   onUnlock,
   savedHash,
-  onSaveCredentials,
   onGoToClientPortal
 }) => {
-  const isInitialSetup = !savedHash;
-
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
@@ -29,66 +26,53 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
 
   useEffect(() => {
     userInputRef.current?.focus();
-  }, [isInitialSetup]);
+  }, []);
 
   const triggerError = (msg: string) => {
     setErrorMsg(msg);
     setShake(true);
     setTimeout(() => setShake(false), 500);
     setPassword('');
-    setConfirmPassword('');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
 
-    const cleanUser = username.trim().toLowerCase();
+    const cleanUser = username.trim();
     const cleanPass = password.trim();
 
     if (!cleanUser) {
-      triggerError('Please enter an admin username.');
+      triggerError('Please enter your administrator username.');
       return;
     }
     if (!cleanPass) {
-      triggerError('Please enter your admin password.');
+      triggerError('Please enter your administrator password.');
       return;
     }
 
     setLoading(true);
 
     try {
-      if (isInitialSetup) {
-        if (cleanPass.length < 6) {
-          triggerError('Password must be at least 6 characters long.');
-          setLoading(false);
-          return;
-        }
-        if (cleanPass !== confirmPassword.trim()) {
-          triggerError('Passwords do not match. Please re-enter.');
-          setLoading(false);
-          return;
-        }
-
-        const hash = await computeCredentialsHash(cleanUser, cleanPass);
-        onSaveCredentials(cleanUser, hash);
+      // 1. Primary: Authenticate securely against Cloudflare Worker API
+      const cfRes = await loginToCloudflareAdmin(cleanUser, cleanPass);
+      if (cfRes.success) {
         onUnlock();
         return;
       }
 
-      // Verify credentials
-      const inputHash = await computeCredentialsHash(cleanUser, cleanPass);
-
-      // Check against savedHash or fallback default (admin / 1995)
-      const defaultHash = await computeCredentialsHash('admin', '1995');
-
-      if ((savedHash && inputHash === savedHash) || (!savedHash && inputHash === defaultHash)) {
-        onUnlock();
-      } else {
-        triggerError('Invalid username or password. Access Denied.');
+      // 2. Offline fallback: Check saved credential hash if Cloudflare was unreachable
+      if (savedHash) {
+        const inputHash = await computeCredentialsHash(cleanUser.toLowerCase(), cleanPass);
+        if (inputHash === savedHash) {
+          onUnlock();
+          return;
+        }
       }
+
+      triggerError(cfRes.error || 'Invalid administrator credentials. Access Denied.');
     } catch {
-      triggerError('Cryptographic verification failed. Try again.');
+      triggerError('Authentication verification failed. Access Denied.');
     } finally {
       setLoading(false);
     }
@@ -96,7 +80,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col justify-between font-sans selection:bg-amber-500 selection:text-stone-950">
-      {/* Header */}
+      {/* Top Header */}
       <header className="border-b border-stone-800/80 bg-stone-900/60 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
@@ -126,24 +110,18 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
         >
           <div className="text-center space-y-2">
             <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 mx-auto shadow-inner">
-              {isInitialSetup ? <ShieldCheck className="w-6 h-6" /> : <Lock className="w-6 h-6" />}
+              <Lock className="w-6 h-6" />
             </div>
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[10px] font-medium mx-auto">
-              <span>QuickBooks Online & License Center</span>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[10px] font-medium mx-auto">
+              <Zap className="w-3 h-3 text-amber-400" />
+              <span>Cloudflare Edge Auth Protected</span>
             </div>
             <h2 className="text-lg font-extrabold text-stone-100 tracking-tight">
-              {isInitialSetup ? 'Initialize Master Admin Account' : 'Admin Authentication Required'}
+              Admin Authentication Required
             </h2>
             <p className="text-xs text-stone-400 leading-relaxed">
-              {isInitialSetup 
-                ? 'Create an administrative username and strong password to secure your portal.'
-                : 'Sign in with your master credentials to configure QuickBooks Online OAuth 2.0 keys, tokens, and licenses.'}
+              Sign in with your master credentials to configure licenses, device monitoring, and platform operations.
             </p>
-            {!savedHash && !isInitialSetup && (
-              <p className="text-[11px] text-amber-400/90 font-mono bg-amber-500/10 py-1 px-2.5 rounded-lg border border-amber-500/20">
-                Default Credentials: <strong>admin</strong> / <strong>1995</strong>
-              </p>
-            )}
           </div>
 
           {errorMsg && (
@@ -167,7 +145,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
                   setUsername(e.target.value);
                   setErrorMsg(null);
                 }}
-                placeholder={isInitialSetup ? 'e.g. admin or your username' : 'Enter admin username'}
+                placeholder="Enter admin username"
                 className="w-full text-xs font-mono py-2.5 px-3.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 shadow-inner"
                 autoFocus
               />
@@ -195,29 +173,10 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
                   setPassword(e.target.value);
                   setErrorMsg(null);
                 }}
-                placeholder={isInitialSetup ? 'Create strong password (min 6 chars)' : 'Enter admin password'}
+                placeholder="Enter admin password"
                 className="w-full text-xs font-mono py-2.5 px-3.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 shadow-inner"
               />
             </div>
-
-            {isInitialSetup && (
-              <div>
-                <label className="text-xs font-medium text-stone-300 block mb-1.5 flex items-center gap-1.5">
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  Confirm Password
-                </label>
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={confirmPassword}
-                  onChange={(e) => {
-                    setConfirmPassword(e.target.value);
-                    setErrorMsg(null);
-                  }}
-                  placeholder="Re-enter password"
-                  className="w-full text-xs font-mono py-2.5 px-3.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 shadow-inner"
-                />
-              </div>
-            )}
 
             <div className="pt-2 space-y-2">
               <button
@@ -226,36 +185,29 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
                 className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 font-semibold text-white rounded-xl text-xs transition-all shadow-md active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
               >
                 {loading ? (
-                  <span>Verifying...</span>
-                ) : isInitialSetup ? (
-                  <>
-                    <Check className="w-4 h-4" />
-                    <span>Save Master Account & Unlock</span>
-                  </>
+                  <span>Authenticating...</span>
                 ) : (
                   <>
-                    <Unlock className="w-4 h-4" />
-                    <span>Sign In to Admin Console</span>
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>Authenticate &amp; Unlock</span>
                   </>
                 )}
               </button>
-
-              {!isInitialSetup && (
-                <div className="flex items-center justify-center pt-2 text-[11px] text-stone-500">
-                  <span className="flex items-center gap-1.5">
-                    <ShieldCheck className="w-3.5 h-3.5 text-stone-600" />
-                    Encrypted SHA-256 local authentication
-                  </span>
-                </div>
-              )}
             </div>
           </form>
+
+          {/* Footer security note */}
+          <div className="pt-2 border-t border-stone-800/80 text-center">
+            <p className="text-[11px] text-stone-500 leading-normal">
+              Access is protected by Cloudflare Edge verification and rate-limited. Unauthorized access attempts are monitored and recorded.
+            </p>
+          </div>
         </div>
       </main>
 
-      {/* Bottom Footer */}
-      <footer className="border-t border-stone-800/80 bg-stone-950 py-4 px-6 text-center text-xs text-stone-600">
-        Receipt Processor Desktop • Private Administrative Portal
+      {/* Footer */}
+      <footer className="border-t border-stone-800/60 bg-stone-900/40 px-6 py-3 text-center text-xs text-stone-500">
+        Receipt Processor Enterprise Platform • Secured by Cloudflare Worker API
       </footer>
     </div>
   );

@@ -52,7 +52,7 @@ import { QuickBooksProductionCenter } from './components/QuickBooksProductionCen
 import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
-import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses } from './licenseSyncService';
+import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken } from './licenseSyncService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -378,9 +378,7 @@ export default function App() {
 
   const handleLockAdminPanel = () => {
     setIsAdminUnlocked(false);
-    try {
-      sessionStorage.removeItem('receipt_processor_admin_auth');
-    } catch {}
+    clearAdminToken();
     showToast('Admin Console locked.');
   };
 
