@@ -300,8 +300,17 @@ class SubscriptionLicenseManager:
             "last_verified": ""
         }
 
+    def _compute_vault_checksum(self, key: str, status: str, exp: str) -> str:
+        raw = f"RP_VAULT_INTEGRITY::{key}::{self.hardware_id}::{status}::{exp}::SALT_78912"
+        return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
+
     def save_local_license(self):
         try:
+            k = (self.license_data.get("license_key") or "").strip().upper()
+            st = (self.license_data.get("status") or "INACTIVE").strip().upper()
+            exp = str(self.license_data.get("expires_at") or "").strip()
+            self.license_data["hardware_id"] = self.hardware_id
+            self.license_data["vault_checksum"] = self._compute_vault_checksum(k, st, exp)
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(self.license_data, f, indent=2)
         except Exception:
@@ -659,6 +668,7 @@ class SubscriptionLicenseManager:
     def is_subscription_active(self) -> bool:
         """
         Returns True ONLY if a valid license key is assigned, its status is explicitly ACTIVE,
+        it matches the workstation Hardware ID, passes cryptographic tamper check,
         and its expiration date (if not Lifetime/Admin) is not past.
         Instant 0ms in-memory verification without blocking the Tkinter UI thread.
         """
@@ -666,11 +676,29 @@ class SubscriptionLicenseManager:
         if not current_key:
             return False
 
+        # 1. Enforce workstation Hardware ID locking (prevents file copying between PCs)
+        vault_hwid = str(self.license_data.get("hardware_id", "")).strip().upper()
+        if vault_hwid and vault_hwid != self.hardware_id:
+            self.license_data["status"] = "HWID_MISMATCH"
+            self.save_local_license()
+            return False
+
+        # 2. Check status
         status = str(self.license_data.get("status", "INACTIVE")).strip().upper()
         if status != "ACTIVE":
             return False
 
-        # Verify date expiration
+        # 3. Verify cryptographic tamper checksum (prevents manual editing of .license_vault.json)
+        saved_checksum = str(self.license_data.get("vault_checksum", "")).strip()
+        if saved_checksum:
+            exp_str_raw = str(self.license_data.get("expires_at", "")).strip()
+            expected_checksum = self._compute_vault_checksum(current_key, status, exp_str_raw)
+            if saved_checksum != expected_checksum:
+                self.license_data["status"] = "TAMPERED"
+                self.save_local_license()
+                return False
+
+        # 4. Verify date expiration
         exp_str = str(self.license_data.get("expires_at", "")).strip()
         plan_str = str(self.license_data.get("plan_tier", "")).strip()
         is_lifetime = "Never" in exp_str or "Lifetime" in exp_str or "Admin" in plan_str

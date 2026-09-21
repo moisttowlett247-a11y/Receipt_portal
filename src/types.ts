@@ -81,9 +81,21 @@ export function calculateExpirationDate(startDateStr: string, plan: PlanTier): s
   return exp.toISOString().split('T')[0];
 }
 
+function getSecureRandomDigits(count: number = 4): string {
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    const array = new Uint32Array(1);
+    crypto.getRandomValues(array);
+    const min = Math.pow(10, count - 1);
+    const max = Math.pow(10, count) - 1;
+    const val = min + (array[0] % (max - min + 1));
+    return String(val);
+  }
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
 export function generatePlanKey(plan: PlanTier): string {
-  const rand1 = Math.floor(1000 + Math.random() * 9000);
-  const rand2 = Math.floor(1000 + Math.random() * 9000);
+  const rand1 = getSecureRandomDigits(4);
+  const rand2 = getSecureRandomDigits(4);
   const year = new Date().getFullYear();
   switch (plan) {
     case 'ADMIN':
@@ -106,8 +118,8 @@ export function generatePlanKey(plan: PlanTier): string {
 }
 
 export function generateAdminKey(flavor: 'MASTER' | 'VIP' | 'DEV' = 'MASTER'): string {
-  const rand1 = Math.floor(1000 + Math.random() * 9000);
-  const rand2 = Math.floor(1000 + Math.random() * 9000);
+  const rand1 = getSecureRandomDigits(4);
+  const rand2 = getSecureRandomDigits(4);
   return `ADMIN-${flavor}-${rand1}-${rand2}`;
 }
 

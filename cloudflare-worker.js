@@ -70,7 +70,7 @@ async function verifyAdminAuth(request, env) {
   if (!token) return false;
 
   const validToken = await env.LICENSES.get("SYS:ADMIN_SESSION_TOKEN");
-  if (validToken && token === validToken) {
+  if (validToken && constantTimeEqual(token, validToken)) {
     return true;
   }
   return false;
@@ -215,6 +215,17 @@ export default {
       } catch (err) {
         return jsonResponse({ success: false, error: err.message }, 400);
       }
+    }
+
+    if (pathname === "/api/admin/logout" && request.method === "POST") {
+      const isAuth = await verifyAdminAuth(request, env);
+      if (isAuth) {
+        await env.LICENSES.delete("SYS:ADMIN_SESSION_TOKEN");
+      }
+      return jsonResponse({
+        success: true,
+        message: "Administrator session revoked and logged out."
+      });
     }
 
     // -------------------------------------------------------------------------
@@ -407,8 +418,8 @@ export default {
         }, 403);
       }
 
-      // If key had no HWID bound yet, bind to this workstation now
-      if (qHwid && !record.hwid) {
+      // If key had no HWID bound yet and is active, bind to this workstation now
+      if (qHwid && !record.hwid && record.status === "ACTIVE") {
         record.hwid = qHwid;
         record.first_activated_machine = qMachine || "Unknown PC";
         record.first_activated_at = new Date().toISOString();
@@ -495,7 +506,7 @@ export default {
         }, 403);
       }
 
-      if (hwid && !record.hwid) {
+      if (hwid && !record.hwid && record.status === "ACTIVE") {
         record.hwid = hwid;
         record.first_activated_machine = machine || "Desktop Client";
         record.first_activated_at = new Date().toISOString();
@@ -617,30 +628,57 @@ export default {
     if (pathname === "/api/inquiries") {
       if (request.method === "POST") {
         try {
+          const clientIp = getClientIp(request);
+          const rateLimitKey = `SYS:RATE_LIMIT:INQUIRY:${clientIp}`;
+          const attemptsRaw = await env.LICENSES.get(rateLimitKey);
+          const submissions = attemptsRaw ? parseInt(attemptsRaw, 10) : 0;
+
+          if (submissions >= 15) {
+            return jsonResponse({
+              success: false,
+              error: "Too many inquiry requests from this network. Please wait an hour before submitting again."
+            }, 429);
+          }
+
           const body = await request.json();
-          const inquiryId = body.id || `inquiry-${Date.now()}`;
+          const cleanName = String(body.name || "Anonymous Client").trim().slice(0, 100);
+          const cleanEmail = String(body.email || "").trim().slice(0, 150);
+          const cleanCompany = String(body.company || "").trim().slice(0, 120);
+          const cleanVolume = String(body.receiptVolume || "Not specified").trim().slice(0, 80);
+          const cleanPlan = String(body.interestedPlan || "Standard").trim().slice(0, 80);
+          const cleanNotes = String(body.notes || "").trim().slice(0, 2000);
+
+          if (!cleanEmail && !cleanName) {
+            return jsonResponse({ success: false, error: "Name and email are required." }, 400);
+          }
+
+          // Generate server-controlled cryptographic random inquiry ID
+          const inquiryId = `inq_${Date.now()}_${crypto.randomUUID().replace(/-/g, "").slice(0, 10)}`;
           const newInquiry = {
             id: inquiryId,
-            name: body.name || "Anonymous Client",
-            email: body.email || "",
-            company: body.company || "",
-            receiptVolume: body.receiptVolume || "Not specified",
-            interestedPlan: body.interestedPlan || "Standard",
-            notes: body.notes || "",
-            submittedAt: body.submittedAt || new Date().toISOString(),
+            name: cleanName,
+            email: cleanEmail,
+            company: cleanCompany,
+            receiptVolume: cleanVolume,
+            interestedPlan: cleanPlan,
+            notes: cleanNotes,
+            submittedAt: new Date().toISOString(),
             status: "NEW",
-            ip: getClientIp(request),
+            ip: clientIp,
             location: getClientLocation(request)
           };
 
           // Save individual inquiry
           await env.LICENSES.put("INQUIRY:" + inquiryId, JSON.stringify(newInquiry));
 
-          // Also maintain list of inquiry IDs
+          // Also maintain list of inquiry IDs (last 100)
           const listRaw = await env.LICENSES.get("SYS:INQUIRIES_LIST");
           let idList = listRaw ? JSON.parse(listRaw) : [];
           idList = [inquiryId, ...idList.filter(id => id !== inquiryId)].slice(0, 100);
           await env.LICENSES.put("SYS:INQUIRIES_LIST", JSON.stringify(idList));
+
+          // Increment rate limit counter (1 hour TTL)
+          await env.LICENSES.put(rateLimitKey, String(submissions + 1), { expirationTtl: 3600 });
 
           return jsonResponse({
             success: true,

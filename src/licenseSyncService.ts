@@ -117,6 +117,22 @@ export async function loginToCloudflareAdmin(
 }
 
 /**
+ * Logs out and revokes the admin session token on Cloudflare Worker
+ */
+export async function logoutFromCloudflareAdmin(): Promise<void> {
+  try {
+    const token = getAdminToken();
+    if (token) {
+      await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/logout`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+    }
+  } catch {}
+  clearAdminToken();
+}
+
+/**
  * Updates administrator credentials stored on Cloudflare Worker KV
  */
 export async function updateCloudflareAdminCredentials(
