@@ -63,6 +63,14 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       triggerError('Please enter a valid username.');
       return;
     }
+    // Duplicate prevention: check client user accounts to avoid collision
+    try {
+      const storedClients = JSON.parse(localStorage.getItem('receipt_processor_client_accounts_v1') || '[]');
+      if (Array.isArray(storedClients) && storedClients.some((c: any) => c.username?.toLowerCase() === cleanNewUser)) {
+        triggerError(`Username "${cleanNewUser}" is already taken by a client account. Please choose a different username.`);
+        return;
+      }
+    } catch {}
     if (cleanNewPass.length < 6) {
       triggerError('New password must be at least 6 characters.');
       return;

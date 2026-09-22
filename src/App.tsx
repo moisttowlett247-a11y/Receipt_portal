@@ -790,6 +790,12 @@ export default function App() {
             setLegalModalOpen(true);
           }}
           onNavigateToAdmin={() => navigateTo('/admin')}
+          onLicenseRevoked={(revokedKey) => {
+            const matched = licenseKeys.find(k => k.key.toUpperCase() === revokedKey.toUpperCase());
+            if (matched) {
+              handleDeleteKey(matched.id);
+            }
+          }}
         />
 
         {/* Global Toast */}

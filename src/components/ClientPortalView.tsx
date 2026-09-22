@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
   Key, 
@@ -21,9 +21,12 @@ import {
   MessageSquare,
   Zap
 } from 'lucide-react';
-import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel } from '../types';
+import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel, ClientAccountSession } from '../types';
 import { computeSha256Hex } from '../hashUtils';
 import { CLOUDFLARE_WORKER_URL } from '../licenseSyncService';
+import { getCurrentClientSession, clearClientSession } from '../clientAccountService';
+import { ClientAuthModal } from './ClientAuthModal';
+import { ClientAccountModal } from './ClientAccountModal';
 
 interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
@@ -31,6 +34,7 @@ interface ClientPortalViewProps {
   onInquirySubmitted?: (inquiry: ProductInquiry) => void;
   onOpenLegal?: (tab: 'privacy' | 'terms' | 'support') => void;
   onNavigateToAdmin?: () => void;
+  onLicenseRevoked?: (key: string) => void;
 }
 
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
@@ -38,8 +42,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   currentVersion,
   onInquirySubmitted,
   onOpenLegal,
-  onNavigateToAdmin
+  onNavigateToAdmin,
+  onLicenseRevoked
 }) => {
+  const [clientSession, setClientSession] = useState<ClientAccountSession | null>(() => getCurrentClientSession());
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
+  const [showAccountModal, setShowAccountModal] = useState(false);
+
   const [clientKeyInput, setClientKeyInput] = useState('');
   const [checkResult, setCheckResult] = useState<{
     valid: boolean;
@@ -78,6 +88,30 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [orderSubmittedSuccess, setOrderSubmittedSuccess] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
+
+  // Auto-populate inquiry and order inputs if client is logged in
+  useEffect(() => {
+    if (clientSession) {
+      if (clientSession.displayName && !inquiryName) {
+        setInquiryName(clientSession.displayName);
+      }
+      if (clientSession.email && !inquiryEmail) {
+        setInquiryEmail(clientSession.email);
+      }
+      if (clientSession.companyName && !inquiryCompany) {
+        setInquiryCompany(clientSession.companyName);
+      }
+      if (clientSession.displayName && !orderName) {
+        setOrderName(clientSession.displayName);
+      }
+      if (clientSession.email && !orderEmail) {
+        setOrderEmail(clientSession.email);
+      }
+      if (clientSession.licenseKey && !clientKeyInput) {
+        setClientKeyInput(clientSession.licenseKey);
+      }
+    }
+  }, [clientSession]);
 
   const handleOpenOrderModal = (plan: {
     id: string;
@@ -481,6 +515,49 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2 sm:gap-2.5">
+          {clientSession ? (
+            <button
+              type="button"
+              onClick={() => setShowAccountModal(true)}
+              className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold bg-stone-800 hover:bg-stone-700 text-amber-400 border border-amber-500/30 rounded-lg shadow-sm transition-all cursor-pointer"
+            >
+              <div className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center text-[10px] font-bold text-amber-300">
+                {clientSession.displayName.slice(0, 1).toUpperCase()}
+              </div>
+              <span className="hidden sm:inline font-medium text-stone-200">
+                {clientSession.displayName}
+              </span>
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 font-mono">
+                Account
+              </span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthModalMode('login');
+                  setShowAuthModal(true);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-stone-300 hover:text-white hover:bg-stone-800/80 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <User className="w-3.5 h-3.5 text-stone-400" />
+                <span>Sign In</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthModalMode('register');
+                  setShowAuthModal(true);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-all cursor-pointer hidden sm:flex items-center gap-1.5"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Create Account</span>
+              </button>
+            </div>
+          )}
+
           <a
             href="#request-access"
             className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm transition-colors cursor-pointer"
@@ -493,6 +570,56 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
       {/* Hero Section */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
+        {/* Authenticated Client Welcome Banner & License Status */}
+        {clientSession && (
+          <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-stone-900 via-stone-900 to-amber-950/30 border border-amber-500/30 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+            <div className="flex items-center gap-3.5">
+              <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 font-bold text-base shrink-0">
+                {clientSession.displayName.slice(0, 2).toUpperCase()}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm sm:text-base font-bold text-stone-100">
+                    Welcome, {clientSession.displayName}
+                  </h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                    Client Verified
+                  </span>
+                </div>
+                <p className="text-xs text-stone-400">
+                  {clientSession.companyName ? `${clientSession.companyName} • ` : ''}
+                  {clientSession.licenseKey ? (
+                    <span>Active License: <code className="text-amber-400 font-mono font-semibold">{clientSession.licenseKey}</code></span>
+                  ) : (
+                    <span>No license key currently linked to this profile.</span>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAccountModal(true)}
+                className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow"
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>Account & License</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearClientSession();
+                  setClientSession(null);
+                }}
+                className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors cursor-pointer"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="text-center max-w-2xl mx-auto space-y-3">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium">
             <ShieldCheck className="w-3.5 h-3.5" />
@@ -1263,6 +1390,39 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </p>
             </div>
           </div>
+        )}
+
+        {/* Client Account Authentication Modal (Sign In / Register) */}
+        <ClientAuthModal
+          isOpen={showAuthModal}
+          initialMode={authModalMode}
+          availableKeys={licenseKeys}
+          onClose={() => setShowAuthModal(false)}
+          onLoginSuccess={(session) => {
+            setClientSession(session);
+            setShowAuthModal(false);
+          }}
+        />
+
+        {/* Client Account Settings & License Management Modal */}
+        {clientSession && (
+          <ClientAccountModal
+            isOpen={showAccountModal}
+            session={clientSession}
+            availableKeys={licenseKeys}
+            onClose={() => setShowAccountModal(false)}
+            onSessionUpdated={(updated) => setClientSession(updated)}
+            onLogout={() => {
+              clearClientSession();
+              setClientSession(null);
+              setShowAccountModal(false);
+            }}
+            onLicenseRevoked={(deletedKey) => {
+              if (onLicenseRevoked) {
+                onLicenseRevoked(deletedKey);
+              }
+            }}
+          />
         )}
       </main>
 

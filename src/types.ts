@@ -168,3 +168,27 @@ export interface ActiveDeviceSession {
   isCloudflare?: boolean;
 }
 
+export interface ClientUserAccount {
+  id: string;
+  username: string; // unique, lowercased
+  displayName: string;
+  email: string;
+  companyName?: string;
+  licenseKey?: string;
+  passwordHash: string; // Salted PBKDF2 / SHA-256
+  salt: string;
+  createdAt: string;
+  lastLoginAt?: string;
+}
+
+export interface ClientAccountSession {
+  userId: string;
+  username: string;
+  displayName: string;
+  email: string;
+  companyName?: string;
+  licenseKey?: string;
+  token: string;
+  loggedInAt: string;
+}
+
