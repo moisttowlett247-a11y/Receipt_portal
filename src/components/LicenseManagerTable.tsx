@@ -47,6 +47,7 @@ import {
   buildHashFileContent, 
   GitHubSyncConfig 
 } from '../githubSyncService';
+import { fetchAllInquiries } from '../licenseSyncService';
 
 interface LicenseManagerTableProps {
   keys: LicenseKeyRecord[];
@@ -57,6 +58,8 @@ interface LicenseManagerTableProps {
   onImportKeys?: (keys: LicenseKeyRecord[]) => void;
   isGhModalOpen?: boolean;
   onCloseGhModal?: () => void;
+  isInquiriesModalOpen?: boolean;
+  onCloseInquiriesModal?: () => void;
 }
 
 export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
@@ -67,41 +70,39 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   onAddManualKey,
   onImportKeys,
   isGhModalOpen = false,
-  onCloseGhModal
+  onCloseGhModal,
+  isInquiriesModalOpen,
+  onCloseInquiriesModal
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'ALL' | 'ACTIVE' | 'EXPIRED' | 'NOT ACTIVE' | 'IN_USE' | 'AVAILABLE'>('ALL');
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showInquiriesModal, setShowInquiriesModal] = useState(false);
+  const [internalInquiriesOpen, setInternalInquiriesOpen] = useState(false);
+  const showInquiriesModal = isInquiriesModalOpen !== undefined ? isInquiriesModalOpen : internalInquiriesOpen;
+  const setShowInquiriesModal = (val: boolean) => {
+    setInternalInquiriesOpen(val);
+    if (!val && onCloseInquiriesModal) {
+      onCloseInquiriesModal();
+    }
+  };
   const [inquiriesList, setInquiriesList] = useState<any[]>([]);
   const [isLoadingInquiries, setIsLoadingInquiries] = useState(false);
   const [deleteConfirmKey, setDeleteConfirmKey] = useState<LicenseKeyRecord | null>(null);
   const [importStatusMsg, setImportStatusMsg] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Load inquiries from backend and localStorage
+  // Load inquiries from Cloudflare KV, local server, and localStorage
   const fetchInquiries = async () => {
     setIsLoadingInquiries(true);
-    let items: any[] = [];
     try {
-      const res = await fetch(`/api/inquiries?_t=${Date.now()}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.inquiries && Array.isArray(data.inquiries)) {
-          items = data.inquiries;
-        }
-      }
-    } catch {}
-
-    if (items.length === 0) {
-      try {
-        const local = localStorage.getItem('receipt_processor_inquiries');
-        if (local) items = JSON.parse(local);
-      } catch {}
+      const items = await fetchAllInquiries();
+      setInquiriesList(items);
+    } catch (err) {
+      console.warn('Failed to load inquiries:', err);
+    } finally {
+      setIsLoadingInquiries(false);
     }
-    setInquiriesList(items);
-    setIsLoadingInquiries(false);
   };
 
   useEffect(() => {

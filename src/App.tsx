@@ -29,7 +29,9 @@ import {
   FolderArchive,
   ChevronDown,
   Radio,
-  Building2
+  Building2,
+  Mail,
+  Inbox
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -61,6 +63,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'licensing' | 'devices' | 'qbo' | 'updater' | 'code' | 'guide'>('licensing');
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'support'>('privacy');
+  const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
   
   // Persistent License Keys registry state
   const [licenseKeys, setLicenseKeys] = useState<LicenseKeyRecord[]>(() => {
@@ -923,6 +926,16 @@ export default function App() {
             <span>GitHub Sync</span>
           </button>
 
+          {/* Access Requests button */}
+          <button
+            onClick={() => setIsInquiriesModalOpen(true)}
+            className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-lg shadow-sm transition-all cursor-pointer"
+            title="View incoming client portal requests sent to moisttowlett247@gmail.com"
+          >
+            <Mail className="w-4 h-4 text-amber-400" />
+            <span>Access Requests</span>
+          </button>
+
           {/* Active Devices & IP Monitor header button */}
           <button
             onClick={() => setActiveTab('devices')}
@@ -1687,6 +1700,8 @@ export default function App() {
                 onImportKeys={handleImportKeys}
                 isGhModalOpen={isGhModalOpen}
                 onCloseGhModal={() => setIsGhModalOpen(false)}
+                isInquiriesModalOpen={isInquiriesModalOpen}
+                onCloseInquiriesModal={() => setIsInquiriesModalOpen(false)}
               />
             </div>
           </div>
