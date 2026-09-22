@@ -55,6 +55,7 @@ import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
+import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -236,25 +237,7 @@ export default function App() {
 
   // URL Route Detection for separating Client Portal from Admin Portal
   const checkIsAdminPath = (): boolean => {
-    if (typeof window === 'undefined') return false;
-    const path = window.location.pathname.toLowerCase();
-    const hash = window.location.hash.toLowerCase();
-    const search = window.location.search.toLowerCase();
-    return (
-      path.endsWith('/admin') ||
-      path.includes('/admin/') ||
-      path.includes('/qbo') ||
-      hash === '#admin' ||
-      hash === '#/admin' ||
-      hash === '#qbo' ||
-      hash === '#/qbo' ||
-      search.includes('p=admin') ||
-      search.includes('admin=true') ||
-      search.includes('portal=admin') ||
-      search.includes('view=admin') ||
-      search.includes('tab=qbo') ||
-      search.includes('qbo=true')
-    );
+    return isCurrentRouteAdmin();
   };
 
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(checkIsAdminPath);
@@ -315,11 +298,8 @@ export default function App() {
   }, []);
 
   const navigateTo = (path: '/' | '/admin') => {
-    if (path === '/admin') {
-      window.history.pushState({}, '', '/admin');
-    } else {
-      window.history.pushState({}, '', '/');
-    }
+    const targetUrl = buildPortalUrl(path);
+    window.history.pushState({}, '', targetUrl);
     setIsAdminRoute(checkIsAdminPath());
   };
 
@@ -809,6 +789,7 @@ export default function App() {
             setLegalTab(tab);
             setLegalModalOpen(true);
           }}
+          onNavigateToAdmin={() => navigateTo('/admin')}
         />
 
         {/* Global Toast */}

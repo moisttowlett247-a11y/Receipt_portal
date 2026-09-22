@@ -30,13 +30,15 @@ interface ClientPortalViewProps {
   currentVersion: string;
   onInquirySubmitted?: (inquiry: ProductInquiry) => void;
   onOpenLegal?: (tab: 'privacy' | 'terms' | 'support') => void;
+  onNavigateToAdmin?: () => void;
 }
 
 export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   licenseKeys,
   currentVersion,
   onInquirySubmitted,
-  onOpenLegal
+  onOpenLegal,
+  onNavigateToAdmin
 }) => {
   const [clientKeyInput, setClientKeyInput] = useState('');
   const [checkResult, setCheckResult] = useState<{
@@ -1268,6 +1270,19 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
         <div className="flex items-center gap-4">
           <span>License Support: <strong className="text-stone-400">moisttowlett247@gmail.com</strong></span>
+          {onNavigateToAdmin && (
+            <>
+              <span className="text-stone-700 hidden sm:inline">•</span>
+              <button
+                type="button"
+                onClick={onNavigateToAdmin}
+                className="text-stone-600 hover:text-stone-400 text-[10px] cursor-pointer transition-colors"
+                title="Administrator Console Login"
+              >
+                Admin
+              </button>
+            </>
+          )}
         </div>
       </footer>
     </div>

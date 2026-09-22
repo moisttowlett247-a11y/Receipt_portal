@@ -12,6 +12,23 @@
     <meta property="og:description" content="Desktop receipt OCR and QuickBooks sync application with AES-256 encryption, auto-updates, and subscription licensing." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      // Single Page Application (SPA) redirect restoration for GitHub Pages (paired with 404.html)
+      // When visiting e.g. /Receipt_portal/admin directly, 404.html redirects to /Receipt_portal/?p=admin
+      // This immediately restores clean HTML5 History URL: /Receipt_portal/admin
+      (function() {
+        var redirect = window.location.search.match(/[?&]p=([^&]*)/);
+        if (redirect && redirect[1]) {
+          var destination = decodeURIComponent(redirect[1]);
+          var currentPath = window.location.pathname.replace(/\/+$/, '');
+          var targetPath = currentPath + '/' + destination.replace(/^\/+/, '');
+          var newSearch = window.location.search.replace(/([?&])p=[^&]*(&)?/, function(match, p1, p2) {
+            return p2 ? p1 : '';
+          }).replace(/[?&]$/, '');
+          window.history.replaceState(null, null, targetPath + newSearch + window.location.hash);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
