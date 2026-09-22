@@ -21,14 +21,66 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [lockoutSecondsRemaining, setLockoutSecondsRemaining] = useState<number>(0);
 
   const userInputRef = useRef<HTMLInputElement>(null);
+
+  // Check stored failed attempts and lockout expiration
+  useEffect(() => {
+    try {
+      const lockUntil = parseInt(sessionStorage.getItem('receipt_admin_lockout_until') || '0', 10);
+      const now = Date.now();
+      if (lockUntil > now) {
+        setLockoutSecondsRemaining(Math.ceil((lockUntil - now) / 1000));
+      }
+    } catch {}
+  }, []);
+
+  // Lockout countdown timer
+  useEffect(() => {
+    if (lockoutSecondsRemaining <= 0) return;
+    const interval = setInterval(() => {
+      setLockoutSecondsRemaining(prev => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          try {
+            sessionStorage.removeItem('receipt_admin_lockout_until');
+            sessionStorage.removeItem('receipt_admin_fail_count');
+          } catch {}
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [lockoutSecondsRemaining]);
 
   useEffect(() => {
     userInputRef.current?.focus();
   }, []);
 
+  const recordFailedAttempt = () => {
+    try {
+      const currentFails = parseInt(sessionStorage.getItem('receipt_admin_fail_count') || '0', 10) + 1;
+      sessionStorage.setItem('receipt_admin_fail_count', String(currentFails));
+      if (currentFails >= 5) {
+        // Lockout for 60 seconds after 5 failed attempts
+        const lockUntil = Date.now() + 60000;
+        sessionStorage.setItem('receipt_admin_lockout_until', String(lockUntil));
+        setLockoutSecondsRemaining(60);
+      }
+    } catch {}
+  };
+
+  const clearFailedAttempts = () => {
+    try {
+      sessionStorage.removeItem('receipt_admin_fail_count');
+      sessionStorage.removeItem('receipt_admin_lockout_until');
+    } catch {}
+  };
+
   const triggerError = (msg: string) => {
+    recordFailedAttempt();
     setErrorMsg(msg);
     setShake(true);
     setTimeout(() => setShake(false), 500);
@@ -37,6 +89,10 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (lockoutSecondsRemaining > 0) {
+      setErrorMsg(`Too many failed login attempts. Temporarily locked for security. Please wait ${lockoutSecondsRemaining}s.`);
+      return;
+    }
     setErrorMsg(null);
 
     const cleanUser = username.trim();
@@ -57,6 +113,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
       // 1. Primary: Authenticate securely against Cloudflare Worker API
       const cfRes = await loginToCloudflareAdmin(cleanUser, cleanPass);
       if (cfRes.success) {
+        clearFailedAttempts();
         onUnlock();
         return;
       }
@@ -65,6 +122,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
       if (savedHash) {
         const inputHash = await computeCredentialsHash(cleanUser.toLowerCase(), cleanPass);
         if (inputHash === savedHash) {
+          clearFailedAttempts();
           onUnlock();
           return;
         }
@@ -181,11 +239,13 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
             <div className="pt-2 space-y-2">
               <button
                 type="submit"
-                disabled={loading}
+                disabled={loading || lockoutSecondsRemaining > 0}
                 className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 font-semibold text-white rounded-xl text-xs transition-all shadow-md active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
               >
                 {loading ? (
                   <span>Authenticating...</span>
+                ) : lockoutSecondsRemaining > 0 ? (
+                  <span>Temporarily Locked ({lockoutSecondsRemaining}s)</span>
                 ) : (
                   <>
                     <ShieldCheck className="w-4 h-4" />

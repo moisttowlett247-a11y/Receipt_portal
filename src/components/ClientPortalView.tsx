@@ -335,7 +335,47 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       return;
     }
 
-    // 1. Try Zero-Knowledge SHA-256 hash lookup in public/licenses/<hash>.json
+    // 1. Try Cloudflare Worker Edge API verification
+    try {
+      const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/verify?key=${encodeURIComponent(cleanKey)}`, {
+        cache: 'no-store'
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.status === 'REVOKED' || data.status === 'NOT ACTIVE' || data.status === 'SUSPENDED') {
+          setCheckResult({
+            valid: false,
+            status: 'Revoked / Inactive',
+            message: 'Access Denied: This license key has been deactivated or revoked by the administrator.'
+          });
+          return;
+        }
+        if (data.status === 'EXPIRED') {
+          setCheckResult({
+            valid: false,
+            status: 'Expired',
+            message: `This license expired on ${data.expires || 'the expiration date'}. Please renew your subscription.`
+          });
+          return;
+        }
+
+        const isNonExpiring = data.plan === 'ADMIN' || data.expires?.includes('Never') || data.expires?.includes('Lifetime');
+        setCheckResult({
+          valid: true,
+          plan: data.plan === 'ADMIN' ? 'Perpetual Master Access' : getPlanLabel(data.plan as any),
+          expiresDate: isNonExpiring ? 'Never (Lifetime License)' : (data.expires || 'Active'),
+          status: 'Active (Verified on Cloudflare Edge)',
+          message: isNonExpiring
+            ? 'Lifetime perpetual master license is active. Full desktop scanning, OCR extraction, and tax report export authorized.'
+            : `Active subscription verified. Valid through ${data.expires}. Ready for desktop activation.`
+        });
+        return;
+      }
+    } catch {
+      // Cloudflare unreachable, proceed to zero-knowledge hash / local check
+    }
+
+    // 2. Try Zero-Knowledge SHA-256 hash lookup in public/licenses/<hash>.json
     try {
       const hash = await computeSha256Hex(cleanKey);
       const resp = await fetch(`/licenses/${hash}.json`, { cache: 'no-store' });

@@ -112,9 +112,18 @@ function saveLocalCompanies(list: CompanyRecord[]) {
   } catch {}
 }
 
+function generateSecureOauthState(): string {
+  if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
+    const arr = new Uint8Array(16);
+    window.crypto.getRandomValues(arr);
+    return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
+
 function generateIntuitAuthUrl(clientId: string, redirectUri: string, state?: string): string {
   const cId = clientId.trim();
-  const st = state || (Math.random().toString(36).substring(2) + Date.now().toString(36));
+  const st = state || generateSecureOauthState();
   const params = new URLSearchParams({
     client_id: cId,
     response_type: 'code',
@@ -267,8 +276,21 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       window.history.replaceState({}, document.title, newUrl);
     }
 
-    // Cross-window postMessage listener for popup OAuth completion
+    // Cross-window postMessage listener for popup OAuth completion with strict origin check
     const handlePopupMessage = (event: MessageEvent) => {
+      // Security: Validate origin matches current window origin or trusted hosting domains
+      const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+      const allowedOrigins = [
+        currentOrigin,
+        'https://moisttowlett247-a11y.github.io',
+        'http://localhost:3000',
+        'http://localhost:5173'
+      ].filter(Boolean);
+
+      if (!allowedOrigins.includes(event.origin) && !event.origin.endsWith('.run.app')) {
+        return;
+      }
+
       if (event.data?.type === 'QBO_OAUTH_SUCCESS') {
         const companyName = event.data.company || 'QuickBooks Company';
         const realmId = event.data.realmId || ('93414579' + Math.floor(100000 + Math.random() * 900000));

@@ -82,15 +82,39 @@ export function calculateExpirationDate(startDateStr: string, plan: PlanTier): s
 }
 
 function getSecureRandomDigits(count: number = 4): string {
-  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-    const array = new Uint32Array(1);
-    crypto.getRandomValues(array);
+  // Use Cryptographically Secure Pseudo-Random Number Generator (CSPRNG)
+  if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
     const min = Math.pow(10, count - 1);
     const max = Math.pow(10, count) - 1;
-    const val = min + (array[0] % (max - min + 1));
+    const range = max - min + 1;
+    // Rejection sampling to prevent modulo bias
+    const maxAllowed = Math.floor(0xffffffff / range) * range;
+    const array = new Uint32Array(1);
+    do {
+      window.crypto.getRandomValues(array);
+    } while (array[0] >= maxAllowed);
+
+    const val = min + (array[0] % range);
     return String(val);
   }
-  return String(Math.floor(1000 + Math.random() * 9000));
+  // Node / Server environment fallback with node crypto if available
+  if (typeof globalThis !== 'undefined' && (globalThis as any).crypto && (globalThis as any).crypto.getRandomValues) {
+    const min = Math.pow(10, count - 1);
+    const max = Math.pow(10, count) - 1;
+    const range = max - min + 1;
+    const maxAllowed = Math.floor(0xffffffff / range) * range;
+    const array = new Uint32Array(1);
+    do {
+      (globalThis as any).crypto.getRandomValues(array);
+    } while (array[0] >= maxAllowed);
+
+    const val = min + (array[0] % range);
+    return String(val);
+  }
+  // Standard fallback using high-resolution performance time + random
+  const seed = (typeof performance !== 'undefined' ? performance.now() : Date.now()) % 10000;
+  const raw = Math.floor(1000 + ((seed * 9301 + 49297) % 233280) / 233280 * 9000);
+  return String(raw).padStart(count, '0').slice(-count);
 }
 
 export function generatePlanKey(plan: PlanTier): string {
