@@ -52,7 +52,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [inquiryEmail, setInquiryEmail] = useState('');
   const [inquiryCompany, setInquiryCompany] = useState('');
   const [inquiryVolume, setInquiryVolume] = useState('50 - 200 receipts / month');
-  const [inquiryPlan, setInquiryPlan] = useState('6-Month Semi-Annual ($59)');
+  const [inquiryPlan, setInquiryPlan] = useState('6-Month Semi-Annual ($59) - Recommended');
   const [inquiryNotes, setInquiryNotes] = useState('');
   const [isSubmittingInquiry, setIsSubmittingInquiry] = useState(false);
   const [inquirySubmittedSuccess, setInquirySubmittedSuccess] = useState(false);
@@ -90,6 +90,17 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     setCopiedOrderDetails(false);
     setOrderSubmittedSuccess(false);
     setOrderError(null);
+
+    // Keep the Request Access form plan perfectly in sync with the plan clicked in pricing
+    if (plan.id === 'MONTHLY') {
+      setInquiryPlan('Monthly Plan ($15/mo)');
+    } else if (plan.id === '3MONTH') {
+      setInquiryPlan('3-Month Quarterly ($39)');
+    } else if (plan.id === '6MONTH') {
+      setInquiryPlan('6-Month Semi-Annual ($59) - Recommended');
+    } else if (plan.id === 'ANNUAL') {
+      setInquiryPlan('Full Year Annual ($89) - Best Deal');
+    }
   };
 
   const handleOrderSubmitOnline = (e: React.FormEvent) => {
@@ -611,9 +622,42 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-stone-300 font-medium block mb-1">
-                      Target Subscription Plan
-                    </label>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-stone-300 font-medium">
+                        Target Subscription Plan
+                      </label>
+                      <span className="text-[10px] text-amber-400 font-mono">
+                        Selected: {inquiryPlan.split('—')[0].trim()}
+                      </span>
+                    </div>
+
+                    {/* Quick selection pills to make selecting any tier instant & visually obvious */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-2">
+                      {[
+                        { label: 'Monthly', val: 'Monthly Plan ($15/mo)', sub: '$15 / mo' },
+                        { label: '3-Month', val: '3-Month Quarterly ($39)', sub: '$39 / 3 mos' },
+                        { label: '6-Month', val: '6-Month Semi-Annual ($59) - Recommended', sub: '$59 / 6 mos' },
+                        { label: 'Full Year', val: 'Full Year Annual ($89) - Best Deal', sub: '$89 / yr' }
+                      ].map((item) => {
+                        const isSelected = inquiryPlan === item.val;
+                        return (
+                          <button
+                            key={item.val}
+                            type="button"
+                            onClick={() => setInquiryPlan(item.val)}
+                            className={`py-1.5 px-2 rounded-lg border text-center transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold shadow-sm ring-1 ring-amber-500/50'
+                                : 'bg-stone-950 border-stone-800 text-stone-400 hover:text-stone-200 hover:border-stone-700'
+                            }`}
+                          >
+                            <div className="text-[11px] leading-tight">{item.label}</div>
+                            <div className="text-[9px] opacity-75 font-mono">{item.sub}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
                     <select
                       value={inquiryPlan}
                       onChange={(e) => setInquiryPlan(e.target.value)}
