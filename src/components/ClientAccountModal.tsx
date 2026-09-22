@@ -206,7 +206,7 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
             }`}
           >
             <ShieldAlert className="w-4 h-4" />
-            <span>Deactivate / Delete</span>
+            <span>Account Deactivation & Data Erasure</span>
           </button>
         </div>
 
@@ -354,22 +354,23 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
             </form>
           )}
 
-          {/* TAB 3: DEACTIVATE / DELETE DANGER ZONE */}
+          {/* TAB 3: ACCOUNT DEACTIVATION & DATA ERASURE */}
           {activeTab === 'danger' && (
             <div className="space-y-4">
-              <div className="p-4 rounded-xl bg-rose-950/40 border border-rose-900/60 space-y-3">
-                <div className="flex items-center gap-2 text-rose-300 font-bold text-xs">
-                  <AlertTriangle className="w-4 h-4 text-rose-400" />
-                  <span>Deactivate Account, Delete Information & Revoke License Key</span>
+              <div className="p-4 rounded-xl bg-stone-950 border border-stone-800 space-y-3">
+                <div className="flex items-center gap-2 text-stone-200 font-semibold text-xs">
+                  <ShieldAlert className="w-4 h-4 text-amber-400" />
+                  <span>Account Deactivation & Enterprise Data Erasure</span>
                 </div>
                 <p className="text-xs text-stone-400 leading-relaxed">
-                  If you choose not to use these services anymore, clicking below will permanently erase your 
-                  account profile, disconnect company records, and immediately deactivate/revoke your license key 
-                  so no further receipt processing occurs.
+                  Initiating account deactivation will permanently disassociate your enterprise profile, unlink and 
+                  purge registered company metadata, and immediately revoke software license authorizations in accordance 
+                  with enterprise privacy standards and applicable statutory data erasure regulations (GDPR / CCPA).
                 </p>
-                <p className="text-xs text-rose-400/90 font-medium">
-                  This action is irreversible in compliance with CCPA / GDPR data erasure mandates.
-                </p>
+                <div className="p-2.5 rounded-lg bg-stone-900 border border-stone-800 text-[11px] text-stone-300 flex items-center gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>Notice: This action is permanent and cannot be reversed once finalized.</span>
+                </div>
               </div>
 
               {deleteError && (
@@ -381,14 +382,14 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
 
               <div className="space-y-2 pt-2">
                 <label className="text-xs font-medium text-stone-300">
-                  Type <strong className="text-rose-400 font-mono">DELETE</strong> below to confirm permanent removal:
+                  To confirm account closure and license revocation, please type <strong className="text-rose-400 font-mono">DELETE</strong>:
                 </label>
                 <input
                   type="text"
                   value={confirmDeleteText}
                   onChange={(e) => setConfirmDeleteText(e.target.value)}
                   placeholder="DELETE"
-                  className="w-full px-3.5 py-2 bg-stone-950 border border-rose-900 focus:border-rose-500 rounded-xl text-xs text-rose-200 placeholder-stone-600 focus:outline-none transition-colors"
+                  className="w-full px-3.5 py-2 bg-stone-950 border border-stone-700 focus:border-rose-500 rounded-xl text-xs text-stone-100 placeholder-stone-600 focus:outline-none transition-colors font-mono"
                 />
               </div>
 
@@ -397,10 +398,10 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                   type="button"
                   onClick={handleDeleteAccount}
                   disabled={isDeleting || confirmDeleteText !== 'DELETE'}
-                  className="py-2.5 px-4 bg-rose-700 hover:bg-rose-600 disabled:opacity-40 text-white text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-2"
+                  className="py-2.5 px-4 bg-rose-700 hover:bg-rose-600 disabled:opacity-40 text-white text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-sm"
                 >
                   <Trash2 className="w-4 h-4" />
-                  <span>{isDeleting ? 'Deleting & Deactivating...' : 'Permanently Deactivate & Delete Everything'}</span>
+                  <span>{isDeleting ? 'Processing Deactivation...' : 'Execute Account Deactivation & Revoke License'}</span>
                 </button>
               </div>
             </div>
