@@ -1,0 +1,8 @@
+name = "receipt-license-api"
+main = "cloudflare-worker.js"
+compatibility_date = "2024-09-01"
+
+# KV Database binding for licenses, rate limiting, and admin sessions
+[[kv_namespaces]]
+binding = "LICENSES"
+id = "f01c0e55c3e54884bbf9fbac4bb13256"
