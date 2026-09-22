@@ -28,7 +28,8 @@ import {
   Shield,
   Mail,
   Inbox,
-  UserPlus
+  UserPlus,
+  X
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -47,7 +48,7 @@ import {
   buildHashFileContent, 
   GitHubSyncConfig 
 } from '../githubSyncService';
-import { fetchAllInquiries } from '../licenseSyncService';
+import { fetchAllInquiries, deleteInquiry } from '../licenseSyncService';
 
 interface LicenseManagerTableProps {
   keys: LicenseKeyRecord[];
@@ -88,6 +89,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   };
   const [inquiriesList, setInquiriesList] = useState<any[]>([]);
   const [isLoadingInquiries, setIsLoadingInquiries] = useState(false);
+  const [deletingInquiryId, setDeletingInquiryId] = useState<string | null>(null);
   const [deleteConfirmKey, setDeleteConfirmKey] = useState<LicenseKeyRecord | null>(null);
   const [importStatusMsg, setImportStatusMsg] = useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -102,6 +104,21 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
       console.warn('Failed to load inquiries:', err);
     } finally {
       setIsLoadingInquiries(false);
+    }
+  };
+
+  const handleDeleteInquiry = async (inqId: string) => {
+    // Optimistically update list
+    setInquiriesList(prev => prev.filter(item => item.id !== inqId));
+    setDeletingInquiryId(inqId);
+    try {
+      await deleteInquiry(inqId);
+    } catch (err) {
+      console.warn('Error deleting inquiry:', err);
+      // Refresh to restore if failed
+      fetchInquiries();
+    } finally {
+      setDeletingInquiryId(null);
     }
   };
 
@@ -1187,6 +1204,21 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                         >
                           <Mail className="w-3.5 h-3.5" />
                         </a>
+
+                        {/* Delete Inquiry (X button) */}
+                        <button
+                          type="button"
+                          disabled={deletingInquiryId === inq.id}
+                          onClick={() => {
+                            if (window.confirm(`Delete request inquiry from "${inq.name}" (${inq.email})?`)) {
+                              handleDeleteInquiry(inq.id);
+                            }
+                          }}
+                          className="p-1.5 bg-stone-800/80 hover:bg-rose-950/80 text-stone-400 hover:text-rose-300 rounded-lg border border-stone-700 hover:border-rose-800/80 transition-colors cursor-pointer disabled:opacity-50"
+                          title="Delete this access request"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
 

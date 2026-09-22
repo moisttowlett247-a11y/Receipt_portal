@@ -273,6 +273,45 @@ export async function fetchAllInquiries(): Promise<InquiryRecord[]> {
 }
 
 /**
+ * Deletes an inquiry / access request from Cloudflare KV, local server, and localStorage
+ */
+export async function deleteInquiry(id: string): Promise<{ success: boolean; message?: string }> {
+  // 1. Delete from localStorage first
+  try {
+    const localRaw = localStorage.getItem('receipt_processor_inquiries');
+    if (localRaw) {
+      const parsed = JSON.parse(localRaw);
+      if (Array.isArray(parsed)) {
+        const filtered = parsed.filter((item: any) => item.id !== id);
+        localStorage.setItem('receipt_processor_inquiries', JSON.stringify(filtered));
+      }
+    }
+  } catch {}
+
+  // 2. Delete from Cloudflare KV Edge API
+  try {
+    await fetch(`${CLOUDFLARE_WORKER_URL}/api/inquiries/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ id })
+    });
+  } catch (err) {
+    console.warn('Notice deleting from Cloudflare KV:', err);
+  }
+
+  // 3. Delete from local server if applicable
+  try {
+    await fetch(`/api/inquiries/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
+  } catch {}
+
+  return { success: true, message: 'Inquiry deleted.' };
+}
+
+/**
  * Unlocks the HWID on Cloudflare KV so a user can transfer to a new PC
  */
 export async function unlockHwidOnCloudflare(key: string): Promise<{ success: boolean; message?: string }> {

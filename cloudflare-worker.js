@@ -625,7 +625,49 @@ export default {
     // -------------------------------------------------------------------------
     // 5. Inquiries & Software Access Requests
     // -------------------------------------------------------------------------
-    if (pathname === "/api/inquiries") {
+    if (pathname === "/api/inquiries" || pathname.startsWith("/api/inquiries/")) {
+      // DELETE an inquiry by ID or via body
+      if (request.method === "DELETE") {
+        const isAuth = await verifyAdminAuth(request, env);
+        if (!isAuth) {
+          return jsonResponse({ success: false, error: "Unauthorized. Admin session required to delete inquiries." }, 401);
+        }
+
+        try {
+          let inquiryId = "";
+          if (pathname.startsWith("/api/inquiries/")) {
+            inquiryId = pathname.replace("/api/inquiries/", "").trim();
+          } else {
+            const body = await request.json().catch(() => ({}));
+            inquiryId = String(body.id || "").trim();
+          }
+
+          if (!inquiryId) {
+            return jsonResponse({ success: false, error: "Inquiry ID is required for deletion." }, 400);
+          }
+
+          // Delete inquiry object
+          await env.LICENSES.delete("INQUIRY:" + inquiryId);
+
+          // Remove from SYS:INQUIRIES_LIST
+          const listRaw = await env.LICENSES.get("SYS:INQUIRIES_LIST");
+          if (listRaw) {
+            try {
+              let idList = JSON.parse(listRaw);
+              idList = idList.filter(id => id !== inquiryId);
+              await env.LICENSES.put("SYS:INQUIRIES_LIST", JSON.stringify(idList));
+            } catch {}
+          }
+
+          return jsonResponse({
+            success: true,
+            message: `Inquiry ${inquiryId} successfully deleted.`
+          });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+
       if (request.method === "POST") {
         try {
           const clientIp = getClientIp(request);
