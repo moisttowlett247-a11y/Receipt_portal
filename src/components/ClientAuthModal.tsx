@@ -16,7 +16,8 @@ import {
   registerClientAccount, 
   authenticateClientAccount, 
   isUsernameAvailable,
-  findLicenseRecordByEmail
+  findLicenseRecordByEmail,
+  lookupLicenseByEmailAsync
 } from '../clientAccountService';
 import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
 
@@ -62,6 +63,7 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
 
     const clean = val.trim().toLowerCase();
     if (clean.includes('@') && clean.length > 4) {
+      // 1. Immediate local cache check
       const match = findLicenseRecordByEmail(clean, availableKeys);
       if (match) {
         setDetectedLicense(match);
@@ -70,6 +72,15 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
         }
       } else {
         setDetectedLicense(null);
+        // 2. Async Cloudflare Edge KV check
+        lookupLicenseByEmailAsync(clean, availableKeys).then((remoteMatch) => {
+          if (remoteMatch) {
+            setDetectedLicense(remoteMatch);
+            if (!displayName && remoteMatch.clientName) {
+              setDisplayName(remoteMatch.clientName);
+            }
+          }
+        }).catch(() => {});
       }
     } else {
       setDetectedLicense(null);

@@ -1,5 +1,6 @@
 import { ClientUserAccount, ClientAccountSession, LicenseKeyRecord } from './types';
 import { computeClientPasswordHash, generateCryptographicSalt } from './hashUtils';
+import { CLOUDFLARE_WORKER_URL } from './licenseSyncService';
 
 const CLIENT_ACCOUNTS_STORAGE_KEY = 'receipt_processor_client_accounts_v1';
 const CLIENT_CURRENT_SESSION_KEY = 'receipt_processor_client_session_v1';
@@ -50,6 +51,54 @@ export function findLicenseRecordByEmail(
       }
     }
   } catch {}
+
+  return null;
+}
+
+/**
+ * Asynchronously locates an active license by email:
+ * 1. Checks local memory and localStorage
+ * 2. If not found locally, queries Cloudflare Edge KV API directly
+ * This ensures that when someone creates an account, their existing license key
+ * is automatically pulled from their email without requiring manual input.
+ */
+export async function lookupLicenseByEmailAsync(
+  email: string,
+  availableKeys?: LicenseKeyRecord[]
+): Promise<LicenseKeyRecord | null> {
+  const clean = email.trim().toLowerCase();
+  if (!clean || !clean.includes('@')) return null;
+
+  // 1. Check local cache
+  const local = findLicenseRecordByEmail(clean, availableKeys);
+  if (local) return local;
+
+  // 2. Check Cloudflare KV backend
+  try {
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/licenses/by-email?email=${encodeURIComponent(clean)}`, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' },
+      cache: 'no-store'
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.exists && data.key) {
+        return {
+          id: data.key,
+          key: data.key,
+          plan: (data.plan as any) || 'PRO',
+          status: (data.status as any) || 'ACTIVE',
+          clientName: data.clientName || '',
+          clientEmail: data.userEmail || clean,
+          expiresDate: data.expires || 'Never (Lifetime / Non-Expiring)',
+          issuedDate: new Date().toISOString(),
+          inUse: true
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('Notice: Remote license lookup by email failed:', err);
+  }
 
   return null;
 }
@@ -148,7 +197,7 @@ export async function registerClientAccount(params: {
   let resolvedCompanyName = params.companyName?.trim();
 
   if (!cleanKey) {
-    const matchedRecord = findLicenseRecordByEmail(cleanEmail, params.availableKeys);
+    const matchedRecord = await lookupLicenseByEmailAsync(cleanEmail, params.availableKeys);
     if (matchedRecord) {
       cleanKey = matchedRecord.key.toUpperCase();
       if (!resolvedCompanyName && matchedRecord.clientName) {

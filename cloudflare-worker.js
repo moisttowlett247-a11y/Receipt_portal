@@ -303,9 +303,20 @@ export default {
           first_activated_machine: existing.first_activated_machine || null
         };
 
-        // Store both by KEY and by HASH for O(1) lookups
+        // Store by KEY and by HASH for O(1) lookups
         await env.LICENSES.put("KEY:" + cleanKey, JSON.stringify(record));
         await env.LICENSES.put("HASH:" + hash, cleanKey);
+
+        // Store by EMAIL for automatic account linkage
+        const cleanUserEmail = String(record.user_email || "").trim().toLowerCase();
+        if (cleanUserEmail && cleanUserEmail.includes("@")) {
+          // If previously had a different email, clean up old index
+          const prevEmail = String(existing.user_email || "").trim().toLowerCase();
+          if (prevEmail && prevEmail !== cleanUserEmail) {
+            await env.LICENSES.delete("EMAIL:" + prevEmail);
+          }
+          await env.LICENSES.put("EMAIL:" + cleanUserEmail, cleanKey);
+        }
 
         return jsonResponse({
           success: true,
@@ -350,12 +361,18 @@ export default {
         } else if (action === "DELETE") {
           await env.LICENSES.delete("KEY:" + cleanKey);
           await env.LICENSES.delete("HASH:" + hash);
+          if (record.user_email) {
+            await env.LICENSES.delete("EMAIL:" + String(record.user_email).trim().toLowerCase());
+          }
           return jsonResponse({ success: true, message: `License ${cleanKey} deleted from Cloudflare KV.` });
         }
 
         record.updated_at = new Date().toISOString();
         await env.LICENSES.put("KEY:" + cleanKey, JSON.stringify(record));
         await env.LICENSES.put("HASH:" + hash, cleanKey);
+        if (record.user_email) {
+          await env.LICENSES.put("EMAIL:" + String(record.user_email).trim().toLowerCase(), cleanKey);
+        }
 
         return jsonResponse({
           success: true,
@@ -367,6 +384,35 @@ export default {
       }
     }
 
+    // Lookup license key by associated email (used for automatic account linkage)
+    if (pathname === "/api/licenses/by-email" && request.method === "GET") {
+      const qEmail = (url.searchParams.get("email") || "").trim().toLowerCase();
+      if (!qEmail || !qEmail.includes("@")) {
+        return jsonResponse({ exists: false, error: "Valid email parameter required" }, 400);
+      }
+
+      const cleanKey = await env.LICENSES.get("EMAIL:" + qEmail);
+      if (!cleanKey) {
+        return jsonResponse({ exists: false, message: "No license associated with this email address." }, 404);
+      }
+
+      const raw = await env.LICENSES.get("KEY:" + cleanKey);
+      if (!raw) {
+        return jsonResponse({ exists: false, message: "License record not found." }, 404);
+      }
+
+      const record = JSON.parse(raw);
+      return jsonResponse({
+        exists: true,
+        key: record.key,
+        plan: record.plan,
+        status: record.status,
+        expires: record.expires,
+        clientName: record.client_name || record.clientName || "",
+        userEmail: record.user_email || record.userEmail || qEmail
+      });
+    }
+
     // -------------------------------------------------------------------------
     // 4. Desktop Client Verification & Telemetry Endpoints
     // -------------------------------------------------------------------------
@@ -375,6 +421,7 @@ export default {
     if (pathname === "/api/licenses/check") {
       const qKey = url.searchParams.get("key")?.trim().toUpperCase();
       const qHash = url.searchParams.get("hash")?.trim().toLowerCase();
+      const qEmail = url.searchParams.get("email")?.trim().toLowerCase();
       const qHwid = url.searchParams.get("hwid")?.trim();
       const qMachine = url.searchParams.get("machine")?.trim();
       const qIp = url.searchParams.get("ip")?.trim();
@@ -391,6 +438,15 @@ export default {
 
       if (!record && qHash) {
         const mappedKey = await env.LICENSES.get("HASH:" + qHash);
+        if (mappedKey) {
+          cleanKey = mappedKey;
+          const raw = await env.LICENSES.get("KEY:" + mappedKey);
+          if (raw) record = JSON.parse(raw);
+        }
+      }
+
+      if (!record && qEmail) {
+        const mappedKey = await env.LICENSES.get("EMAIL:" + qEmail);
         if (mappedKey) {
           cleanKey = mappedKey;
           const raw = await env.LICENSES.get("KEY:" + mappedKey);

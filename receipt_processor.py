@@ -21,6 +21,7 @@ import os
 import sys
 import time
 import json
+import csv
 import io
 import queue
 import shutil
@@ -35,6 +36,15 @@ import urllib.error
 import urllib.parse
 import concurrent.futures
 from datetime import datetime, timedelta
+
+def sanitize_csv_field(val) -> str:
+    """Sanitizes text fields to prevent CSV formula injection while preserving clean data."""
+    if val is None:
+        return ""
+    s = str(val).strip()
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
 
 # PIL / Pillow Image imports with fallback
 try:
@@ -930,6 +940,13 @@ class UpdateManager:
 
     def perform_in_place_update(self, download_url: str, progress_callback=None) -> bool:
         try:
+            if not download_url or not isinstance(download_url, str):
+                return False
+            parsed = urllib.parse.urlparse(download_url)
+            if parsed.scheme.lower() != "https":
+                print(f"[SECURITY] Update rejected: Insecure scheme '{parsed.scheme}'. Only HTTPS updates are permitted.")
+                return False
+
             current_exec = os.path.abspath(sys.argv[0])
             new_temp_file = current_exec + ".new"
             old_backup_file = current_exec + ".old"
@@ -3482,17 +3499,40 @@ class FarmReceiptApp(_TK_BASE_TK):
 
             csv_path = "Receipt_Data.csv"
             csv_exists = os.path.exists(csv_path)
-            with open(csv_path, "a", encoding="utf-8") as f:
+            with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                 if not csv_exists:
-                    f.write("Client,Date,Vendor,Category,Subtotal,Tax,Total,Payment_Method,Card_Last_4,Ref_Number,Source_File,Slip_Number\n")
-                f.write(f'"{active_client}","{date_str}","{vendor}","{category}",{subtotal:.2f},{tax:.2f},{total:.2f},"{payment}","{card_last_4}","{ref_num}","{os.path.basename(filepath)}",{idx}\n')
+                    writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                writer.writerow([
+                    sanitize_csv_field(active_client),
+                    sanitize_csv_field(date_str),
+                    sanitize_csv_field(vendor),
+                    sanitize_csv_field(category),
+                    f"{subtotal:.2f}",
+                    f"{tax:.2f}",
+                    f"{total:.2f}",
+                    sanitize_csv_field(payment),
+                    sanitize_csv_field(card_last_4),
+                    sanitize_csv_field(ref_num),
+                    os.path.basename(filepath),
+                    idx
+                ])
 
             qb_path = "QuickBooks_Bills.csv"
             qb_exists = os.path.exists(qb_path)
-            with open(qb_path, "a", encoding="utf-8") as f:
+            with open(qb_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                 if not qb_exists:
-                    f.write("Client,BillDate,Vendor,ExpenseAccount,Amount,Memo,RefNumber\n")
-                f.write(f'"{active_client}","{date_str}","{vendor}","{category}",{total:.2f},"{category}","{ref_num}"\n')
+                    writer.writerow(["Client","BillDate","Vendor","ExpenseAccount","Amount","Memo","RefNumber"])
+                writer.writerow([
+                    sanitize_csv_field(active_client),
+                    sanitize_csv_field(date_str),
+                    sanitize_csv_field(vendor),
+                    sanitize_csv_field(category),
+                    f"{total:.2f}",
+                    sanitize_csv_field(category),
+                    sanitize_csv_field(ref_num)
+                ])
 
             if self.qbo_client and self.qbo_client.is_configured():
                 try:
