@@ -19,6 +19,42 @@ const RESERVED_ADMIN_USERNAMES = [
 ];
 
 /**
+ * Finds an active or issued license key record matching the given email address.
+ * Checks the provided key list, fallback localStorage keys registry, or existing records.
+ */
+export function findLicenseRecordByEmail(
+  email: string,
+  availableKeys?: LicenseKeyRecord[]
+): LicenseKeyRecord | null {
+  const clean = email.trim().toLowerCase();
+  if (!clean || !clean.includes('@')) return null;
+
+  // 1. Search in passed available keys
+  if (availableKeys && availableKeys.length > 0) {
+    const found = availableKeys.find(
+      k => k.clientEmail && k.clientEmail.trim().toLowerCase() === clean && k.status !== 'EXPIRED'
+    );
+    if (found) return found;
+  }
+
+  // 2. Search in localStorage keys registries (v4, v3)
+  try {
+    const rawV4 = localStorage.getItem('receipt_processor_keys_v4') || localStorage.getItem('receipt_processor_keys_v3');
+    if (rawV4) {
+      const keys: LicenseKeyRecord[] = JSON.parse(rawV4);
+      if (Array.isArray(keys)) {
+        const found = keys.find(
+          k => k.clientEmail && k.clientEmail.trim().toLowerCase() === clean && k.status !== 'EXPIRED'
+        );
+        if (found) return found;
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+/**
  * Loads all client accounts from persistent local storage.
  * In a static / Cloudflare KV setting, this provides client persistence with zero leakage of cleartext passwords.
  */
@@ -88,6 +124,7 @@ export async function registerClientAccount(params: {
   displayName: string;
   companyName?: string;
   licenseKey?: string;
+  availableKeys?: LicenseKeyRecord[];
 }): Promise<{ success: boolean; account?: ClientUserAccount; error?: string }> {
   const check = isUsernameAvailable(params.username);
   if (!check.available) {
@@ -106,14 +143,26 @@ export async function registerClientAccount(params: {
   const salt = generateCryptographicSalt(16);
   const passwordHash = await computeClientPasswordHash(params.password, salt, params.username);
 
-  const cleanKey = params.licenseKey?.trim().toUpperCase();
+  // Automatically find matching license key by email if not explicitly provided
+  let cleanKey = params.licenseKey?.trim().toUpperCase();
+  let resolvedCompanyName = params.companyName?.trim();
+
+  if (!cleanKey) {
+    const matchedRecord = findLicenseRecordByEmail(cleanEmail, params.availableKeys);
+    if (matchedRecord) {
+      cleanKey = matchedRecord.key.toUpperCase();
+      if (!resolvedCompanyName && matchedRecord.clientName) {
+        resolvedCompanyName = matchedRecord.clientName;
+      }
+    }
+  }
 
   const newAccount: ClientUserAccount = {
     id: 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7),
     username: params.username.trim().toLowerCase(),
     displayName: params.displayName.trim() || params.username.trim(),
     email: cleanEmail,
-    companyName: params.companyName?.trim() || undefined,
+    companyName: resolvedCompanyName || undefined,
     licenseKey: cleanKey || undefined,
     passwordHash,
     salt,

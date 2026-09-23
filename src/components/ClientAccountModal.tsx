@@ -20,7 +20,8 @@ import {
 import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
 import { 
   updateClientAccountProfile, 
-  deleteClientAccountAndData 
+  deleteClientAccountAndData,
+  findLicenseRecordByEmail
 } from '../clientAccountService';
 
 interface ClientAccountModalProps {
@@ -87,6 +88,24 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
       setTimeout(() => setSaveSuccess(false), 3000);
     }
     setIsSaving(false);
+  };
+
+  const handleAutoSyncEmailLicense = () => {
+    const match = findLicenseRecordByEmail(session.email, availableKeys);
+    if (match) {
+      const res = updateClientAccountProfile(session.userId, {
+        licenseKey: match.key.toUpperCase()
+      });
+      if (res.success && res.account) {
+        setLicenseKeyInput(match.key.toUpperCase());
+        onSessionUpdated({
+          ...session,
+          licenseKey: match.key.toUpperCase()
+        });
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 3000);
+      }
+    }
   };
 
   const handleCopyKey = () => {
@@ -254,14 +273,15 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                     </button>
                   </div>
                 ) : (
-                  <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-300/90 flex items-center justify-between gap-3">
-                    <span>You have not connected an active license key yet. Add your key under Profile & License.</span>
+                  <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-300/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <span>No active license linked yet. We can automatically search for licenses registered to <strong className="text-amber-200">{session.email}</strong>.</span>
                     <button
                       type="button"
-                      onClick={() => setActiveTab('settings')}
-                      className="px-2.5 py-1 text-[11px] font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded cursor-pointer whitespace-nowrap"
+                      onClick={handleAutoSyncEmailLicense}
+                      className="px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg cursor-pointer whitespace-nowrap flex items-center gap-1.5 self-start sm:self-auto"
                     >
-                      Add Key
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Auto-Sync from Email</span>
                     </button>
                   </div>
                 )}

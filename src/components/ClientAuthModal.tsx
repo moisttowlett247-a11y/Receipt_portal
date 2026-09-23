@@ -15,9 +15,10 @@ import {
 import { 
   registerClientAccount, 
   authenticateClientAccount, 
-  isUsernameAvailable 
+  isUsernameAvailable,
+  findLicenseRecordByEmail
 } from '../clientAccountService';
-import { ClientAccountSession, LicenseKeyRecord } from '../types';
+import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
 
 interface ClientAuthModalProps {
   isOpen: boolean;
@@ -42,7 +43,7 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [companyName, setCompanyName] = useState('');
-  const [licenseKey, setLicenseKey] = useState('');
+  const [detectedLicense, setDetectedLicense] = useState<LicenseKeyRecord | null>(null);
 
   // Status & Validation
   const [isLoading, setIsLoading] = useState(false);
@@ -53,6 +54,27 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
   });
 
   if (!isOpen) return null;
+
+  // Automatically search for an existing license key whenever email changes
+  const handleEmailChange = (val: string) => {
+    setEmail(val);
+    setErrorMsg(null);
+
+    const clean = val.trim().toLowerCase();
+    if (clean.includes('@') && clean.length > 4) {
+      const match = findLicenseRecordByEmail(clean, availableKeys);
+      if (match) {
+        setDetectedLicense(match);
+        if (!displayName && match.clientName) {
+          setDisplayName(match.clientName);
+        }
+      } else {
+        setDetectedLicense(null);
+      }
+    } else {
+      setDetectedLicense(null);
+    }
+  };
 
   // Real-time username availability check on blur or typing in register mode
   const handleUsernameChange = (val: string) => {
@@ -67,19 +89,6 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
       });
     } else {
       setUsernameStatus({ checked: false, available: true });
-    }
-  };
-
-  // If user enters an existing license key during registration, auto-fill or check it
-  const handleKeyChange = (val: string) => {
-    const clean = val.trim().toUpperCase();
-    setLicenseKey(clean);
-    if (clean && availableKeys.length > 0) {
-      const found = availableKeys.find(k => k.key.toUpperCase() === clean);
-      if (found) {
-        if (!displayName && found.clientName) setDisplayName(found.clientName);
-        if (!email && found.clientEmail) setEmail(found.clientEmail);
-      }
     }
   };
 
@@ -106,22 +115,14 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
           return;
         }
 
-        // If license key was entered, check if valid in current key list
-        let matchedKey = licenseKey.trim().toUpperCase();
-        if (matchedKey && availableKeys.length > 0) {
-          const keyRec = availableKeys.find(k => k.key.toUpperCase() === matchedKey);
-          if (keyRec && !companyName && keyRec.clientName) {
-            // Auto match
-          }
-        }
-
         const res = await registerClientAccount({
           username,
           password,
           email,
           displayName: displayName || username,
           companyName,
-          licenseKey: matchedKey || undefined
+          licenseKey: detectedLicense ? detectedLicense.key : undefined,
+          availableKeys
         });
 
         if (res.success && res.account) {
@@ -264,18 +265,44 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
 
               {/* Email */}
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-stone-300 flex items-center gap-1.5">
-                  <Mail className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Email Address</span>
+                <label className="text-xs font-medium text-stone-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Mail className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Email Address</span>
+                  </span>
+                  <span className="text-[10px] text-stone-400">Used to auto-link your license</span>
                 </label>
                 <input
                   type="email"
                   required
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => handleEmailChange(e.target.value)}
                   placeholder="e.g. accounting@company.com"
                   className="w-full px-3.5 py-2 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-xl text-xs text-stone-100 placeholder-stone-600 focus:outline-none transition-colors"
                 />
+
+                {/* Auto-detected License Notification */}
+                {detectedLicense ? (
+                  <div className="p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/40 flex items-start gap-2.5 mt-2 animate-in fade-in duration-200">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <div className="text-xs space-y-0.5">
+                      <p className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                        <span>Active License Found:</span>
+                        <code className="font-mono text-[11px] text-emerald-200 bg-emerald-900/60 px-1.5 py-0.5 rounded">
+                          {detectedLicense.key}
+                        </code>
+                      </p>
+                      <p className="text-[11px] text-emerald-400/90">
+                        {getPlanLabel(detectedLicense.plan)} • Automatically syncing to this new account upon creation.
+                      </p>
+                    </div>
+                  </div>
+                ) : email.includes('@') && email.trim().length > 5 ? (
+                  <p className="text-[11px] text-stone-400 flex items-center gap-1 mt-1">
+                    <Sparkles className="w-3 h-3 text-amber-400/80" />
+                    <span>Any existing license purchased with this email will be linked automatically.</span>
+                  </p>
+                ) : null}
               </div>
 
               {/* Company Name */}
@@ -291,27 +318,6 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
                   placeholder="e.g. Acme Farms LLC"
                   className="w-full px-3.5 py-2 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-xl text-xs text-stone-100 placeholder-stone-600 focus:outline-none transition-colors"
                 />
-              </div>
-
-              {/* Existing License Key */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-stone-300 flex items-center justify-between">
-                  <span className="flex items-center gap-1.5">
-                    <Key className="w-3.5 h-3.5 text-amber-400" />
-                    <span>Existing License Key</span>
-                  </span>
-                  <span className="text-[10px] text-amber-400/90 font-mono">If already purchased</span>
-                </label>
-                <input
-                  type="text"
-                  value={licenseKey}
-                  onChange={(e) => handleKeyChange(e.target.value)}
-                  placeholder="e.g. FARM-1234-5678-2026 or ANNUAL-..."
-                  className="w-full px-3.5 py-2 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-xl text-xs text-stone-100 font-mono placeholder-stone-600 focus:outline-none uppercase transition-colors"
-                />
-                <p className="text-[10px] text-stone-500">
-                  Providing your license key will immediately connect your subscription and activate desktop capabilities.
-                </p>
               </div>
             </>
           )}
