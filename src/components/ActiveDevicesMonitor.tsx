@@ -26,7 +26,7 @@ import {
   Zap,
   MapPin
 } from 'lucide-react';
-import { ActiveDeviceSession, LicenseKeyRecord } from '../types';
+import { ActiveDeviceSession, LicenseKeyRecord, AdminRole } from '../types';
 import { getStoredGitHubConfig } from '../githubSyncService';
 import {
   fetchCloudflareLicenses,
@@ -40,13 +40,16 @@ interface ActiveDevicesMonitorProps {
   licenseKeys: LicenseKeyRecord[];
   onRevokeKey: (key: string) => void;
   showToast?: (msg: string) => void;
+  adminRole?: AdminRole;
 }
 
 export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   licenseKeys,
   onRevokeKey,
-  showToast
+  showToast,
+  adminRole = 'SUPER_ADMIN'
 }) => {
+  const isSuperAdmin = adminRole === 'SUPER_ADMIN';
   const [sessions, setSessions] = useState<ActiveDeviceSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
@@ -473,16 +476,18 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
               <span>Refresh</span>
             </button>
 
-            {/* Prune Offline Records */}
-            <button
-              onClick={() => handlePruneSessions(false)}
-              disabled={isPruning || sessions.length === 0}
-              className="flex items-center gap-1.5 px-3 py-2 bg-stone-800/80 hover:bg-stone-700 text-stone-300 text-xs font-medium rounded-xl border border-stone-700/80 transition-colors cursor-pointer"
-              title="Remove records that have been offline for over 15 minutes"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-stone-400" />
-              <span>Prune Inactive</span>
-            </button>
+            {/* Prune Offline Records (Super Admin only) */}
+            {isSuperAdmin && (
+              <button
+                onClick={() => handlePruneSessions(false)}
+                disabled={isPruning || sessions.length === 0}
+                className="flex items-center gap-1.5 px-3 py-2 bg-stone-800/80 hover:bg-stone-700 text-stone-300 text-xs font-medium rounded-xl border border-stone-700/80 transition-colors cursor-pointer"
+                title="Remove records that have been offline for over 15 minutes"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-stone-400" />
+                <span>Prune Inactive</span>
+              </button>
+            )}
 
             {/* Help / Guide Toggle */}
             <button
@@ -845,14 +850,29 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
 
                       {/* Activity & Ping Telemetry */}
                       <td className="py-3.5 px-4 whitespace-nowrap font-mono text-[11px]">
-                        <div className="flex items-center gap-1.5 text-stone-300">
-                          <Activity className="w-3.5 h-3.5 text-amber-400" />
-                          <span className={isOnline ? 'text-emerald-300 font-bold' : 'text-stone-400'}>
+                        <div className="flex items-center gap-1.5">
+                          {isOnline ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-950/70 border border-emerald-800/80 px-1.5 py-0.5 rounded">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                              Online
+                            </span>
+                          ) : isIdle ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-400 bg-amber-950/70 border border-amber-800/80 px-1.5 py-0.5 rounded">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                              Idle
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-stone-400 bg-stone-950 border border-stone-800 px-1.5 py-0.5 rounded">
+                              <span className="w-1.5 h-1.5 rounded-full bg-stone-500" />
+                              Offline
+                            </span>
+                          )}
+                          <span className={isOnline ? 'text-emerald-300 font-bold' : isIdle ? 'text-amber-300' : 'text-stone-400'}>
                             {formatTimeAgo(session.secondsSinceLastPing)}
                           </span>
                         </div>
                         <span className="text-[10px] text-stone-500 block mt-0.5">
-                          {session.pingCount} pings received
+                          {session.pingCount} pings received • {new Date(session.lastPingMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                         </span>
                       </td>
 
@@ -901,14 +921,16 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
             <span>•</span>
             <span>Heartbeat cadence: 10s per desktop instance</span>
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => handlePruneSessions(true)}
-              className="text-stone-500 hover:text-rose-400 text-xs transition-colors cursor-pointer"
-            >
-              Clear All Session History
-            </button>
-          </div>
+          {isSuperAdmin && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => handlePruneSessions(true)}
+                className="text-stone-500 hover:text-rose-400 text-xs transition-colors cursor-pointer"
+              >
+                Clear All Session History
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

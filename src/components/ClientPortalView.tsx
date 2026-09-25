@@ -19,12 +19,18 @@ import {
   Building,
   Layers,
   MessageSquare,
-  Zap
+  Zap,
+  Download,
+  Terminal,
+  Laptop,
+  ExternalLink,
+  Unlock
 } from 'lucide-react';
 import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel, ClientAccountSession } from '../types';
 import { computeSha256Hex } from '../hashUtils';
-import { CLOUDFLARE_WORKER_URL } from '../licenseSyncService';
+import { CLOUDFLARE_WORKER_URL, unlockHwidOnCloudflare } from '../licenseSyncService';
 import { getCurrentClientSession, clearClientSession } from '../clientAccountService';
+import { downloadFullBundleZip, triggerFileDownload } from '../bundleDownloadService';
 import { ClientAuthModal } from './ClientAuthModal';
 import { ClientAccountModal } from './ClientAccountModal';
 
@@ -69,6 +75,42 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isSubmittingInquiry, setIsSubmittingInquiry] = useState(false);
   const [inquirySubmittedSuccess, setInquirySubmittedSuccess] = useState(false);
   const [inquiryError, setInquiryError] = useState<string | null>(null);
+
+  // OS detection
+  const [detectedOs, setDetectedOs] = useState<'windows' | 'mac' | 'linux'>('windows');
+  const [isDownloadingApp, setIsDownloadingApp] = useState(false);
+  const [copiedQuickKey, setCopiedQuickKey] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const userAgent = window.navigator.userAgent.toLowerCase();
+      if (userAgent.includes('mac')) {
+        setDetectedOs('mac');
+      } else if (userAgent.includes('linux')) {
+        setDetectedOs('linux');
+      } else {
+        setDetectedOs('windows');
+      }
+    }
+  }, []);
+
+  const handleDownloadAppBundle = async () => {
+    setIsDownloadingApp(true);
+    try {
+      await downloadFullBundleZip(undefined, {
+        licenseKey: clientSession?.licenseKey,
+        clientName: clientSession?.displayName,
+        clientEmail: clientSession?.email,
+        customZipName: clientSession?.displayName 
+          ? `ReceiptProcessor_${clientSession.displayName.replace(/[^a-zA-Z0-9]/g, '_')}.zip`
+          : 'ReceiptProcessor_DesktopPackage.zip'
+      });
+    } catch {
+      // Handled in downloadFullBundleZip
+    } finally {
+      setIsDownloadingApp(false);
+    }
+  };
 
   // Pricing & Order Request Modal state
   const [selectedPlanForOrder, setSelectedPlanForOrder] = useState<{
@@ -620,6 +662,62 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
+        {/* 1-Click Desktop App Download Banner (OS Aware) */}
+        {clientSession && clientSession.licenseKey && (
+          <div className="p-4 sm:p-5 rounded-2xl bg-stone-900 border border-amber-500/40 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="space-y-1.5 max-w-xl">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                  <Laptop className="w-3 h-3" />
+                  {detectedOs === 'windows' ? 'WINDOWS WORKSTATION DETECTED' : detectedOs === 'mac' ? 'MACOS DETECTED' : 'LINUX DETECTED'}
+                </span>
+                <span className="text-[10px] text-stone-400">Ready to install</span>
+              </div>
+
+              <h4 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                <span>Download Your Pre-Configured Desktop App</span>
+              </h4>
+
+              <p className="text-xs text-stone-300 leading-relaxed">
+                Your license key (<code className="text-amber-300 font-mono">{clientSession.licenseKey}</code>) is bundled inside. Includes 
+                {detectedOs === 'windows' ? (
+                  <strong className="text-emerald-400"> 1-Click run_receipt_processor.bat</strong>
+                ) : (
+                  <strong className="text-emerald-400"> run_receipt_processor.sh</strong>
+                )}, Python script, requirements, and config.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleDownloadAppBundle}
+                disabled={isDownloadingApp}
+                className="px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-500/10 hover:shadow-amber-500/20 whitespace-nowrap"
+              >
+                <Download className="w-4 h-4" />
+                <span>{isDownloadingApp ? 'Packaging...' : 'Download My Desktop App (.ZIP)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (clientSession.licenseKey) {
+                    navigator.clipboard.writeText(clientSession.licenseKey);
+                    setCopiedQuickKey(true);
+                    setTimeout(() => setCopiedQuickKey(false), 2000);
+                  }
+                }}
+                className="px-3 py-2.5 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors cursor-pointer flex items-center gap-1.5"
+                title="Copy License Key"
+              >
+                {copiedQuickKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedQuickKey ? 'Key Copied' : 'Copy Key'}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="text-center max-w-2xl mx-auto space-y-3">
           <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium">
             <ShieldCheck className="w-3.5 h-3.5" />
@@ -929,8 +1027,20 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   )}
 
                   {checkResult.expiresDate && (
-                    <div className="text-[11px] text-stone-300">
-                      <strong>Expiration:</strong> {checkResult.expiresDate}
+                    <div className="text-[11px] text-stone-300 flex items-center justify-between">
+                      <div><strong>Expiration:</strong> {checkResult.expiresDate}</div>
+                      {checkResult.valid && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const pricingEl = document.getElementById('pricing-plans');
+                            if (pricingEl) pricingEl.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition-colors cursor-pointer"
+                        >
+                          Renew My Plan
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -944,7 +1054,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         </div>
 
         {/* Pricing & Subscription Plans */}
-        <div className="space-y-6">
+        <div className="space-y-6" id="pricing-plans">
           <div className="text-center max-w-xl mx-auto space-y-2">
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
               <Tag className="w-3.5 h-3.5" />

@@ -199,9 +199,16 @@ export function triggerFileDownload(urlOrPath: string, filename: string): void {
  * Downloads the full runtime package as a zip archive containing all 6 desktop application files.
  * Generates the archive in memory via JSZip with guaranteed non-empty contents,
  * ensuring all launchers, scripts, configs, and documentation are included.
+ * Allows passing an optional preconfigured license key to bake into .env directly.
  */
 export async function downloadFullBundleZip(
-  onProgress?: (status: string) => void
+  onProgress?: (status: string) => void,
+  options?: {
+    licenseKey?: string;
+    clientEmail?: string;
+    clientName?: string;
+    customZipName?: string;
+  }
 ): Promise<void> {
   onProgress?.('Preparing desktop application package...');
 
@@ -209,12 +216,30 @@ export async function downloadFullBundleZip(
     onProgress?.('Packaging files into complete ZIP bundle...');
     const zip = new JSZip();
 
+    // Prepare personalized .env if a license key is provided
+    let envContent = EMBEDDED_FILES.env.content;
+    if (options?.licenseKey) {
+      envContent = `# Receipt Processor Environment Configuration
+# Pre-configured for: ${options.clientName || 'Licensed User'} (${options.clientEmail || 'subscriber'})
+RECEIPT_PROCESSOR_LICENSE_KEY=${options.licenseKey.trim().toUpperCase()}
+
+# Google Gemini OCR API Key (Optional override - leave empty to use built-in engine)
+GEMINI_API_KEY=
+
+# Auto-update channel (stable / production)
+UPDATE_CHANNEL=stable
+`;
+    }
+
     // Add all 6 files directly from embedded verified source code
     zip.file('receipt_processor.py', EMBEDDED_FILES.py.content);
     zip.file('run_receipt_processor.bat', EMBEDDED_FILES.bat.content);
     zip.file('run_receipt_processor.sh', EMBEDDED_FILES.sh.content);
     zip.file('requirements.txt', EMBEDDED_FILES.req.content);
     zip.file('.env.example', EMBEDDED_FILES.env.content);
+    if (options?.licenseKey) {
+      zip.file('.env', envContent);
+    }
     zip.file('README_DESKTOP_APP.txt', EMBEDDED_FILES.doc.content);
 
     onProgress?.('Compressing ZIP archive (6 complete files)...');
@@ -225,8 +250,9 @@ export async function downloadFullBundleZip(
     });
 
     onProgress?.('Starting download...');
+    const zipFilename = options?.customZipName || 'receipt_processor_bundle.zip';
     const blobUrl = URL.createObjectURL(contentBlob);
-    triggerBlobDownload(blobUrl, 'receipt_processor_bundle.zip');
+    triggerBlobDownload(blobUrl, zipFilename);
     setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
     onProgress?.('Download complete!');
   } catch (err) {

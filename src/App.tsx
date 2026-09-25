@@ -1793,6 +1793,121 @@ export default function App() {
         {/* TAB 3: STEP-BY-STEP SUBSCRIPTION ARCHITECTURE */}
         {activeTab === 'guide' && (
           <div className="space-y-5">
+            {/* System Phases 1, 2, and 3 Status Board */}
+            <div className="p-5 rounded-xl bg-gradient-to-br from-stone-900 via-stone-900 to-stone-950 border border-stone-800 shadow-xl space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-stone-800">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-5 h-5 text-amber-400" />
+                    <h2 className="text-base font-bold text-stone-100">
+                      System Architecture: Phases 1, 2, and 3
+                    </h2>
+                  </div>
+                  <p className="text-xs text-stone-400 mt-0.5">
+                    End-to-end multi-tier pipeline fully deployed and validated across desktop and cloud layers.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-950/80 border border-emerald-600/50 text-emerald-300 font-semibold text-xs">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                    All 3 Phases Complete &amp; Active
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                {/* Phase 1 Card */}
+                <div className="p-4 rounded-xl bg-stone-950/80 border border-amber-500/30 flex flex-col justify-between space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                        PHASE 1
+                      </span>
+                      <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Deployed
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-bold text-stone-200">
+                      Receipt OCR &amp; Processing Engine
+                    </h3>
+                    <p className="text-xs text-stone-400 leading-relaxed">
+                      Core image preprocessing, Gemini Vision 2.5 Flash OCR, line-item extraction, and sanitizing CSV exports with formula injection defense.
+                    </p>
+                    <ul className="text-[11px] text-stone-300 space-y-1.5 list-disc list-inside pt-1">
+                      <li>Gemini Flash high-speed OCR vision</li>
+                      <li>Batch receipt queue &amp; deskewing</li>
+                      <li>Tax, tip, total &amp; vendor categorization</li>
+                      <li>Formula-sanitized QuickBooks CSV export</li>
+                      <li>Native desktop GUI (Tkinter cross-platform)</li>
+                    </ul>
+                  </div>
+                  <div className="pt-2 border-t border-stone-800 text-[10px] text-amber-400/90 font-mono">
+                    Runtime: receipt_processor.py
+                  </div>
+                </div>
+
+                {/* Phase 2 Card */}
+                <div className="p-4 rounded-xl bg-stone-950/80 border border-emerald-500/30 flex flex-col justify-between space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                        PHASE 2
+                      </span>
+                      <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Deployed
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-bold text-stone-200">
+                      AES-256 Vault &amp; QuickBooks Sync
+                    </h3>
+                    <p className="text-xs text-stone-400 leading-relaxed">
+                      Multi-client encrypted credentials storage, zero-client-secret OAuth 2.0 token broker, and direct push to QuickBooks Online Accounting.
+                    </p>
+                    <ul className="text-[11px] text-stone-300 space-y-1.5 list-disc list-inside pt-1">
+                      <li>AES-256-GCM local encrypted credentials</li>
+                      <li>.app_security.key recovery safeguard</li>
+                      <li>Server token broker (Client secret protected)</li>
+                      <li>Rolling 101-day refresh token maintenance</li>
+                      <li>Intuit App Store compliance &amp; webhooks</li>
+                    </ul>
+                  </div>
+                  <div className="pt-2 border-t border-stone-800 text-[10px] text-emerald-400/90 font-mono">
+                    Broker: vite-qbo-plugin.ts &amp; QBO Center
+                  </div>
+                </div>
+
+                {/* Phase 3 Card */}
+                <div className="p-4 rounded-xl bg-stone-950/80 border border-sky-500/30 flex flex-col justify-between space-y-3">
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                        PHASE 3
+                      </span>
+                      <span className="text-[11px] text-emerald-400 font-semibold flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Deployed
+                      </span>
+                    </div>
+                    <h3 className="text-sm font-bold text-stone-200">
+                      SaaS Licensing &amp; Auto-Updates
+                    </h3>
+                    <p className="text-xs text-stone-400 leading-relaxed">
+                      Zero-knowledge SHA-256 license management, anti-account sharing hardware locks, device telemetry, and over-the-air updates.
+                    </p>
+                    <ul className="text-[11px] text-stone-300 space-y-1.5 list-disc list-inside pt-1">
+                      <li>Zero-knowledge SHA-256 hashed keys</li>
+                      <li>Machine hardware fingerprinting (HWID)</li>
+                      <li>Cloudflare KV &amp; GitHub Edge synchronization</li>
+                      <li>Live connected devices &amp; IP telemetry</li>
+                      <li>OTA updater with dismissible modal &amp; bundles</li>
+                    </ul>
+                  </div>
+                  <div className="pt-2 border-t border-stone-800 text-[10px] text-sky-400/90 font-mono">
+                    Edge: cloudflare-worker.js &amp; Telemetry
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="p-5 rounded-xl bg-stone-900 border border-stone-800">
               <h2 className="text-sm font-semibold text-stone-200 mb-3 flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-amber-400" />

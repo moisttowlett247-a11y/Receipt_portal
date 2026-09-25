@@ -15,7 +15,13 @@ import {
   Copy,
   Calendar,
   Layers,
-  Sparkles
+  Sparkles,
+  Download,
+  Laptop,
+  Unlock,
+  Clock,
+  Terminal,
+  ExternalLink
 } from 'lucide-react';
 import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
 import { 
@@ -23,6 +29,8 @@ import {
   deleteClientAccountAndData,
   findLicenseRecordByEmail
 } from '../clientAccountService';
+import { unlockHwidOnCloudflare } from '../licenseSyncService';
+import { downloadFullBundleZip, triggerFileDownload } from '../bundleDownloadService';
 
 interface ClientAccountModalProps {
   isOpen: boolean;
@@ -58,12 +66,73 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // Machine release & bundle download state
+  const [isReleasingHwid, setIsReleasingHwid] = useState(false);
+  const [hwidReleaseMsg, setHwidReleaseMsg] = useState<string | null>(null);
+  const [isDownloadingApp, setIsDownloadingApp] = useState(false);
+  const [copiedCliCommand, setCopiedCliCommand] = useState(false);
+
   if (!isOpen) return null;
 
   // Find linked license record if present
   const linkedKeyRecord = session.licenseKey 
     ? availableKeys.find(k => k.key.toUpperCase() === session.licenseKey?.toUpperCase())
     : null;
+
+  // Calculate days left for countdown
+  const getDaysLeft = (): number | null => {
+    if (!linkedKeyRecord || !linkedKeyRecord.expiresDate) return null;
+    if (linkedKeyRecord.expiresDate.includes('Never') || linkedKeyRecord.expiresDate.includes('Lifetime')) return 9999;
+    if (linkedKeyRecord.expiresDate.startsWith('Pending')) return null;
+    const expTime = new Date(linkedKeyRecord.expiresDate).getTime();
+    if (isNaN(expTime)) return null;
+    return Math.ceil((expTime - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24));
+  };
+
+  const daysLeft = getDaysLeft();
+
+  const handleReleaseMachine = async () => {
+    if (!session.licenseKey) return;
+    setIsReleasingHwid(true);
+    setHwidReleaseMsg(null);
+    try {
+      const res = await unlockHwidOnCloudflare(session.licenseKey);
+      if (res.success) {
+        setHwidReleaseMsg('Workstation binding released successfully! You can now launch and activate this license on your new machine.');
+        setTimeout(() => setHwidReleaseMsg(null), 6000);
+      } else {
+        setHwidReleaseMsg('Unable to release workstation binding: ' + (res.message || 'Server unreachable'));
+      }
+    } catch (err: any) {
+      setHwidReleaseMsg('Error releasing machine binding.');
+    } finally {
+      setIsReleasingHwid(false);
+    }
+  };
+
+  const handleDownloadPersonalizedBundle = async () => {
+    setIsDownloadingApp(true);
+    try {
+      await downloadFullBundleZip(undefined, {
+        licenseKey: session.licenseKey,
+        clientName: session.displayName,
+        clientEmail: session.email,
+        customZipName: `ReceiptProcessor_${session.displayName.replace(/[^a-zA-Z0-9]/g, '_')}_Package.zip`
+      });
+    } catch {
+      // Handled in downloadFullBundleZip
+    } finally {
+      setIsDownloadingApp(false);
+    }
+  };
+
+  const handleCopyCliCommand = () => {
+    if (!session.licenseKey) return;
+    const cmd = `python receipt_processor.py --key ${session.licenseKey}`;
+    navigator.clipboard.writeText(cmd);
+    setCopiedCliCommand(true);
+    setTimeout(() => setCopiedCliCommand(false), 2500);
+  };
 
   const handleSaveProfile = (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,24 +322,86 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                 </div>
 
                 {session.licenseKey ? (
-                  <div className="flex items-center justify-between p-3 rounded-lg bg-stone-900 border border-stone-800">
-                    <div className="space-y-0.5">
-                      <div className="font-mono text-xs font-bold text-amber-300">
-                        {session.licenseKey}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between p-3.5 rounded-xl bg-stone-900 border border-stone-800">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <div className="font-mono text-xs font-bold text-amber-300">
+                            {session.licenseKey}
+                          </div>
+                          {daysLeft !== null && (
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center gap-1 ${
+                              daysLeft > 14
+                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                : daysLeft > 0
+                                  ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                  : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
+                            }`}>
+                              <Clock className="w-3 h-3" />
+                              <span>{daysLeft > 9000 ? 'Lifetime / Perpetual' : daysLeft > 0 ? `${daysLeft} Days Remaining` : 'Expired'}</span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-stone-400">
+                          Tier: <span className="text-stone-200">{linkedKeyRecord ? getPlanLabel(linkedKeyRecord.plan) : 'Standard License'}</span>
+                          {linkedKeyRecord?.expiresDate && ` • Valid until: ${linkedKeyRecord.expiresDate}`}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-stone-400">
-                        Tier: <span className="text-stone-200">{linkedKeyRecord ? getPlanLabel(linkedKeyRecord.plan) : 'Standard License'}</span>
-                        {linkedKeyRecord?.expiresDate && ` • Valid until: ${linkedKeyRecord.expiresDate}`}
-                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopyKey}
+                        className="px-3 py-1.5 rounded-md bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedKey ? 'Copied' : 'Copy'}</span>
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleCopyKey}
-                      className="px-3 py-1.5 rounded-md bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs transition-colors cursor-pointer flex items-center gap-1"
-                    >
-                      {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      <span>{copiedKey ? 'Copied' : 'Copy'}</span>
-                    </button>
+
+                    {/* Machine Hardware ID Lock & Transfer Control */}
+                    <div className="p-3.5 rounded-xl bg-stone-900/60 border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-stone-200">
+                          <Laptop className="w-3.5 h-3.5 text-sky-400" />
+                          <span>Hardware ID & Workstation Authorization</span>
+                        </div>
+                        <p className="text-[11px] text-stone-400">
+                          Transferring to a new PC or upgraded your motherboard? Release current machine authorization to reactivate immediately.
+                        </p>
+                        {hwidReleaseMsg && (
+                          <div className="pt-1 text-[11px] font-medium text-emerald-400 flex items-center gap-1">
+                            <Check className="w-3 h-3" />
+                            <span>{hwidReleaseMsg}</span>
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleReleaseMachine}
+                        disabled={isReleasingHwid}
+                        className="px-3 py-1.5 text-xs font-semibold bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white rounded-lg border border-stone-700 transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap self-start sm:self-auto shadow-sm"
+                      >
+                        <Unlock className="w-3.5 h-3.5 text-amber-400" />
+                        <span>{isReleasingHwid ? 'Releasing...' : 'Release Active Machine'}</span>
+                      </button>
+                    </div>
+
+                    {/* Terminal Quick Command Setup */}
+                    <div className="p-3 rounded-xl bg-stone-900/40 border border-stone-800 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        <Terminal className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+                        <code className="text-[11px] text-stone-300 font-mono truncate">
+                          python receipt_processor.py --key {session.licenseKey}
+                        </code>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopyCliCommand}
+                        className="text-[11px] font-medium text-amber-400 hover:text-amber-300 px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 transition-colors cursor-pointer shrink-0 flex items-center gap-1"
+                      >
+                        {copiedCliCommand ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        <span>{copiedCliCommand ? 'Copied' : 'Copy CLI'}</span>
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-300/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -286,6 +417,38 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Personalized Desktop Download Card */}
+              {session.licenseKey && (
+                <div className="p-4 rounded-xl bg-gradient-to-r from-stone-950 via-stone-900 to-amber-950/20 border border-amber-500/30 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                          <Download className="w-3.5 h-3.5 text-amber-400" />
+                          <span>Pre-Configured Desktop App (.ZIP)</span>
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
+                          Key Embedded
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-stone-400 leading-relaxed">
+                        Download your customized software bundle. Your active license key is automatically injected into the local configuration file so you can launch immediately without copying and pasting.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleDownloadPersonalizedBundle}
+                      disabled={isDownloadingApp}
+                      className="px-4 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-stone-950 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 whitespace-nowrap self-start sm:self-auto shadow-md hover:shadow-amber-500/10"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>{isDownloadingApp ? 'Packaging ZIP...' : 'Download My Desktop App'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Account Details Bento */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

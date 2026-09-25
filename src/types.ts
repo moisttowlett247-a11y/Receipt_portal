@@ -192,3 +192,6 @@ export interface ClientAccountSession {
   loggedInAt: string;
 }
 
+export type AdminRole = 'SUPER_ADMIN' | 'SUPPORT_STAFF';
+
+

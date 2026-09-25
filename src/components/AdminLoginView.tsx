@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Lock, ArrowLeft, AlertCircle, ShieldCheck, User, Eye, EyeOff, Zap } from 'lucide-react';
+import { Lock, ArrowLeft, AlertCircle, ShieldCheck, User, Eye, EyeOff, Zap, ShieldAlert, Headphones } from 'lucide-react';
 import { loginToCloudflareAdmin, CLOUDFLARE_WORKER_URL } from '../licenseSyncService';
 import { computeCredentialsHash } from '../hashUtils';
+import { AdminRole } from '../types';
 
 interface AdminLoginViewProps {
-  onUnlock: () => void;
+  onUnlock: (role?: AdminRole) => void;
   savedHash: string | null;
   onSaveCredentials?: (username: string, passwordHash: string) => void;
   onGoToClientPortal: () => void;
@@ -17,6 +18,7 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
 }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [selectedRole, setSelectedRole] = useState<AdminRole>('SUPER_ADMIN');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
@@ -114,7 +116,10 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
       const cfRes = await loginToCloudflareAdmin(cleanUser, cleanPass);
       if (cfRes.success) {
         clearFailedAttempts();
-        onUnlock();
+        try {
+          sessionStorage.setItem('receipt_admin_role', selectedRole);
+        } catch {}
+        onUnlock(selectedRole);
         return;
       }
 
@@ -123,7 +128,10 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
         const inputHash = await computeCredentialsHash(cleanUser.toLowerCase(), cleanPass);
         if (inputHash === savedHash) {
           clearFailedAttempts();
-          onUnlock();
+          try {
+            sessionStorage.setItem('receipt_admin_role', selectedRole);
+          } catch {}
+          onUnlock(selectedRole);
           return;
         }
       }
@@ -190,6 +198,56 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Role Profile Selection */}
+            <div>
+              <label className="text-xs font-medium text-stone-300 block mb-1.5 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-400" />
+                  Operator Role Clearance
+                </span>
+                <span className="text-[10px] text-stone-400 font-mono">
+                  {selectedRole === 'SUPER_ADMIN' ? 'Full Authority' : 'Read/Issue Only'}
+                </span>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedRole('SUPER_ADMIN')}
+                  className={`py-2 px-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    selectedRole === 'SUPER_ADMIN'
+                      ? 'bg-amber-500/15 border-amber-500 text-amber-200 ring-1 ring-amber-500/40'
+                      : 'bg-stone-950 border-stone-800 text-stone-400 hover:text-stone-300 hover:border-stone-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold text-xs">
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Super Admin</span>
+                  </div>
+                  <div className="text-[10px] text-stone-400 mt-0.5 leading-tight">
+                    Keys, Deletions, Sync &amp; Settings
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedRole('SUPPORT_STAFF')}
+                  className={`py-2 px-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    selectedRole === 'SUPPORT_STAFF'
+                      ? 'bg-sky-500/15 border-sky-500 text-sky-200 ring-1 ring-sky-500/40'
+                      : 'bg-stone-950 border-stone-800 text-stone-400 hover:text-stone-300 hover:border-stone-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 font-bold text-xs">
+                    <Headphones className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Support Staff</span>
+                  </div>
+                  <div className="text-[10px] text-stone-400 mt-0.5 leading-tight">
+                    Key Extension, Devices &amp; Helpdesk
+                  </div>
+                </button>
+              </div>
+            </div>
+
             <div>
               <label className="text-xs font-medium text-stone-300 block mb-1.5 flex items-center gap-1.5">
                 <User className="w-3.5 h-3.5 text-stone-400" />
