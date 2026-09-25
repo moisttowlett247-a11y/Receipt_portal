@@ -1408,6 +1408,7 @@ class ClientProfileManager:
                     "refresh_token": self.vault.decrypt(data.get("enc_token", "")),
                     "client_id": self.vault.decrypt(data.get("enc_cid", "")),
                     "client_secret": self.vault.decrypt(data.get("enc_csec", "")),
+                    "sender_emails": self.vault.decrypt(data.get("enc_emails", "")) if data.get("enc_emails") else data.get("sender_emails", ""),
                     "env": data.get("env", "production"),
                     "default_pay_account": data.get("default_pay_account", "41"),
                     "last_used": data.get("last_used", "")
@@ -1424,6 +1425,7 @@ class ClientProfileManager:
                 "enc_token": self.vault.encrypt(data.get("refresh_token", "")),
                 "enc_cid": self.vault.encrypt(data.get("client_id", "")),
                 "enc_csec": self.vault.encrypt(data.get("client_secret", "")),
+                "enc_emails": self.vault.encrypt(data.get("sender_emails", "")),
                 "env": data.get("env", "production"),
                 "default_pay_account": data.get("default_pay_account", "41"),
                 "last_used": data.get("last_used", "")
@@ -1450,7 +1452,8 @@ class ClientProfileManager:
                         env=d.get("env", "production"),
                         default_pay_acc=d.get("default_pay_account", "41"),
                         client_id=d.get("client_id", ""),
-                        client_secret=d.get("client_secret", "")
+                        client_secret=d.get("client_secret", ""),
+                        sender_emails=d.get("sender_emails", "")
                     )
                 os.remove(legacy_file)
                 return
@@ -1466,7 +1469,7 @@ class ClientProfileManager:
             if realm_id and refresh_tok:
                 self.add_or_update_client("Primary Client (Default)", realm_id, refresh_tok, env, "41", client_id, client_sec)
 
-    def add_or_update_client(self, client_name, realm_id, refresh_token, env="production", default_pay_acc="41", client_id="", client_secret=""):
+    def add_or_update_client(self, client_name, realm_id, refresh_token, env="production", default_pay_acc="41", client_id="", client_secret="", sender_emails=""):
         name = client_name.strip()
         self.profiles[name] = {
             "realm_id": realm_id.strip(),
@@ -1475,6 +1478,7 @@ class ClientProfileManager:
             "client_secret": client_secret.strip() if client_secret else "",
             "env": env.strip(),
             "default_pay_account": str(default_pay_acc).strip() if default_pay_acc else "41",
+            "sender_emails": sender_emails.strip() if sender_emails else "",
             "last_used": datetime.now().isoformat()
         }
         self.save_profiles()
@@ -1492,6 +1496,31 @@ class ClientProfileManager:
 
     def get_client_names(self) -> list:
         return list(self.profiles.keys())
+
+    def find_client_by_sender_email(self, sender_email: str):
+        """
+        Option B: Sender Mapping. Matches an inbound email's sender address
+        or domain (e.g. 'billing@acme.com' or '@acme.com') to a client profile.
+        """
+        if not sender_email:
+            return None
+        clean_sender = str(sender_email).strip().lower()
+        sender_domain = ("@" + clean_sender.split("@")[-1]) if "@" in clean_sender else ""
+
+        for name, data in self.profiles.items():
+            raw_emails = data.get("sender_emails", "")
+            if not raw_emails:
+                continue
+            # Split comma, semicolon, space, or newline
+            patterns = [p.strip().lower() for p in raw_emails.replace(";", ",").replace("\n", ",").split(",") if p.strip()]
+            for p in patterns:
+                if p == clean_sender:
+                    return name
+                if p.startswith("@") and p == sender_domain:
+                    return name
+                if "@" not in p and p in clean_sender:
+                    return name
+        return None
 
 
 # -----------------------------------------------------------------------------
@@ -1551,6 +1580,31 @@ class QuickBooksOnlineSync:
         self.access_token = None
         self._cached_accounts.clear()
         self._cached_vendors.clear()
+
+    def get_client_syncer(self, client_name: str):
+        """
+        Returns a client-specific, thread-isolated QuickBooksOnlineSync instance.
+        Allows multiple worker threads to interact with different clients' QBO accounts
+        simultaneously without race conditions or overwriting credentials.
+        """
+        if not client_name or client_name not in self.profile_mgr.profiles:
+            return self
+        if not hasattr(self, "_client_syncers"):
+            self._client_syncers = {}
+        if client_name in self._client_syncers:
+            return self._client_syncers[client_name]
+        data = self.profile_mgr.profiles[client_name]
+        syncer = QuickBooksOnlineSync(self.profile_mgr)
+        syncer.set_active_client(
+            client_name,
+            data.get("realm_id", ""),
+            data.get("refresh_token", ""),
+            data.get("env", "production"),
+            client_id=data.get("client_id", ""),
+            client_secret=data.get("client_secret", "")
+        )
+        self._client_syncers[client_name] = syncer
+        return syncer
 
     def refresh_tokens(self) -> str:
         cid = (self.client_id or os.getenv("QBO_CLIENT_ID", "")).strip()
@@ -1894,6 +1948,15 @@ class FarmReceiptApp(_TK_BASE_TK):
         self.stats = {"total": 0, "cows": 0, "chickens": 0, "general": 0, "dollars": 0.0}
         self.key_index = 0
 
+        # Multi-Client Worker Pool & Thread Concurrency Controls
+        self.worker_pool = concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="MultiClientWorker")
+        self.active_jobs_lock = threading.Lock()
+        self.active_jobs = set()
+        self.file_write_lock = threading.Lock()
+        self.stats_lock = threading.Lock()
+        self.hash_lock = threading.Lock()
+        self.key_lock = threading.Lock()
+
         # Available QBO Accounts list
         self.qbo_accounts_data = []
 
@@ -1922,6 +1985,9 @@ class FarmReceiptApp(_TK_BASE_TK):
 
         # Check for deduplication cache
         self.load_hash_cache()
+
+        # Synchronize multi-client inbox and archive folders
+        self.sync_client_inbox_folders()
 
         # Start drain log queue loop
         self.after(50, self.drain_log_queue)
@@ -2037,9 +2103,10 @@ class FarmReceiptApp(_TK_BASE_TK):
     def get_next_key(self):
         if not self.api_keys:
             return None
-        key = self.api_keys[self.key_index % len(self.api_keys)]
-        self.key_index = (self.key_index + 1) % len(self.api_keys)
-        return key
+        with self.key_lock:
+            key = self.api_keys[self.key_index % len(self.api_keys)]
+            self.key_index = (self.key_index + 1) % len(self.api_keys)
+            return key
 
     def setup_styles(self):
         self.style = ttk.Style(self)
@@ -2218,6 +2285,17 @@ class FarmReceiptApp(_TK_BASE_TK):
 
         open_archive_btn = tk.Button(folder_row, text="Open Archive", command=self.open_archive_folder, bg="#44403c", fg="#38bdf8", relief="flat", padx=8)
         open_archive_btn.pack(side="left", padx=(4, 0))
+
+        sync_folders_btn = tk.Button(folder_row, text="📁 Sync Client Folders", command=self.sync_client_inbox_folders, bg="#44403c", fg="#a7f3d0", relief="flat", padx=6)
+        sync_folders_btn.pack(side="left", padx=(4, 0))
+
+        tk.Label(
+            left_box,
+            text="⚡ Multi-Client Concurrent Engine: Drop into any client subfolder to auto-process in parallel with zero manual switching.",
+            font=("Segoe UI", 8),
+            fg="#38bdf8",
+            bg="#292524"
+        ).pack(anchor="w", pady=(0, 4))
 
         # Action Buttons
         btn_row = tk.Frame(left_box, bg="#292524")
@@ -2790,7 +2868,7 @@ class FarmReceiptApp(_TK_BASE_TK):
 
         dialog = tk.Toplevel(self)
         dialog.title(f"{'Edit' if is_editing else 'Add'} QuickBooks Client Profile (AES-256 Encrypted)")
-        dialog.geometry("620x640")
+        dialog.geometry("640x720")
         dialog.configure(bg="#1c1917", padx=18, pady=16)
         dialog.transient(self)
         dialog.grab_set()
@@ -2815,7 +2893,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         def add_row(lbl_text, show_secret=False, default_val="", note=""):
             f = tk.Frame(dialog, bg="#1c1917")
             f.pack(fill="x", pady=3)
-            tk.Label(f, text=lbl_text, fg="#d6d3d1", bg="#1c1917", width=20, anchor="w").pack(side="left")
+            tk.Label(f, text=lbl_text, fg="#d6d3d1", bg="#1c1917", width=22, anchor="w").pack(side="left")
             entry = tk.Entry(f, bg="#292524", fg="#fafaf9", insertbackground="white", font=("Consolas", 9), show="•" if show_secret else "")
             entry.pack(side="left", fill="x", expand=True)
             if default_val:
@@ -2827,18 +2905,19 @@ class FarmReceiptApp(_TK_BASE_TK):
         e_name = add_row("Client / Farm Name:", default_val=client_name_to_edit if is_editing else "")
         e_realm = add_row("Company (Realm) ID:", default_val=existing_data.get("realm_id", ""), note="From your QuickBooks URL or App Center (9-12 digits)")
         e_token = add_row("Refresh Token:", show_secret=True, default_val=existing_data.get("refresh_token", ""), note="Intuit OAuth2 Refresh Token (101-day rolling renewal)")
-        e_cid = add_row("Intuit Client ID:", default_val=existing_data.get("client_id", ""), note="Optional: Enter for direct sync (or leaves blank to use .env: QBO_CLIENT_ID)")
-        e_csec = add_row("Intuit Client Secret:", show_secret=True, default_val=existing_data.get("client_secret", ""), note="Optional: Enter for direct sync (or leaves blank to use .env: QBO_CLIENT_SECRET)")
+        e_cid = add_row("Intuit Client ID:", default_val=existing_data.get("client_id", ""), note="Optional: Enter for direct sync (or leave blank to use .env: QBO_CLIENT_ID)")
+        e_csec = add_row("Intuit Client Secret:", show_secret=True, default_val=existing_data.get("client_secret", ""), note="Optional: Enter for direct sync (or leave blank to use .env: QBO_CLIENT_SECRET)")
         e_account = add_row("Default Account ID:", default_val=existing_data.get("default_pay_account", "41"), note="Default QBO Payment Account ID (e.g., 41 or bank ID)")
+        e_emails = add_row("Authorized Sender Emails:", default_val=existing_data.get("sender_emails", ""), note="Option B Email auto-routing (comma-separated, e.g. billing@client.com, @clientdomain.com)")
 
         env_f = tk.Frame(dialog, bg="#1c1917")
         env_f.pack(fill="x", pady=4)
-        tk.Label(env_f, text="Environment:", fg="#d6d3d1", bg="#1c1917", width=20, anchor="w").pack(side="left")
+        tk.Label(env_f, text="Environment:", fg="#d6d3d1", bg="#1c1917", width=22, anchor="w").pack(side="left")
         env_var = tk.StringVar(value=existing_data.get("env", "production"))
         env_menu = ttk.Combobox(env_f, textvariable=env_var, values=["production", "sandbox"], state="readonly", width=16)
         env_menu.pack(side="left")
 
-        status_lbl = tk.Label(dialog, text="", font=("Segoe UI", 9), fg="#38bdf8", bg="#1c1917", wraplength=560, justify="left")
+        status_lbl = tk.Label(dialog, text="", font=("Segoe UI", 9), fg="#38bdf8", bg="#1c1917", wraplength=580, justify="left")
         status_lbl.pack(anchor="w", pady=(8, 4))
 
         def test_client_conn():
@@ -2882,6 +2961,7 @@ class FarmReceiptApp(_TK_BASE_TK):
             cid = e_cid.get().strip()
             csec = e_csec.get().strip()
             acc = e_account.get().strip() or "41"
+            emails = e_emails.get().strip()
             env_mode = env_var.get().strip()
 
             if not (name and rid and tok):
@@ -2899,13 +2979,15 @@ class FarmReceiptApp(_TK_BASE_TK):
                 env=env_mode,
                 default_pay_acc=acc,
                 client_id=cid,
-                client_secret=csec
+                client_secret=csec,
+                sender_emails=emails
             )
 
             names = self.profile_mgr.get_client_names()
             self.client_dropdown['values'] = names
             self.client_var.set(name)
             self.on_client_switched()
+            self.sync_client_inbox_folders()
 
             action_verb = "Updated" if is_editing else "Stored"
             self.log(f"🔒 [Vault] {action_verb} AES-256 encrypted profile: '{name}' (Realm: {rid})", "success")
@@ -3073,23 +3155,91 @@ class FarmReceiptApp(_TK_BASE_TK):
                 self.log(f"Notice reading cache: {e}", "warning")
 
     def save_hash(self, file_hash):
-        self.processed_hashes.add(file_hash)
-        try:
-            with open(".processed_hashes.txt", "a") as f:
-                f.write(f"{file_hash}\n")
-        except Exception:
-            pass
+        with self.hash_lock:
+            self.processed_hashes.add(file_hash)
+            try:
+                with open(".processed_hashes.txt", "a") as f:
+                    f.write(f"{file_hash}\n")
+            except Exception:
+                pass
 
     def reset_processed_cache(self):
-        self.processed_hashes.clear()
-        cache_file = ".processed_hashes.txt"
-        if os.path.exists(cache_file):
-            try:
-                with open(cache_file, "w") as f:
-                    f.write("")
-            except Exception as e:
-                self.log(f"Notice resetting cache: {e}", "warning")
+        with self.hash_lock:
+            self.processed_hashes.clear()
+            cache_file = ".processed_hashes.txt"
+            if os.path.exists(cache_file):
+                try:
+                    with open(cache_file, "w") as f:
+                        f.write("")
+                except Exception as e:
+                    self.log(f"Notice resetting cache: {e}", "warning")
         self.log("🔄 Processed file cache reset. You can now re-scan any receipts!", "highlight")
+
+    # -------------------------------------------------------------------------
+    # Multi-Client Hierarchical Folder Dispatcher
+    # -------------------------------------------------------------------------
+    def sync_client_inbox_folders(self):
+        """
+        Creates and synchronizes dedicated subfolders for each configured client
+        inside the Inbox folder. Receipts dropped into any client's subfolder
+        are automatically processed for that specific client concurrently.
+        """
+        try:
+            inbox_root = os.path.abspath(self.folder_var.get() if hasattr(self, "folder_var") else os.path.join(SCRIPT_DIR, "inbox"))
+            os.makedirs(inbox_root, exist_ok=True)
+
+            client_names = self.profile_mgr.get_client_names()
+            created_count = 0
+            for client in client_names:
+                safe_name = "".join([c for c in client if c.isalnum() or c in (' ', '_', '-')]).strip()
+                if safe_name:
+                    c_inbox = os.path.join(inbox_root, safe_name)
+                    if not os.path.exists(c_inbox):
+                        os.makedirs(c_inbox, exist_ok=True)
+                        created_count += 1
+                    else:
+                        os.makedirs(c_inbox, exist_ok=True)
+
+                    # Also ensure client archive directory exists
+                    c_arch = os.path.join(inbox_root, "inbox_archive", safe_name)
+                    os.makedirs(c_arch, exist_ok=True)
+
+            # Auto-generate quick reference guide in the inbox folder
+            guide_path = os.path.join(inbox_root, "HOW_TO_USE_MULTI_CLIENT_INBOX.txt")
+            if not os.path.exists(guide_path):
+                with open(guide_path, "w", encoding="utf-8") as f:
+                    f.write(
+                        "=============================================================================\n"
+                        "  MULTI-CLIENT SIMULTANEOUS RECEIPT PROCESSING INBOX\n"
+                        "=============================================================================\n\n"
+                        "HOW IT WORKS:\n"
+                        "1. DROP BY CLIENT SUBFOLDER:\n"
+                        "   - Drop receipts or PDFs into any client's folder (e.g. 'Green_Acres/').\n"
+                        "   - The desktop watcher processes multiple clients simultaneously!\n"
+                        "   - No need to switch clients in the app UI for each receipt.\n\n"
+                        "2. DROP INTO ROOT INBOX:\n"
+                        "   - Files placed directly in the main folder are processed for\n"
+                        "     the currently active client selected in the app dropdown.\n\n"
+                        "3. EMAIL AUTO-SORTING (Option B: Sender Mapping):\n"
+                        "   - Emails from registered client addresses automatically route\n"
+                        "     directly into that client's inbox and QBO company.\n"
+                        "=============================================================================\n"
+                    )
+
+            if created_count > 0:
+                self.log(f"📁 Synchronized {created_count} new client inbox folder(s) in '{inbox_root}'.", "info")
+        except Exception as e:
+            self.log(f"⚠️ Notice while syncing client folders: {e}", "warning")
+
+    def _worker_process_receipt(self, filepath: str, client_name: str):
+        """Worker wrapper executed inside self.worker_pool for parallel multi-client processing."""
+        try:
+            self.process_image_file(filepath, client_name=client_name)
+        except Exception as err:
+            self.log(f"❌ Error processing receipt {os.path.basename(filepath)} for [{client_name}]: {err}", "error")
+        finally:
+            with self.active_jobs_lock:
+                self.active_jobs.discard(filepath)
 
     # -------------------------------------------------------------------------
     # File & Folder Browser Helpers
@@ -3100,10 +3250,12 @@ class FarmReceiptApp(_TK_BASE_TK):
             selected_abs = os.path.abspath(selected)
             self.folder_var.set(selected_abs)
             self.log(f"📁 Selected inbox folder: {selected_abs}", "info")
+            self.sync_client_inbox_folders()
 
     def open_inbox_folder(self):
         folder = self.folder_var.get()
         os.makedirs(folder, exist_ok=True)
+        self.sync_client_inbox_folders()
         self.open_system_path(folder)
 
     def open_archive_folder(self):
@@ -3112,12 +3264,19 @@ class FarmReceiptApp(_TK_BASE_TK):
         os.makedirs(archive_dir, exist_ok=True)
         self.open_system_path(archive_dir)
 
-    def archive_original_file(self, filepath):
+    def archive_original_file(self, filepath, client_name=None):
         if not os.path.exists(filepath):
             return None
         try:
             parent_dir = os.path.dirname(os.path.abspath(filepath))
-            archive_dir = os.path.join(parent_dir, "inbox_archive") if os.path.basename(parent_dir).lower() == "inbox" else os.path.abspath("./inbox_archive")
+            base_archive = os.path.join(parent_dir, "inbox_archive") if os.path.basename(parent_dir).lower() == "inbox" else os.path.abspath("./inbox_archive")
+
+            if client_name:
+                safe_client = "".join([c for c in client_name if c.isalnum() or c in (' ', '_', '-')]).strip()
+                archive_dir = os.path.join(base_archive, safe_client)
+            else:
+                archive_dir = base_archive
+
             os.makedirs(archive_dir, exist_ok=True)
 
             filename = os.path.basename(filepath)
@@ -3353,7 +3512,7 @@ class FarmReceiptApp(_TK_BASE_TK):
     # -------------------------------------------------------------------------
     # Core Gemini Processing Worker & QBO Sync
     # -------------------------------------------------------------------------
-    def process_image_file(self, filepath):
+    def process_image_file(self, filepath, client_name=None):
         if not os.path.exists(filepath):
             return False
 
@@ -3372,7 +3531,7 @@ class FarmReceiptApp(_TK_BASE_TK):
             self.log("❌ Cannot process: No Gemini API keys configured.", "error")
             return False
 
-        active_client = self.qbo_client.active_client_name or "Unknown Client"
+        active_client = (client_name.strip() if client_name else "") or self.qbo_client.active_client_name or "Unknown Client"
         self.log(f"🔍 Analyzing for [{active_client}]: {os.path.basename(filepath)}...", "highlight")
 
         try:
@@ -3494,55 +3653,89 @@ class FarmReceiptApp(_TK_BASE_TK):
                 txt_entry += f"  - {itm.get('description', 'Item')}: ${float(itm.get('amount', 0.0)):.2f}\n"
             txt_entry += "\n"
 
-            with open("Receipt_Data.txt", "a", encoding="utf-8") as f:
-                f.write(txt_entry)
+            # --- Thread-Safe Consolidated & Client-Specific Data Logging ---
+            safe_client = "".join([c for c in active_client if c.isalnum() or c in (' ', '_', '-')]).strip() or "General"
+            client_dir = os.path.join("./processed", safe_client)
+            os.makedirs(client_dir, exist_ok=True)
 
-            csv_path = "Receipt_Data.csv"
-            csv_exists = os.path.exists(csv_path)
-            with open(csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-                if not csv_exists:
-                    writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
-                writer.writerow([
-                    sanitize_csv_field(active_client),
-                    sanitize_csv_field(date_str),
-                    sanitize_csv_field(vendor),
-                    sanitize_csv_field(category),
-                    f"{subtotal:.2f}",
-                    f"{tax:.2f}",
-                    f"{total:.2f}",
-                    sanitize_csv_field(payment),
-                    sanitize_csv_field(card_last_4),
-                    sanitize_csv_field(ref_num),
-                    os.path.basename(filepath),
-                    idx
-                ])
+            with self.file_write_lock:
+                # 1. Plain text receipts log
+                with open("Receipt_Data.txt", "a", encoding="utf-8") as f:
+                    f.write(txt_entry)
 
-            qb_path = "QuickBooks_Bills.csv"
-            qb_exists = os.path.exists(qb_path)
-            with open(qb_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-                if not qb_exists:
-                    writer.writerow(["Client","BillDate","Vendor","ExpenseAccount","Amount","Memo","RefNumber"])
-                writer.writerow([
-                    sanitize_csv_field(active_client),
-                    sanitize_csv_field(date_str),
-                    sanitize_csv_field(vendor),
-                    sanitize_csv_field(category),
-                    f"{total:.2f}",
-                    sanitize_csv_field(category),
-                    sanitize_csv_field(ref_num)
-                ])
+                # 2. Master Consolidated CSV
+                csv_path = "Receipt_Data.csv"
+                csv_exists = os.path.exists(csv_path)
+                with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+                    if not csv_exists:
+                        writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                    writer.writerow([
+                        sanitize_csv_field(active_client),
+                        sanitize_csv_field(date_str),
+                        sanitize_csv_field(vendor),
+                        sanitize_csv_field(category),
+                        f"{subtotal:.2f}",
+                        f"{tax:.2f}",
+                        f"{total:.2f}",
+                        sanitize_csv_field(payment),
+                        sanitize_csv_field(card_last_4),
+                        sanitize_csv_field(ref_num),
+                        os.path.basename(filepath),
+                        idx
+                    ])
 
-            if self.qbo_client and self.qbo_client.is_configured():
+                # 3. Client-Specific Individual CSV
+                cl_csv_path = os.path.join(client_dir, f"Receipt_Data_{safe_client}.csv")
+                cl_csv_exists = os.path.exists(cl_csv_path)
+                with open(cl_csv_path, "a", newline="", encoding="utf-8") as f_cl:
+                    cl_writer = csv.writer(f_cl, quoting=csv.QUOTE_MINIMAL)
+                    if not cl_csv_exists:
+                        cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                    cl_writer.writerow([
+                        sanitize_csv_field(active_client),
+                        sanitize_csv_field(date_str),
+                        sanitize_csv_field(vendor),
+                        sanitize_csv_field(category),
+                        f"{subtotal:.2f}",
+                        f"{tax:.2f}",
+                        f"{total:.2f}",
+                        sanitize_csv_field(payment),
+                        sanitize_csv_field(card_last_4),
+                        sanitize_csv_field(ref_num),
+                        os.path.basename(filepath),
+                        idx
+                    ])
+
+                # 4. QuickBooks Import CSV
+                qb_path = "QuickBooks_Bills.csv"
+                qb_exists = os.path.exists(qb_path)
+                with open(qb_path, "a", newline="", encoding="utf-8") as f:
+                    writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+                    if not qb_exists:
+                        writer.writerow(["Client","BillDate","Vendor","ExpenseAccount","Amount","Memo","RefNumber"])
+                    writer.writerow([
+                        sanitize_csv_field(active_client),
+                        sanitize_csv_field(date_str),
+                        sanitize_csv_field(vendor),
+                        sanitize_csv_field(category),
+                        f"{total:.2f}",
+                        sanitize_csv_field(category),
+                        sanitize_csv_field(ref_num)
+                    ])
+
+            # --- Client-Isolated QuickBooks Online Direct Sync ---
+            client_syncer = self.qbo_client.get_client_syncer(active_client) if hasattr(self.qbo_client, "get_client_syncer") else self.qbo_client
+            if client_syncer and client_syncer.is_configured():
                 try:
                     qbo_purchase_type = "CC" if is_cc else "Cash"
-                    selected_pay_acc_id = self.get_selected_payment_account_id()
+                    client_prof = self.profile_mgr.profiles.get(active_client, {})
+                    selected_pay_acc_id = client_prof.get("default_pay_account") or self.get_selected_payment_account_id()
                     expense_acc = category
                     qbo_memo = category
 
                     self.log(f"☁ Posting to '{active_client}' QBO: '{vendor}' (${total:.2f}) -> Account {selected_pay_acc_id} | Category: '{category}'", "info")
-                    qbo_purchase = self.qbo_client.create_expense(
+                    qbo_purchase = client_syncer.create_expense(
                         date_str=date_str,
                         purchase_type=qbo_purchase_type,
                         payee=vendor,
@@ -3557,7 +3750,6 @@ class FarmReceiptApp(_TK_BASE_TK):
                 except Exception as qbo_err:
                     self.log(f"⚠️ QuickBooks Online Sync Note ({active_client}): {qbo_err}", "warning")
 
-            safe_client = "".join([c for c in active_client if c.isalnum() or c in (' ', '_', '-')]).strip()
             cat_folder = category.replace(":", "_").replace(" ", "_").replace("&", "and")
             target_dir = os.path.join("./processed", safe_client, cat_folder)
             os.makedirs(target_dir, exist_ok=True)
@@ -3571,11 +3763,12 @@ class FarmReceiptApp(_TK_BASE_TK):
             except Exception:
                 pass
 
-            self.stats["total"] += 1
-            if "Cow" in category: self.stats["cows"] += total
-            elif "Chicken" in category: self.stats["chickens"] += total
-            else: self.stats["general"] += total
-            self.stats["dollars"] += total
+            with self.stats_lock:
+                self.stats["total"] += 1
+                if "Cow" in category: self.stats["cows"] += total
+                elif "Chicken" in category: self.stats["chickens"] += total
+                else: self.stats["general"] += total
+                self.stats["dollars"] += total
 
             prefix_str = f"[{idx}/{num_found}] " if num_found > 1 else ""
             self.log(
@@ -3586,7 +3779,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         self.save_hash(file_hash)
         self.update_stats_display()
 
-        archived = self.archive_original_file(filepath)
+        archived = self.archive_original_file(filepath, client_name=active_client)
         if archived:
             archived_folder = os.path.basename(os.path.dirname(archived))
             self.log(f"📦 Moved original file -> {archived_folder}/{os.path.basename(archived)} (Inbox kept clear!)", "info")
@@ -3594,11 +3787,19 @@ class FarmReceiptApp(_TK_BASE_TK):
         return True
 
     def update_stats_display(self):
-        self.lbl_stat_total.config(text=f"Total Scanned: {self.stats['total']}")
-        self.lbl_stat_cows.config(text=f"Farm:Cows: ${self.stats['cows']:.2f}")
-        self.lbl_stat_chickens.config(text=f"Farm:Chickens: ${self.stats['chickens']:.2f}")
-        self.lbl_stat_general.config(text=f"Supplies/General: ${self.stats['general']:.2f}")
-        self.lbl_stat_dollars.config(text=f"Total Sum: ${self.stats['dollars']:.2f}")
+        def _do_update():
+            with self.stats_lock:
+                total_cnt = self.stats['total']
+                cows_amt = self.stats['cows']
+                chick_amt = self.stats['chickens']
+                gen_amt = self.stats['general']
+                total_dol = self.stats['dollars']
+            self.lbl_stat_total.config(text=f"Total Scanned: {total_cnt}")
+            self.lbl_stat_cows.config(text=f"Farm:Cows: ${cows_amt:.2f}")
+            self.lbl_stat_chickens.config(text=f"Farm:Chickens: ${chick_amt:.2f}")
+            self.lbl_stat_general.config(text=f"Supplies/General: ${gen_amt:.2f}")
+            self.lbl_stat_dollars.config(text=f"Total Sum: ${total_dol:.2f}")
+        self.after(0, _do_update)
 
     # -------------------------------------------------------------------------
     # Scan Actions (Async / Threaded)
@@ -3628,23 +3829,44 @@ class FarmReceiptApp(_TK_BASE_TK):
             self.log(f"📁 Created inbox folder at {folder}. Drop receipt photos here!", "info")
             return
 
-        all_entries = os.listdir(folder)
-        files = [
-            os.path.join(folder, f) for f in all_entries
-            if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(VALID_EXTENSIONS)
-        ]
-        if not files:
-            self.log(f"ℹ️ Inbox is empty ({folder}). Drop photos or receipts in and scan again.", "info")
+        self.sync_client_inbox_folders()
+
+        # 1. Collect files from root inbox folder (target = currently active client)
+        active_client = self.qbo_client.active_client_name or "General"
+        candidates = []
+        try:
+            for f in os.listdir(folder):
+                p = os.path.join(folder, f)
+                if os.path.isfile(p) and f.lower().endswith(VALID_EXTENSIONS):
+                    candidates.append((p, active_client))
+        except Exception:
+            pass
+
+        # 2. Collect files from client-specific subfolders (target = that specific client)
+        client_names = self.profile_mgr.get_client_names()
+        for c_name in client_names:
+            c_safe = "".join([c for c in c_name if c.isalnum() or c in (' ', '_', '-')]).strip()
+            c_path = os.path.join(folder, c_safe)
+            if os.path.isdir(c_path):
+                try:
+                    for f in os.listdir(c_path):
+                        p = os.path.join(c_path, f)
+                        if os.path.isfile(p) and f.lower().endswith(VALID_EXTENSIONS):
+                            candidates.append((p, c_name))
+                except Exception:
+                    pass
+
+        if not candidates:
+            self.log(f"ℹ️ Inbox is empty ({folder} and client subfolders). Drop receipts in and scan again.", "info")
             return
 
-        active_client = self.qbo_client.active_client_name or "General"
-        self.log(f"⚡ Batch scanning {len(files)} files for [{active_client}] with category: [{self.category_var.get()}]...", "info")
-        def run_batch():
-            for f in files:
-                self.process_image_file(f)
-            self.log("🏁 Batch scan complete!", "success")
-
-        threading.Thread(target=run_batch, daemon=True).start()
+        self.log(f"⚡ Multi-Client Batch: Scanning {len(candidates)} file(s) across all clients concurrently in parallel...", "info")
+        for filepath, target_client in candidates:
+            with self.active_jobs_lock:
+                if filepath in self.active_jobs:
+                    continue
+                self.active_jobs.add(filepath)
+            self.worker_pool.submit(self._worker_process_receipt, filepath, target_client)
 
     def toggle_watch_mode(self):
         if self.is_watching:
@@ -3659,17 +3881,17 @@ class FarmReceiptApp(_TK_BASE_TK):
             folder = os.path.abspath(self.folder_var.get())
             os.makedirs(folder, exist_ok=True)
             self.folder_var.set(folder)
+            self.sync_client_inbox_folders()
             self.is_watching = True
             active_client = self.qbo_client.active_client_name or "General"
             self.watch_btn.config(text="⏸ Watching Active (Click to Stop)", bg="#15803d")
-            self.log(f"👁 CONTINUOUS WATCH MODE STARTED!", "success")
-            self.log(f"   🏢 Active Client Target: [{active_client}]", "highlight")
-            self.log(f"   📂 Actively watching local folder: '{folder}'", "highlight")
-            self.log(f"   🏷 Active Category: [{self.category_var.get()}]", "highlight")
-            self.log(f"   Drop any receipt photo or PDF - it processes immediately!", "info")
+            self.log(f"👁 CONTINUOUS MULTI-CLIENT WATCH MODE STARTED!", "success")
+            self.log(f"   📂 Actively watching local root: '{folder}'", "highlight")
+            self.log(f"   🏢 Monitored Clients: {', '.join(self.profile_mgr.get_client_names()) or 'Root Default'}", "highlight")
+            self.log(f"   ⚡ Drop files into any client subfolder — processes simultaneously without switching!", "info")
 
             if self.email_user and self.email_pass and self.watch_gmail_enabled:
-                self.log(f"   ✉ Actively monitoring Gmail ({self.email_user}) every 30 seconds.", "highlight")
+                self.log(f"   ✉ Actively monitoring Gmail ({self.email_user}) with Option B Sender Mapping.", "highlight")
                 self.last_gmail_check = 0
 
             self.watch_thread = threading.Thread(target=self.watch_loop, args=(folder,), daemon=True)
@@ -3677,15 +3899,33 @@ class FarmReceiptApp(_TK_BASE_TK):
 
     def watch_loop(self, folder):
         GMAIL_INTERVAL_SECS = 30
+        self.sync_client_inbox_folders()
+
         while self.is_watching:
             try:
                 if os.path.exists(folder):
-                    all_entries = os.listdir(folder)
-                    files = [
-                        os.path.join(folder, f) for f in all_entries
-                        if os.path.isfile(os.path.join(folder, f)) and f.lower().endswith(VALID_EXTENSIONS)
-                    ]
-                    for filepath in files:
+                    active_client = self.qbo_client.active_client_name or "General"
+                    candidates = []
+
+                    # 1. Check root inbox folder (active client fallback)
+                    for f in os.listdir(folder):
+                        p = os.path.join(folder, f)
+                        if os.path.isfile(p) and f.lower().endswith(VALID_EXTENSIONS):
+                            candidates.append((p, active_client))
+
+                    # 2. Check each client's dedicated subfolder
+                    client_names = self.profile_mgr.get_client_names()
+                    for c_name in client_names:
+                        c_safe = "".join([c for c in c_name if c.isalnum() or c in (' ', '_', '-')]).strip()
+                        c_path = os.path.join(folder, c_safe)
+                        if os.path.isdir(c_path):
+                            for f in os.listdir(c_path):
+                                p = os.path.join(c_path, f)
+                                if os.path.isfile(p) and f.lower().endswith(VALID_EXTENSIONS):
+                                    candidates.append((p, c_name))
+
+                    # Dispatch candidates into parallel worker pool
+                    for filepath, target_client in candidates:
                         if not self.is_watching:
                             break
                         if not is_file_ready(filepath):
@@ -3695,12 +3935,17 @@ class FarmReceiptApp(_TK_BASE_TK):
                         h = get_file_sha256(filepath)
                         if h in self.processed_hashes:
                             self.log(f"ℹ️ '{fname}' was already processed earlier. Archiving...", "info")
-                            self.archive_original_file(filepath)
+                            self.archive_original_file(filepath, client_name=target_client)
                             continue
 
-                        self.log(f"📥 [Inbox Drop Detected] Found: {fname}", "highlight")
-                        self.process_image_file(filepath)
-                        time.sleep(1)
+                        with self.active_jobs_lock:
+                            if filepath in self.active_jobs:
+                                continue
+                            self.active_jobs.add(filepath)
+
+                        self.log(f"📥 [Inbox Drop Detected] Found: {fname} for [{target_client}] (Dispatching worker thread)", "highlight")
+                        self.worker_pool.submit(self._worker_process_receipt, filepath, target_client)
+                        time.sleep(0.08)
 
                 if self.watch_gmail_enabled and self.email_user and self.email_pass:
                     now = time.time()
@@ -3737,6 +3982,7 @@ class FarmReceiptApp(_TK_BASE_TK):
             import imaplib
             import email
             from email.header import decode_header
+            from email.utils import parseaddr
 
             if not is_background_watch:
                 self.log(f"✉ Connecting to {self.imap_server} for {self.email_user}...", "info")
@@ -3771,6 +4017,16 @@ class FarmReceiptApp(_TK_BASE_TK):
                 msg = email.message_from_bytes(raw_msg)
                 sender = msg.get("From", "Unknown")
 
+                # --- Option B: Sender Mapping Lookup ---
+                _, sender_addr = parseaddr(sender)
+                matched_client = self.profile_mgr.find_client_by_sender_email(sender_addr)
+                if matched_client:
+                    target_client = matched_client
+                    self.log(f"🎯 [Email Routing - Option B] Sender '{sender_addr}' matched Client: [{matched_client}]", "highlight")
+                else:
+                    target_client = self.qbo_client.active_client_name or "General"
+                    self.log(f"ℹ️ [Email Routing] Sender '{sender_addr}' not mapped. Routing to active client [{target_client}]", "info")
+
                 for part in msg.walk():
                     filename = part.get_filename()
                     ctype = part.get_content_type().lower()
@@ -3794,22 +4050,28 @@ class FarmReceiptApp(_TK_BASE_TK):
                     if is_receipt_file:
                         content = part.get_payload(decode=True)
                         if content and len(content) > 100:
-                            save_path = os.path.join(inbox_dir, clean_filename)
+                            safe_client_folder = "".join([c for c in target_client if c.isalnum() or c in (' ', '_', '-')]).strip()
+                            target_client_inbox = os.path.join(inbox_dir, safe_client_folder)
+                            os.makedirs(target_client_inbox, exist_ok=True)
+
+                            save_path = os.path.join(target_client_inbox, clean_filename)
                             if os.path.exists(save_path):
                                 base_n, ext_n = os.path.splitext(clean_filename)
-                                save_path = os.path.join(inbox_dir, f"{base_n}_{int(time.time())}{ext_n}")
+                                save_path = os.path.join(target_client_inbox, f"{base_n}_{int(time.time())}{ext_n}")
                             with open(save_path, "wb") as f_att:
                                 f_att.write(content)
 
-                            self.log(f"📥 [Gmail] Saved attachment '{os.path.basename(save_path)}' from {sender}", "info")
-                            if self.process_image_file(save_path):
-                                count += 1
+                            self.log(f"📥 [Gmail] Saved attachment for [{target_client}]: '{os.path.basename(save_path)}'", "info")
+                            with self.active_jobs_lock:
+                                self.active_jobs.add(save_path)
+                            self.worker_pool.submit(self._worker_process_receipt, save_path, target_client)
+                            count += 1
 
                 mail.store(m_id, '+FLAGS', '\\Seen')
 
             mail.logout()
             if count > 0:
-                self.log(f"✅ [Gmail] Successfully processed {count} receipt(s) from email!", "success")
+                self.log(f"✅ [Gmail] Dispatched {count} receipt(s) from email to concurrent multi-client worker pool!", "success")
             elif not is_background_watch:
                 self.log("ℹ️ [Gmail] Checked unread emails, but no receipt attachments were found.", "info")
 
