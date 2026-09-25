@@ -4084,16 +4084,478 @@ class FarmReceiptApp(_TK_BASE_TK):
 
 
 # -----------------------------------------------------------------------------
+# Headless Worker Engine (For Multi-VM Distributed Clusters & Server Daemons)
+# -----------------------------------------------------------------------------
+class HeadlessWorkerEngine:
+    """
+    Dedicated Headless Engine for Virtual Machine Worker Nodes.
+    Runs 24/7 in the background without requiring a GUI, display server, or X11.
+    Designed for single-operator centralized processing and multi-VM clusters.
+    Features:
+      - Multi-client inbox subfolder scanning (inbox/<ClientName>/)
+      - Distributed atomic lockfiles to prevent race conditions across multiple VM nodes
+      - Option B Sender-Email Mapping processing via IMAP
+      - Concurrent worker pool with ThreadPoolExecutor
+      - Thread-safe CSV logging and Client-Isolated QuickBooks Online API Sync
+    """
+    def __init__(self, folder="inbox", worker_id=None, max_workers=6, poll_interval=2.0):
+        self.folder = os.path.abspath(folder)
+        self.worker_id = worker_id or os.getenv("WORKER_NODE_ID") or f"vm-node-{socket.gethostname()[:8]}"
+        self.max_workers = max_workers
+        self.poll_interval = poll_interval
+        self.worker_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers, 
+            thread_name_prefix=f"VMWorker_{self.worker_id}"
+        )
+        self.active_jobs = set()
+        self.active_jobs_lock = threading.Lock()
+        self.file_write_lock = threading.Lock()
+        self.hash_lock = threading.Lock()
+        self.key_lock = threading.Lock()
+        self.key_index = 0
+        self.running = True
+
+        # API Keys & Model
+        raw_keys = os.getenv("GEMINI_API_KEYS", "") or os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+        self.api_keys = [k.strip() for k in raw_keys.replace(";", ",").split(",") if k.strip()]
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+        # Vault & Multi-Client Profiles
+        self.vault = SecureVault()
+        self.profile_mgr = ClientProfileManager(self.vault)
+        self.qbo_client = QuickBooksOnlineSync(self.profile_mgr)
+
+        # Hash Cache
+        self.processed_hashes = set()
+        self.load_hash_cache()
+
+        # Email Settings (Option B Sender Mapping)
+        self.email_user = os.getenv("EMAIL_USER", "")
+        self.email_pass = os.getenv("EMAIL_PASS", "")
+        self.imap_server = os.getenv("IMAP_SERVER", "imap.gmail.com")
+        self.watch_gmail = os.getenv("WATCH_GMAIL", "true").lower() in ("1", "true", "yes")
+        self.last_gmail_check = 0
+
+    def log(self, msg: str, level="info"):
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        prefix = f"[{ts}] [{self.worker_id}]"
+        print(f"{prefix} {msg}")
+        try:
+            with open("vm_worker.log", "a", encoding="utf-8") as f:
+                f.write(f"{prefix} {msg}\n")
+        except Exception:
+            pass
+
+    def load_hash_cache(self):
+        cache_file = ".processed_hashes.txt"
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "r") as f:
+                    self.processed_hashes = set(line.strip() for line in f if line.strip())
+            except Exception:
+                pass
+
+    def save_hash(self, file_hash):
+        with self.hash_lock:
+            self.processed_hashes.add(file_hash)
+            try:
+                with open(".processed_hashes.txt", "a") as f:
+                    f.write(f"{file_hash}\n")
+            except Exception:
+                pass
+
+    def get_next_key(self):
+        if not self.api_keys:
+            return None
+        with self.key_lock:
+            key = self.api_keys[self.key_index % len(self.api_keys)]
+            self.key_index = (self.key_index + 1) % len(self.api_keys)
+            return key
+
+    def sync_client_folders(self):
+        os.makedirs(self.folder, exist_ok=True)
+        for client in self.profile_mgr.get_client_names():
+            safe_name = "".join([c for c in client if c.isalnum() or c in (' ', '_', '-')]).strip()
+            if safe_name:
+                os.makedirs(os.path.join(self.folder, safe_name), exist_ok=True)
+                os.makedirs(os.path.join(self.folder, "inbox_archive", safe_name), exist_ok=True)
+
+    def try_claim_file(self, filepath: str) -> bool:
+        """Atomic lockfile creation: ensures only 1 VM worker processes this file across a shared network drive."""
+        lock_path = f"{filepath}.lock.{self.worker_id}"
+        # Check for other locks
+        parent = os.path.dirname(filepath)
+        base = os.path.basename(filepath)
+        for entry in os.listdir(parent):
+            if entry.startswith(f"{base}.lock.") and not entry.endswith(f".{self.worker_id}"):
+                # Another worker node has this locked. Check for stale lock (> 10 mins)
+                lock_file = os.path.join(parent, entry)
+                try:
+                    if time.time() - os.path.getmtime(lock_file) > 600:
+                        os.remove(lock_file)
+                    else:
+                        return False
+                except Exception:
+                    return False
+
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, 'w') as f:
+                f.write(f"worker={self.worker_id}\ntime={time.time()}\n")
+            return True
+        except (FileExistsError, OSError):
+            return False
+
+    def release_claim_file(self, filepath: str):
+        lock_path = f"{filepath}.lock.{self.worker_id}"
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except Exception:
+            pass
+
+    def archive_original_file(self, filepath, client_name=None):
+        if not os.path.exists(filepath):
+            return None
+        try:
+            parent_dir = os.path.dirname(filepath)
+            base_archive = os.path.join(parent_dir, "inbox_archive") if os.path.basename(parent_dir).lower() == "inbox" else os.path.join(self.folder, "inbox_archive")
+            if client_name:
+                safe_client = "".join([c for c in client_name if c.isalnum() or c in (' ', '_', '-')]).strip()
+                archive_dir = os.path.join(base_archive, safe_client)
+            else:
+                archive_dir = base_archive
+            os.makedirs(archive_dir, exist_ok=True)
+
+            filename = os.path.basename(filepath)
+            dest_path = os.path.join(archive_dir, filename)
+            if os.path.exists(dest_path):
+                base_name, ext = os.path.splitext(filename)
+                dest_path = os.path.join(archive_dir, f"{base_name}_{int(time.time())}{ext}")
+            shutil.move(filepath, dest_path)
+            return dest_path
+        except Exception as e:
+            self.log(f"⚠️ Archive notice: {e}", "warning")
+            return None
+
+    def process_file(self, filepath: str, client_name: str):
+        try:
+            if not os.path.exists(filepath):
+                return False
+
+            file_hash = get_file_sha256(filepath)
+            if file_hash in self.processed_hashes:
+                self.log(f"⏩ Skipping {os.path.basename(filepath)} (already processed earlier)", "info")
+                self.archive_original_file(filepath, client_name)
+                return False
+
+            if not self.api_keys:
+                self.log("❌ Cannot process: No Gemini API keys configured. Set GEMINI_API_KEY in .env", "error")
+                return False
+
+            self.log(f"🔍 Analyzing for [{client_name}]: {os.path.basename(filepath)}...", "info")
+
+            with open(filepath, "rb") as f_img:
+                img_bytes = f_img.read()
+            pil_img = Image.open(io.BytesIO(img_bytes))
+            full_b64 = prepare_receipt_image(pil_img)
+
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": "Analyze this photo. Detect the store vendor, date, line items, payment method, card last 4 digits, and total amount. Return ONE receipt entry unless multiple completely physically separated receipts are laid side-by-side."},
+                        {"inlineData": {"mimeType": "image/jpeg", "data": full_b64}}
+                    ]
+                }],
+                "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+                "generationConfig": {
+                    "temperature": 0.0,
+                    "responseMimeType": "application/json",
+                    "responseSchema": RECEIPT_SCHEMA
+                }
+            }
+
+            active_key = self.get_next_key()
+            keys_to_try = [active_key] + [k for k in self.api_keys if k != active_key]
+            data = None
+
+            for key_idx, key in enumerate(keys_to_try):
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model_name}:generateContent?key={key}"
+                try:
+                    resp = GLOBAL_SESSION.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=35)
+                    if resp.status_code == 200:
+                        res_json = resp.json()
+                        text_part = res_json['candidates'][0]['content']['parts'][0]['text']
+                        data = json.loads(text_part.strip())
+                        break
+                    elif resp.status_code == 429:
+                        self.log(f"⚠️ Rate limit (429) hit. Switching to next key...", "warning")
+                        continue
+                except Exception as e:
+                    self.log(f"⚠️ API call exception with key #{key_idx+1}: {e}", "warning")
+
+            if not data:
+                self.log(f"❌ Extraction failed for {os.path.basename(filepath)}", "error")
+                return False
+
+            receipt_list = []
+            if isinstance(data, dict):
+                if "receipts" in data and isinstance(data["receipts"], list):
+                    receipt_list = data["receipts"]
+                elif "vendor" in data:
+                    receipt_list = [data]
+
+            if not receipt_list:
+                self.log(f"❌ No valid receipts detected in {os.path.basename(filepath)}", "error")
+                return False
+
+            safe_client = "".join([c for c in client_name if c.isalnum() or c in (' ', '_', '-')]).strip() or "General"
+            client_dir = os.path.join("./processed", safe_client)
+            os.makedirs(client_dir, exist_ok=True)
+
+            for idx, r_data in enumerate(receipt_list, start=1):
+                vendor = r_data.get("vendor", "Unknown Vendor").strip()
+                date_str = r_data.get("date", datetime.now().strftime("%Y-%m-%d")).strip()
+                total = float(r_data.get("total", 0.0))
+                category = r_data.get("category", "Supplies & Materials")
+                subtotal = float(r_data.get("subtotal", total))
+                tax = float(r_data.get("tax", 0.0))
+                payment = r_data.get("payment_method", "Cash/Card")
+                raw_card = str(r_data.get("card_last_4", "")).strip()
+                card_last_4 = "".join([c for c in raw_card if c.isdigit()])[-4:]
+                is_cc = bool(card_last_4) or ("card" in payment.lower()) or ("visa" in payment.lower()) or ("mastercard" in payment.lower())
+                ref_num = "CC" if is_cc else "Cash"
+
+                # Thread-safe logging
+                with self.file_write_lock:
+                    csv_path = "Receipt_Data.csv"
+                    csv_exists = os.path.exists(csv_path)
+                    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+                        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+                        if not csv_exists:
+                            writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Worker_Node"])
+                        writer.writerow([
+                            sanitize_csv_field(client_name),
+                            sanitize_csv_field(date_str),
+                            sanitize_csv_field(vendor),
+                            sanitize_csv_field(category),
+                            f"{subtotal:.2f}",
+                            f"{tax:.2f}",
+                            f"{total:.2f}",
+                            sanitize_csv_field(payment),
+                            sanitize_csv_field(card_last_4),
+                            sanitize_csv_field(ref_num),
+                            os.path.basename(filepath),
+                            idx,
+                            self.worker_id
+                        ])
+
+                    # Client-specific CSV
+                    cl_csv_path = os.path.join(client_dir, f"Receipt_Data_{safe_client}.csv")
+                    cl_exists = os.path.exists(cl_csv_path)
+                    with open(cl_csv_path, "a", newline="", encoding="utf-8") as f_cl:
+                        cl_writer = csv.writer(f_cl, quoting=csv.QUOTE_MINIMAL)
+                        if not cl_exists:
+                            cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                        cl_writer.writerow([
+                            sanitize_csv_field(client_name),
+                            sanitize_csv_field(date_str),
+                            sanitize_csv_field(vendor),
+                            sanitize_csv_field(category),
+                            f"{subtotal:.2f}",
+                            f"{tax:.2f}",
+                            f"{total:.2f}",
+                            sanitize_csv_field(payment),
+                            sanitize_csv_field(card_last_4),
+                            sanitize_csv_field(ref_num),
+                            os.path.basename(filepath),
+                            idx
+                        ])
+
+                # Client-isolated QBO Sync
+                client_syncer = self.qbo_client.get_client_syncer(client_name)
+                if client_syncer and client_syncer.is_configured():
+                    try:
+                        client_prof = self.profile_mgr.profiles.get(client_name, {})
+                        pay_acc = client_prof.get("default_pay_account", "41")
+                        qbo_purchase = client_syncer.create_expense(
+                            date_str=date_str,
+                            purchase_type="CC" if is_cc else "Cash",
+                            payee=vendor,
+                            payment_account_id=pay_acc,
+                            expense_account=category,
+                            memo=category,
+                            charge=total,
+                            ref_number=ref_num
+                        )
+                        qbo_id = qbo_purchase.get("Id", "OK")
+                        self.log(f"⚡ [{client_name}] Synced to QuickBooks Online: #{qbo_id} (${total:.2f}) -> {category}", "info")
+                    except Exception as qbo_err:
+                        self.log(f"⚠️ QuickBooks Sync notice ({client_name}): {qbo_err}", "warning")
+
+                self.log(f"✅ [{client_name}] Extracted: {vendor} | ${total:.2f} | Category: {category} | Date: {date_str}", "info")
+
+            self.save_hash(file_hash)
+            self.archive_original_file(filepath, client_name)
+            return True
+
+        except Exception as e:
+            self.log(f"❌ Error processing {os.path.basename(filepath)}: {e}", "error")
+            return False
+        finally:
+            self.release_claim_file(filepath)
+            with self.active_jobs_lock:
+                self.active_jobs.discard(filepath)
+
+    def _worker_task(self, filepath: str, client_name: str):
+        self.process_file(filepath, client_name)
+
+    def check_gmail(self):
+        if not self.email_user or not self.email_pass or not self.watch_gmail:
+            return
+        try:
+            import imaplib
+            import email
+            from email.header import decode_header
+            from email.utils import parseaddr
+
+            mail = imaplib.IMAP4_SSL(self.imap_server, timeout=12)
+            mail.login(self.email_user, self.email_pass)
+            mail.select("INBOX")
+            status, messages = mail.search(None, '(UNSEEN)')
+            if status != "OK" or not messages or not messages[0]:
+                mail.logout()
+                return
+
+            msg_ids = messages[0].split()
+            for m_id in msg_ids:
+                status, data = mail.fetch(m_id, "(RFC822)")
+                if status != "OK":
+                    continue
+                raw_msg = data[0][1]
+                msg = email.message_from_bytes(raw_msg)
+                sender = msg.get("From", "Unknown")
+                _, sender_addr = parseaddr(sender)
+                matched_client = self.profile_mgr.find_client_by_sender_email(sender_addr)
+                target_client = matched_client or "General"
+
+                for part in msg.walk():
+                    filename = part.get_filename()
+                    ctype = part.get_content_type().lower()
+                    if filename:
+                        decoded = decode_header(filename)
+                        clean_fn = "".join([p.decode(enc or "utf-8", errors="ignore") if isinstance(p, bytes) else p for p, enc in decoded])
+                        if clean_fn.lower().endswith(VALID_EXTENSIONS):
+                            content = part.get_payload(decode=True)
+                            if content and len(content) > 100:
+                                safe_c = "".join([c for c in target_client if c.isalnum() or c in (' ', '_', '-')]).strip()
+                                client_folder = os.path.join(self.folder, safe_c)
+                                os.makedirs(client_folder, exist_ok=True)
+                                save_p = os.path.join(client_folder, clean_fn)
+                                with open(save_p, "wb") as f_out:
+                                    f_out.write(content)
+                                self.log(f"📥 [Gmail Option B] Saved attachment for [{target_client}]: {clean_fn}", "info")
+                mail.store(m_id, '+FLAGS', '\\Seen')
+            mail.logout()
+        except Exception as e:
+            self.log(f"⚠️ Gmail poll notice: {e}", "warning")
+
+    def run_forever(self):
+        self.log(f"🚀 HEADLESS VM WORKER NODE STARTED: [{self.worker_id}]", "info")
+        self.log(f"   📂 Monitoring Inbox: '{self.folder}'", "info")
+        self.log(f"   🏢 Registered Clients: {', '.join(self.profile_mgr.get_client_names()) or 'Default'}", "info")
+        self.log(f"   ⚡ Concurrency: {self.max_workers} simultaneous worker threads with distributed file locking", "info")
+        self.sync_client_folders()
+
+        while self.running:
+            try:
+                # 1. Discover receipts across root and client subfolders
+                candidates = []
+                if os.path.exists(self.folder):
+                    # Check root folder (General)
+                    for f in os.listdir(self.folder):
+                        p = os.path.join(self.folder, f)
+                        if os.path.isfile(p) and f.lower().endswith(VALID_EXTENSIONS) and not any(k in f for k in ('.lock.', '.tmp')):
+                            candidates.append((p, "General"))
+
+                    # Check client subfolders
+                    for c_name in self.profile_mgr.get_client_names():
+                        safe_c = "".join([c for c in c_name if c.isalnum() or c in (' ', '_', '-')]).strip()
+                        c_dir = os.path.join(self.folder, safe_c)
+                        if os.path.isdir(c_dir):
+                            for f in os.listdir(c_dir):
+                                p = os.path.join(c_dir, f)
+                                if os.path.isfile(p) and f.lower().endswith(VALID_EXTENSIONS) and not any(k in f for k in ('.lock.', '.tmp')):
+                                    candidates.append((p, c_name))
+
+                # 2. Dispatch candidates using distributed atomic claim
+                for filepath, client_name in candidates:
+                    with self.active_jobs_lock:
+                        if filepath in self.active_jobs:
+                            continue
+                    if not is_file_ready(filepath):
+                        continue
+
+                    # Try claiming lockfile atomically across VMs
+                    if not self.try_claim_file(filepath):
+                        continue
+
+                    with self.active_jobs_lock:
+                        self.active_jobs.add(filepath)
+
+                    self.log(f"📥 [Claimed Job] {os.path.basename(filepath)} for [{client_name}] -> Dispatching worker thread", "info")
+                    self.worker_pool.submit(self._worker_task, filepath, client_name)
+
+                # 3. Check Gmail every 30s
+                now = time.time()
+                if now - self.last_gmail_check >= 30:
+                    self.last_gmail_check = now
+                    self.check_gmail()
+
+            except Exception as loop_err:
+                self.log(f"⚠️ Worker loop notice: {loop_err}", "warning")
+
+            time.sleep(self.poll_interval)
+
+
+# -----------------------------------------------------------------------------
 # Entry Point
 # -----------------------------------------------------------------------------
 def main():
-    # 1. Verify Tkinter availability
+    import argparse
+    parser = argparse.ArgumentParser(description="Farm & Small Business Receipt Processor — Operator & VM Cluster Edition")
+    parser.add_argument("--headless", action="store_true", help="Run in headless worker node mode for VMs/servers (no GUI/Tkinter required)")
+    parser.add_argument("--worker-id", type=str, default=None, help="Identifier for this worker node (e.g. vm-worker-1)")
+    parser.add_argument("--folder", type=str, default="inbox", help="Path to the inbox root folder")
+    parser.add_argument("--workers", type=int, default=6, help="Number of concurrent worker threads")
+    parser.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
+    args, unknown = parser.parse_known_args()
+
+    # If --headless is requested or running in non-interactive environment
+    is_headless = args.headless or os.getenv("HEADLESS_WORKER", "").lower() in ("1", "true", "yes")
+
+    if is_headless:
+        worker_engine = HeadlessWorkerEngine(
+            folder=args.folder,
+            worker_id=args.worker_id,
+            max_workers=args.workers,
+            poll_interval=args.interval
+        )
+        try:
+            worker_engine.run_forever()
+        except KeyboardInterrupt:
+            print("\n[INFO] Headless worker shutting down gracefully...")
+        return
+
+    # 1. Verify Tkinter availability for Desktop GUI mode
     if tk is None:
         err_msg = (
             "\n" + "="*70 + "\n"
-            "[ERROR] Tkinter GUI library is not available in this Python installation.\n"
-            "On Windows: Run your Python installer again -> Click 'Modify' ->\n"
-            "Ensure the checkbox 'tcl/tk and IDLE' is checked, then finish setup.\n"
+            "[INFO] Tkinter GUI library is not available in this Python installation.\n"
+            "To run the visual Desktop App on Windows:\n"
+            "   Run Python installer -> Click 'Modify' -> Check 'tcl/tk and IDLE'.\n\n"
+            "To run in HEADLESS VM WORKER mode (no GUI required):\n"
+            "   python receipt_processor.py --headless --worker-id vm-node-1\n"
             + "="*70 + "\n"
         )
         print(err_msg)

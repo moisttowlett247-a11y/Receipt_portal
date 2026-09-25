@@ -6,6 +6,9 @@ import {
   REQUIREMENTS_TXT,
   ENV_EXAMPLE,
   README_DESKTOP_APP_TXT,
+  RUN_VM_WORKER_SH,
+  RUN_VM_WORKER_BAT,
+  README_VM_CLUSTER_TXT
 } from './embeddedDesktopFiles';
 
 export interface BundleFileItem {
@@ -36,6 +39,16 @@ export const EMBEDDED_FILES: Record<string, { content: string; name: string; mim
     content: RUN_RECEIPT_PROCESSOR_SH,
     mimeType: 'application/x-sh;charset=utf-8',
   },
+  vm_sh: {
+    name: 'run_vm_worker.sh',
+    content: RUN_VM_WORKER_SH,
+    mimeType: 'application/x-sh;charset=utf-8',
+  },
+  vm_bat: {
+    name: 'run_vm_worker.bat',
+    content: RUN_VM_WORKER_BAT,
+    mimeType: 'application/x-bat;charset=utf-8',
+  },
   req: {
     name: 'requirements.txt',
     content: REQUIREMENTS_TXT,
@@ -51,40 +64,67 @@ export const EMBEDDED_FILES: Record<string, { content: string; name: string; mim
     content: README_DESKTOP_APP_TXT,
     mimeType: 'text/plain;charset=utf-8',
   },
+  vm_doc: {
+    name: 'README_VM_CLUSTER.txt',
+    content: README_VM_CLUSTER_TXT,
+    mimeType: 'text/plain;charset=utf-8',
+  },
 };
 
 export const BUNDLE_FILES: BundleFileItem[] = [
-  {
-    id: 'bat',
-    name: 'run_receipt_processor.bat',
-    path: '/run_receipt_processor.bat',
-    type: 'bat',
-    description: '1-Click Windows launcher. Automatically checks Python PATH, installs dependencies, and boots GUI.',
-    recommendedFor: 'Windows 10 / 11 Users',
-    sizeEstimate: '~2.3 KB',
-    isExecutableOrBatch: true,
-    mimeType: 'application/x-bat;charset=utf-8',
-  },
   {
     id: 'py',
     name: 'receipt_processor.py',
     path: '/receipt_processor.py',
     type: 'script',
-    description: 'Core desktop application with Tkinter GUI, Gemini OCR, QuickBooks Online sync, and live license checker.',
-    recommendedFor: 'All Operating Systems (Windows, macOS, Linux)',
-    sizeEstimate: '~142 KB',
+    description: 'Dual-mode processing engine: Visual Tkinter GUI for your workstation or --headless worker node for VM clusters.',
+    recommendedFor: 'Operator Workstation & VM Worker Nodes',
+    sizeEstimate: '~165 KB',
     mimeType: 'text/x-python;charset=utf-8',
+  },
+  {
+    id: 'bat',
+    name: 'run_receipt_processor.bat',
+    path: '/run_receipt_processor.bat',
+    type: 'bat',
+    description: '1-Click Windows workstation GUI launcher with automatic dependency checking.',
+    recommendedFor: 'Operator Windows Workstation',
+    sizeEstimate: '~2.5 KB',
+    isExecutableOrBatch: true,
+    mimeType: 'application/x-bat;charset=utf-8',
   },
   {
     id: 'sh',
     name: 'run_receipt_processor.sh',
     path: '/run_receipt_processor.sh',
     type: 'sh',
-    description: '1-Click Shell launcher for macOS and Linux. Configures environment and launches Python desktop app.',
-    recommendedFor: 'macOS & Ubuntu / Linux Users',
-    sizeEstimate: '~1.1 KB',
+    description: '1-Click macOS/Linux workstation GUI launcher.',
+    recommendedFor: 'Operator macOS & Ubuntu Desktop',
+    sizeEstimate: '~1.2 KB',
     isExecutableOrBatch: true,
     mimeType: 'application/x-sh;charset=utf-8',
+  },
+  {
+    id: 'vm_sh',
+    name: 'run_vm_worker.sh',
+    path: '/run_vm_worker.sh',
+    type: 'sh',
+    description: '1-Click Headless VM Worker Launcher for Linux/Cloud Virtual Machines (zero display server/X11 needed).',
+    recommendedFor: 'Linux VMs (AWS, Proxmox, Azure, DigitalOcean)',
+    sizeEstimate: '~1.2 KB',
+    isExecutableOrBatch: true,
+    mimeType: 'application/x-sh;charset=utf-8',
+  },
+  {
+    id: 'vm_bat',
+    name: 'run_vm_worker.bat',
+    path: '/run_vm_worker.bat',
+    type: 'bat',
+    description: '1-Click Headless VM Worker Launcher for Windows Hyper-V or server instances.',
+    recommendedFor: 'Windows Server & Hyper-V VMs',
+    sizeEstimate: '~1.1 KB',
+    isExecutableOrBatch: true,
+    mimeType: 'application/x-bat;charset=utf-8',
   },
   {
     id: 'req',
@@ -101,9 +141,19 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     name: '.env.example',
     path: '/.env.example',
     type: 'config',
-    description: 'Environment template for Gemini OCR API key and optional email IMAP credentials.',
+    description: 'Environment template for Gemini OCR API keys, QuickBooks credentials, and intake email IMAP settings.',
     recommendedFor: 'Configuration Template',
     sizeEstimate: '~650 B',
+    mimeType: 'text/plain;charset=utf-8',
+  },
+  {
+    id: 'vm_doc',
+    name: 'README_VM_CLUSTER.txt',
+    path: '/README_VM_CLUSTER.txt',
+    type: 'doc',
+    description: 'Complete architecture guide for running multiple worker VMs with shared storage and distributed atomic locks.',
+    recommendedFor: 'Operator Multi-VM Setup Guide',
+    sizeEstimate: '~3.2 KB',
     mimeType: 'text/plain;charset=utf-8',
   },
   {
@@ -111,11 +161,11 @@ export const BUNDLE_FILES: BundleFileItem[] = [
     name: 'README_DESKTOP_APP.txt',
     path: '/README_DESKTOP_APP.txt',
     type: 'doc',
-    description: 'Setup instructions, system requirements, troubleshooting tips, and license activation walkthrough.',
-    recommendedFor: 'Quickstart & Documentation',
+    description: 'Quick start guide for operator workstation installation.',
+    recommendedFor: 'Operator Documentation',
     sizeEstimate: '~1.8 KB',
     mimeType: 'text/plain;charset=utf-8',
-  }
+  },
 ];
 
 /**

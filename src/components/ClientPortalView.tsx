@@ -1,36 +1,39 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   ShieldCheck, 
-  Key, 
+  UploadCloud, 
+  FileText, 
   CheckCircle2, 
-  XCircle, 
   Clock, 
-  ChevronRight, 
   Mail, 
-  Copy, 
-  Check,
-  Sparkles,
+  Sparkles, 
+  User, 
+  Building, 
+  Send, 
+  ExternalLink, 
+  Check, 
+  Building2, 
+  Receipt, 
+  AlertCircle,
+  FileCheck2,
+  Trash2,
+  Calendar,
+  DollarSign,
   Tag,
-  Send,
-  X,
-  Shield,
-  FileSpreadsheet,
-  User,
-  Building,
+  Camera,
   Layers,
-  MessageSquare,
-  Zap,
-  Download,
-  Terminal,
-  Laptop,
-  ExternalLink,
-  Unlock
+  HelpCircle,
+  Lock,
+  ChevronRight
 } from 'lucide-react';
-import { LicenseKeyRecord, ProductInquiry, getPlanDurationDays, getPlanLabel, ClientAccountSession } from '../types';
-import { computeSha256Hex } from '../hashUtils';
-import { CLOUDFLARE_WORKER_URL, unlockHwidOnCloudflare } from '../licenseSyncService';
+import { LicenseKeyRecord, ProductInquiry, ClientAccountSession } from '../types';
 import { getCurrentClientSession, clearClientSession } from '../clientAccountService';
-import { downloadFullBundleZip, triggerFileDownload } from '../bundleDownloadService';
+import { 
+  getClientSubmissions, 
+  addClientSubmission, 
+  ClientSubmission, 
+  deleteSubmission 
+} from '../clientSubmissionService';
 import { ClientAuthModal } from './ClientAuthModal';
 import { ClientAccountModal } from './ClientAccountModal';
 
@@ -48,250 +51,148 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   currentVersion,
   onInquirySubmitted,
   onOpenLegal,
-  onNavigateToAdmin,
-  onLicenseRevoked
+  onNavigateToAdmin
 }) => {
   const [clientSession, setClientSession] = useState<ClientAccountSession | null>(() => getCurrentClientSession());
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'register'>('login');
   const [showAccountModal, setShowAccountModal] = useState(false);
 
-  const [clientKeyInput, setClientKeyInput] = useState('');
-  const [checkResult, setCheckResult] = useState<{
-    valid: boolean;
-    plan?: string;
-    expiresDate?: string;
-    status?: string;
-    message: string;
-  } | null>(null);
-  
-  // Early Access / Product Interest Form State
-  const [inquiryName, setInquiryName] = useState('');
-  const [inquiryEmail, setInquiryEmail] = useState('');
-  const [inquiryCompany, setInquiryCompany] = useState('');
-  const [inquiryVolume, setInquiryVolume] = useState('50 - 200 receipts / month');
-  const [inquiryPlan, setInquiryPlan] = useState('6-Month Semi-Annual ($59) - Recommended');
+  // Submissions state
+  const [submissions, setSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
+  const [selectedCategoryHint, setSelectedCategoryHint] = useState('Auto-Detect (AI)');
+  const [submissionMemo, setSubmissionMemo] = useState('');
+  const [clientEntityName, setClientEntityName] = useState(() => clientSession?.displayName || 'Prairie Wind Agriculture');
+  const [clientEntityEmail, setClientEntityEmail] = useState(() => clientSession?.email || 'billing@prairiewind.example.com');
+
+  // File upload state
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadSuccessCount, setUploadSuccessCount] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'services'>('upload');
+
+  // Service Request Form State
+  const [inquiryName, setInquiryName] = useState(() => clientSession?.displayName || '');
+  const [inquiryEmail, setInquiryEmail] = useState(() => clientSession?.email || '');
+  const [inquiryCompany, setInquiryCompany] = useState(() => clientSession?.companyName || '');
+  const [inquiryPlan, setInquiryPlan] = useState('Monthly Bookkeeping & Sync ($49/mo)');
   const [inquiryNotes, setInquiryNotes] = useState('');
   const [isSubmittingInquiry, setIsSubmittingInquiry] = useState(false);
-  const [inquirySubmittedSuccess, setInquirySubmittedSuccess] = useState(false);
-  const [inquiryError, setInquiryError] = useState<string | null>(null);
+  const [inquirySuccess, setInquirySuccess] = useState(false);
 
-  // OS detection
-  const [detectedOs, setDetectedOs] = useState<'windows' | 'mac' | 'linux'>('windows');
-  const [isDownloadingApp, setIsDownloadingApp] = useState(false);
-  const [copiedQuickKey, setCopiedQuickKey] = useState(false);
+  // Filter state for history
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'QUEUED' | 'SYNCED_QBO'>('ALL');
 
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const userAgent = window.navigator.userAgent.toLowerCase();
-      if (userAgent.includes('mac')) {
-        setDetectedOs('mac');
-      } else if (userAgent.includes('linux')) {
-        setDetectedOs('linux');
-      } else {
-        setDetectedOs('windows');
-      }
-    }
-  }, []);
-
-  const handleDownloadAppBundle = async () => {
-    setIsDownloadingApp(true);
-    try {
-      await downloadFullBundleZip(undefined, {
-        licenseKey: clientSession?.licenseKey,
-        clientName: clientSession?.displayName,
-        clientEmail: clientSession?.email,
-        customZipName: clientSession?.displayName 
-          ? `ReceiptProcessor_${clientSession.displayName.replace(/[^a-zA-Z0-9]/g, '_')}.zip`
-          : 'ReceiptProcessor_DesktopPackage.zip'
-      });
-    } catch {
-      // Handled in downloadFullBundleZip
-    } finally {
-      setIsDownloadingApp(false);
-    }
-  };
-
-  // Pricing & Order Request Modal state
-  const [selectedPlanForOrder, setSelectedPlanForOrder] = useState<{
-    id: string;
-    name: string;
-    price: string;
-    originalPrice?: string;
-    period: string;
-    durationDays: number;
-    savingsBadge?: string;
-  } | null>(null);
-
-  const [orderName, setOrderName] = useState('');
-  const [orderEmail, setOrderEmail] = useState('');
-  const [orderNote, setOrderNote] = useState('');
-  const [copiedOrderDetails, setCopiedOrderDetails] = useState(false);
-  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
-  const [orderSubmittedSuccess, setOrderSubmittedSuccess] = useState(false);
-  const [orderError, setOrderError] = useState<string | null>(null);
-
-  // Auto-populate inquiry and order inputs if client is logged in
   useEffect(() => {
     if (clientSession) {
-      if (clientSession.displayName && !inquiryName) {
+      if (clientSession.displayName) {
+        setClientEntityName(clientSession.displayName);
         setInquiryName(clientSession.displayName);
       }
-      if (clientSession.email && !inquiryEmail) {
+      if (clientSession.email) {
+        setClientEntityEmail(clientSession.email);
         setInquiryEmail(clientSession.email);
       }
-      if (clientSession.companyName && !inquiryCompany) {
+      if (clientSession.companyName) {
         setInquiryCompany(clientSession.companyName);
-      }
-      if (clientSession.displayName && !orderName) {
-        setOrderName(clientSession.displayName);
-      }
-      if (clientSession.email && !orderEmail) {
-        setOrderEmail(clientSession.email);
-      }
-      if (clientSession.licenseKey && !clientKeyInput) {
-        setClientKeyInput(clientSession.licenseKey);
       }
     }
   }, [clientSession]);
 
-  const handleOpenOrderModal = (plan: {
-    id: string;
-    name: string;
-    price: string;
-    originalPrice?: string;
-    period: string;
-    durationDays: number;
-    savingsBadge?: string;
-  }) => {
-    setSelectedPlanForOrder(plan);
-    setCopiedOrderDetails(false);
-    setOrderSubmittedSuccess(false);
-    setOrderError(null);
+  const refreshSubmissions = () => {
+    setSubmissions(getClientSubmissions());
+  };
 
-    // Keep the Request Access form plan perfectly in sync with the plan clicked in pricing
-    if (plan.id === 'MONTHLY') {
-      setInquiryPlan('Monthly Plan ($15/mo)');
-    } else if (plan.id === '3MONTH') {
-      setInquiryPlan('3-Month Quarterly ($39)');
-    } else if (plan.id === '6MONTH') {
-      setInquiryPlan('6-Month Semi-Annual ($59) - Recommended');
-    } else if (plan.id === 'ANNUAL') {
-      setInquiryPlan('Full Year Annual ($89) - Best Deal');
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const filesArray = Array.from(e.target.files);
+      setSelectedFiles(prev => [...prev, ...filesArray]);
     }
   };
 
-  const handleOrderSubmitOnline = (e: React.FormEvent) => {
+  const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    setOrderError(null);
-    if (!selectedPlanForOrder) return;
-
-    const cleanName = orderName.trim();
-    const cleanEmail = orderEmail.trim();
-
-    if (!cleanName) {
-      setOrderError('Please enter your name.');
-      return;
+    if (e.dataTransfer.files) {
+      const filesArray = Array.from(e.dataTransfer.files);
+      setSelectedFiles(prev => [...prev, ...filesArray]);
     }
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setOrderError('Please enter a valid email address.');
-      return;
-    }
+  };
 
-    setIsSubmittingOrder(true);
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
 
-    const newInquiry: ProductInquiry = {
-      id: `order-${Date.now()}`,
-      name: cleanName,
-      email: cleanEmail,
-      company: 'Key Order Request',
-      receiptVolume: 'License Order',
-      interestedPlan: `${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`,
-      notes: orderNote.trim() || undefined,
-      submittedAt: new Date().toISOString()
-    };
+  const handleSubmitFiles = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (selectedFiles.length === 0) return;
+
+    setIsUploading(true);
+    setUploadSuccessCount(null);
 
     try {
-      const existingRaw = localStorage.getItem('receipt_processor_inquiries');
-      const existing: ProductInquiry[] = existingRaw ? JSON.parse(existingRaw) : [];
-      localStorage.setItem('receipt_processor_inquiries', JSON.stringify([newInquiry, ...existing]));
-    } catch {}
+      let count = 0;
+      for (const file of selectedFiles) {
+        let dataUrl: string | undefined = undefined;
+        if (file.type.startsWith('image/')) {
+          try {
+            dataUrl = await new Promise<string>((resolve) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = () => resolve('');
+              reader.readAsDataURL(file);
+            });
+          } catch {
+            dataUrl = undefined;
+          }
+        }
 
-    fetch('/api/inquiries', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newInquiry)
-    }).catch(() => {});
+        addClientSubmission({
+          clientId: clientSession?.userId || `client-${clientEntityName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
+          clientName: clientEntityName.trim() || 'Client Business',
+          clientEmail: clientEntityEmail.trim() || 'client@example.com',
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          dataUrl,
+          categoryHint: selectedCategoryHint !== 'Auto-Detect (AI)' ? selectedCategoryHint : undefined,
+          memo: submissionMemo.trim() || undefined
+        });
+        count++;
+      }
 
-    fetch(`${CLOUDFLARE_WORKER_URL}/api/inquiries`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newInquiry)
-    }).catch(() => {});
-
-    if (onInquirySubmitted) {
-      onInquirySubmitted(newInquiry);
+      refreshSubmissions();
+      setSelectedFiles([]);
+      setSubmissionMemo('');
+      setUploadSuccessCount(count);
+      setActiveTab('history');
+      setTimeout(() => setUploadSuccessCount(null), 5000);
+    } finally {
+      setIsUploading(false);
     }
-
-    setTimeout(() => {
-      setIsSubmittingOrder(false);
-      setOrderSubmittedSuccess(true);
-    }, 400);
   };
 
-  const handleInquirySubmit = (e: React.FormEvent) => {
+  const handleServiceSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setInquiryError(null);
-
-    const cleanName = inquiryName.trim();
-    const cleanEmail = inquiryEmail.trim();
-
-    if (!cleanName) {
-      setInquiryError('Please provide your name.');
-      return;
-    }
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setInquiryError('Please provide a valid contact email address.');
-      return;
-    }
+    if (!inquiryName.trim() || !inquiryEmail.trim()) return;
 
     setIsSubmittingInquiry(true);
-
     const newInquiry: ProductInquiry = {
-      id: `inquiry-${Date.now()}`,
-      name: cleanName,
-      email: cleanEmail,
+      id: `service-req-${Date.now()}`,
+      name: inquiryName.trim(),
+      email: inquiryEmail.trim(),
       company: inquiryCompany.trim() || undefined,
-      receiptVolume: inquiryVolume,
+      receiptVolume: 'Client Service Request',
       interestedPlan: inquiryPlan,
       notes: inquiryNotes.trim() || undefined,
       submittedAt: new Date().toISOString()
     };
 
-    // 1. Save locally to localStorage
     try {
       const existingRaw = localStorage.getItem('receipt_processor_inquiries');
       const existing: ProductInquiry[] = existingRaw ? JSON.parse(existingRaw) : [];
       localStorage.setItem('receipt_processor_inquiries', JSON.stringify([newInquiry, ...existing]));
     } catch {}
-
-    // 2. Dispatch to backend API /api/inquiries
-    fetch('/api/inquiries', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newInquiry)
-    }).catch(err => {
-      console.warn('Local Inquiry API dispatch notice:', err);
-    });
-
-    // 3. Simultaneously dispatch to Cloudflare KV Edge API
-    fetch(`${CLOUDFLARE_WORKER_URL}/api/inquiries`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newInquiry)
-    }).catch(cfErr => {
-      console.warn('Cloudflare Inquiry dispatch notice:', cfErr);
-    });
 
     if (onInquirySubmitted) {
       onInquirySubmitted(newInquiry);
@@ -299,264 +200,44 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
     setTimeout(() => {
       setIsSubmittingInquiry(false);
-      setInquirySubmittedSuccess(true);
+      setInquirySuccess(true);
     }, 400);
   };
 
-  const getInquiryMailtoUrl = () => {
-    const subject = encodeURIComponent(`Software Access Request: ${inquiryPlan} - ${inquiryName}`);
-    const body = encodeURIComponent(
-      `Hello moisttowlett247@gmail.com,\n\n` +
-      `I would like to request software access and license onboarding for Receipt Processor Desktop.\n\n` +
-      `Applicant Details:\n` +
-      `- Full Name: ${inquiryName}\n` +
-      `- Contact Email: ${inquiryEmail}\n` +
-      `- Business / Farm: ${inquiryCompany || 'Individual'}\n` +
-      `- Monthly Volume: ${inquiryVolume}\n` +
-      `- Interested Plan: ${inquiryPlan}\n` +
-      (inquiryNotes ? `- Additional Notes: ${inquiryNotes}\n\n` : '\n') +
-      `Please review my inquiry and provide instructions to get started.\n\nThank you,\n${inquiryName}`
-    );
-    return `mailto:moisttowlett247@gmail.com?subject=${subject}&body=${body}`;
-  };
+  // Calculations
+  const filteredSubmissions = submissions.filter(sub => {
+    if (statusFilter === 'ALL') return true;
+    return sub.status === statusFilter;
+  });
 
-  const getInquiryGmailWebUrl = () => {
-    const subject = encodeURIComponent(`Software Access Request: ${inquiryPlan} - ${inquiryName}`);
-    const body = encodeURIComponent(
-      `Hello moisttowlett247@gmail.com,\n\n` +
-      `I would like to request software access and license onboarding for Receipt Processor Desktop.\n\n` +
-      `Applicant Details:\n` +
-      `- Full Name: ${inquiryName}\n` +
-      `- Contact Email: ${inquiryEmail}\n` +
-      `- Business / Farm: ${inquiryCompany || 'Individual'}\n` +
-      `- Monthly Volume: ${inquiryVolume}\n` +
-      `- Interested Plan: ${inquiryPlan}\n` +
-      (inquiryNotes ? `- Additional Notes: ${inquiryNotes}\n\n` : '\n') +
-      `Please review my inquiry and provide instructions to get started.\n\nThank you,\n${inquiryName}`
-    );
-    return `https://mail.google.com/mail/?view=cm&fs=1&to=moisttowlett247@gmail.com&su=${subject}&body=${body}`;
-  };
-
-  const handleCopyInquirySummary = () => {
-    const text = 
-      `Software Access Request for moisttowlett247@gmail.com\n\n` +
-      `- Name: ${inquiryName}\n` +
-      `- Email: ${inquiryEmail}\n` +
-      `- Company/Farm: ${inquiryCompany || 'Individual'}\n` +
-      `- Receipt Volume: ${inquiryVolume}\n` +
-      `- Requested Plan: ${inquiryPlan}\n` +
-      (inquiryNotes ? `- Notes: ${inquiryNotes}\n` : '') +
-      `- Submitted: ${new Date().toLocaleString()}\n`;
-    navigator.clipboard.writeText(text);
-    setCopiedOrderDetails(true);
-    setTimeout(() => setCopiedOrderDetails(false), 2500);
-  };
-
-  const getOrderMailtoUrl = () => {
-    if (!selectedPlanForOrder) return '';
-    const subject = encodeURIComponent(`License Key Request: ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`);
-    const body = encodeURIComponent(
-      `Hello moisttowlett247@gmail.com,\n\nI would like to purchase an activation key for Receipt Processor Desktop.\n\n` +
-      `Selected Plan: ${selectedPlanForOrder.name}\n` +
-      `Price: ${selectedPlanForOrder.price} (${selectedPlanForOrder.period})\n` +
-      `Name: ${orderName || 'Not specified'}\n` +
-      `Email: ${orderEmail || 'Not specified'}\n` +
-      (orderNote ? `Notes: ${orderNote}\n\n` : '\n') +
-      `Please provide instructions to complete payment and receive my license key.\n\nThank you!`
-    );
-    const contactEmail = 'moisttowlett247@gmail.com';
-    return `mailto:${contactEmail}?subject=${subject}&body=${body}`;
-  };
-
-  const getOrderGmailWebUrl = () => {
-    if (!selectedPlanForOrder) return '';
-    const subject = encodeURIComponent(`License Key Request: ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})`);
-    const body = encodeURIComponent(
-      `Hello moisttowlett247@gmail.com,\n\nI would like to purchase an activation key for Receipt Processor Desktop.\n\n` +
-      `Selected Plan: ${selectedPlanForOrder.name}\n` +
-      `Price: ${selectedPlanForOrder.price} (${selectedPlanForOrder.period})\n` +
-      `Name: ${orderName || 'Not specified'}\n` +
-      `Email: ${orderEmail || 'Not specified'}\n` +
-      (orderNote ? `Notes: ${orderNote}\n\n` : '\n') +
-      `Please provide instructions to complete payment and receive my license key.\n\nThank you!`
-    );
-    return `https://mail.google.com/mail/?view=cm&fs=1&to=moisttowlett247@gmail.com&su=${subject}&body=${body}`;
-  };
-
-  const handleCopyOrderSummary = () => {
-    if (!selectedPlanForOrder) return;
-    const contactEmail = 'moisttowlett247@gmail.com';
-    const text = 
-      `Subject: License Key Request - ${selectedPlanForOrder.name} (${selectedPlanForOrder.price})\n\n` +
-      `Hi,\n\nI want to request a license key for Receipt Processor Desktop:\n` +
-      `- Plan: ${selectedPlanForOrder.name} (${selectedPlanForOrder.period})\n` +
-      `- Price: ${selectedPlanForOrder.price}\n` +
-      `- My Name: ${orderName || '[Your Name]'}\n` +
-      `- My Email: ${orderEmail || '[Your Email]'}\n` +
-      (orderNote ? `- Notes: ${orderNote}\n` : '') +
-      `\nPlease send instructions to ${contactEmail}.`;
-    navigator.clipboard.writeText(text);
-    setCopiedOrderDetails(true);
-    setTimeout(() => setCopiedOrderDetails(false), 2500);
-  };
-
-  const handleVerifyClientKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanKey = clientKeyInput.trim().toUpperCase();
-    if (!cleanKey) {
-      setCheckResult({
-        valid: false,
-        message: 'Please enter a valid license key.'
-      });
-      return;
-    }
-
-    // 1. Try Cloudflare Worker Edge API verification
-    try {
-      const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/verify?key=${encodeURIComponent(cleanKey)}`, {
-        cache: 'no-store'
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.status === 'REVOKED' || data.status === 'NOT ACTIVE' || data.status === 'SUSPENDED') {
-          setCheckResult({
-            valid: false,
-            status: 'Revoked / Inactive',
-            message: 'Access Denied: This license key has been deactivated or revoked by the administrator.'
-          });
-          return;
-        }
-        if (data.status === 'EXPIRED') {
-          setCheckResult({
-            valid: false,
-            status: 'Expired',
-            message: `This license expired on ${data.expires || 'the expiration date'}. Please renew your subscription.`
-          });
-          return;
-        }
-
-        const isNonExpiring = data.plan === 'ADMIN' || data.expires?.includes('Never') || data.expires?.includes('Lifetime');
-        setCheckResult({
-          valid: true,
-          plan: data.plan === 'ADMIN' ? 'Perpetual Master Access' : getPlanLabel(data.plan as any),
-          expiresDate: isNonExpiring ? 'Never (Lifetime License)' : (data.expires || 'Active'),
-          status: 'Active (Verified on Cloudflare Edge)',
-          message: isNonExpiring
-            ? 'Lifetime perpetual master license is active. Full desktop scanning, OCR extraction, and tax report export authorized.'
-            : `Active subscription verified. Valid through ${data.expires}. Ready for desktop activation.`
-        });
-        return;
-      }
-    } catch {
-      // Cloudflare unreachable, proceed to zero-knowledge hash / local check
-    }
-
-    // 2. Try Zero-Knowledge SHA-256 hash lookup in public/licenses/<hash>.json
-    try {
-      const hash = await computeSha256Hex(cleanKey);
-      const resp = await fetch(`/licenses/${hash}.json`, { cache: 'no-store' });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.status === 'REVOKED') {
-          setCheckResult({
-            valid: false,
-            status: 'Revoked / Inactive',
-            message: 'Access Denied: This license key has been revoked or deactivated by the administrator.'
-          });
-          return;
-        }
-        if (data.status === 'EXPIRED') {
-          setCheckResult({
-            valid: false,
-            status: 'Expired',
-            message: `This license expired on ${data.expires || 'the expiration date'}. Please renew your subscription.`
-          });
-          return;
-        }
-
-        // Active status
-        const isNonExpiring = data.plan === 'ADMIN' || data.expires?.includes('Never') || data.expires?.includes('Lifetime');
-        setCheckResult({
-          valid: true,
-          plan: data.plan === 'ADMIN' ? 'Perpetual Master Access' : getPlanLabel(data.plan as any),
-          expiresDate: isNonExpiring ? 'Never (Lifetime License)' : (data.expires || 'Active'),
-          status: 'Active (Verified on Server)',
-          message: isNonExpiring
-            ? 'Lifetime perpetual master license is active. Full desktop scanning, OCR extraction, and tax report export authorized.'
-            : `Active subscription verified. Valid through ${data.expires}. Ready for desktop activation.`
-        });
-        return;
-      }
-    } catch {
-      // Fall back to in-memory/localStorage keys check
-    }
-
-    // 2. Search for match in active registry (local fallback / simulator)
-    const matched = licenseKeys.find(k => k.key.toUpperCase() === cleanKey);
-
-    if (matched) {
-      if (matched.status === 'NOT ACTIVE') {
-        setCheckResult({
-          valid: false,
-          status: 'Revoked / Inactive',
-          message: 'Access Denied: This license key has been deactivated or revoked by the administrator.'
-        });
-        return;
-      }
-
-      if (matched.status === 'EXPIRED') {
-        setCheckResult({
-          valid: false,
-          status: 'Expired',
-          message: `This license expired on ${matched.expiresDate}. Please renew your subscription to continue scanning.`
-        });
-        return;
-      }
-
-      const isNonExpiring = matched.plan === 'ADMIN' || matched.expiresDate?.includes('Never');
-      setCheckResult({
-        valid: true,
-        plan: matched.plan === 'ADMIN' ? 'Perpetual Master Access' : getPlanLabel(matched.plan),
-        expiresDate: isNonExpiring ? 'Never (Lifetime License)' : matched.expiresDate,
-        status: matched.inUse ? 'Active (Assigned to Workstation)' : 'Active (Available for Activation)',
-        message: isNonExpiring
-          ? 'Lifetime perpetual master license is active. Full desktop scanning, OCR extraction, and tax report export authorized.'
-          : `Active subscription verified. Valid through ${matched.expiresDate}. ${matched.inUse ? 'Already activated on registered workstation.' : 'Ready for first-time desktop activation.'}`
-      });
-      return;
-    }
-
-    setCheckResult({
-      valid: false,
-      status: 'Invalid / Unregistered',
-      message: 'Unrecognized License Key: Key does not exist or has been deleted from the authorized repository.'
-    });
-  };
+  const totalAmountProcessed = submissions.reduce((sum, s) => sum + (s.extractedAmount || 0), 0);
+  const syncedCount = submissions.filter(s => s.status === 'SYNCED_QBO').length;
 
   return (
-    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans selection:bg-amber-500 selection:text-stone-950">
-      {/* Top Client Navbar */}
-      <header className="border-b border-stone-800 bg-stone-900/90 backdrop-blur sticky top-0 z-30 px-6 py-3.5 flex items-center justify-between">
+    <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans antialiased selection:bg-amber-500 selection:text-stone-950">
+      {/* Top Header */}
+      <header className="border-b border-stone-800 bg-stone-900/90 backdrop-blur sticky top-0 z-30 px-4 sm:px-6 py-3.5 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-            <ShieldCheck className="w-5 h-5" />
+          <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+            <Building2 className="w-5 h-5" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-sm sm:text-base font-semibold tracking-tight text-stone-100">
-                Receipt Processor
+              <h1 className="text-sm sm:text-base font-bold tracking-tight text-stone-100">
+                Client Receipt Submission Portal
               </h1>
-              <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                Official Portal v{currentVersion}
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hidden sm:inline-flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                Managed Bookkeeping Intake
               </span>
             </div>
             <p className="text-xs text-stone-400 hidden sm:block">
-              Automated Receipt OCR, Expense Categorization & Tax Preparation Ledger
+              Zero-friction receipt submission. Our central accounting team processes, categorizes, and reconciles your expenses into QuickBooks.
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 sm:gap-2.5">
+        <div className="flex items-center gap-2 sm:gap-3">
           {clientSession ? (
             <button
               type="button"
@@ -570,7 +251,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 {clientSession.displayName}
               </span>
               <span className="px-1.5 py-0.5 rounded text-[10px] bg-amber-500/10 text-amber-400 font-mono">
-                Account
+                My Account
               </span>
             </button>
           ) : (
@@ -595,1006 +276,747 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 className="px-3 py-1.5 text-xs font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-all cursor-pointer hidden sm:flex items-center gap-1.5"
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>Create Account</span>
+                <span>Create Client Account</span>
               </button>
             </div>
           )}
 
-          <a
-            href="#request-access"
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-sm transition-colors cursor-pointer"
+          {/* Admin shortcut button */}
+          <button
+            type="button"
+            onClick={onNavigateToAdmin}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-stone-800/80 hover:bg-stone-700 text-stone-300 hover:text-white border border-stone-700 rounded-lg transition-colors cursor-pointer"
+            title="Switch to Operator & Accounting Admin Console"
           >
-            <Send className="w-3.5 h-3.5" />
-            <span>Request Access</span>
-          </a>
+            <Lock className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden md:inline">Accountant Console</span>
+          </button>
         </div>
       </header>
 
-      {/* Hero Section */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-8 space-y-8">
-        {/* Authenticated Client Welcome Banner & License Status */}
-        {clientSession && (
-          <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-stone-900 via-stone-900 to-amber-950/30 border border-amber-500/30 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-200">
-            <div className="flex items-center gap-3.5">
-              <div className="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 font-bold text-base shrink-0">
-                {clientSession.displayName.slice(0, 2).toUpperCase()}
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm sm:text-base font-bold text-stone-100">
-                    Welcome, {clientSession.displayName}
-                  </h3>
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                    Client Verified
-                  </span>
-                </div>
-                <p className="text-xs text-stone-400">
-                  {clientSession.companyName ? `${clientSession.companyName} • ` : ''}
-                  {clientSession.licenseKey ? (
-                    <span>Active License: <code className="text-amber-400 font-mono font-semibold">{clientSession.licenseKey}</code></span>
-                  ) : (
-                    <span>No license key currently linked to this profile.</span>
-                  )}
-                </p>
-              </div>
-            </div>
-
+      {/* Main Content */}
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
+        {/* Welcome Client Card */}
+        <div className="p-5 rounded-2xl bg-gradient-to-r from-stone-900 via-stone-900 to-amber-950/20 border border-stone-800 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setShowAccountModal(true)}
-                className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow"
-              >
-                <User className="w-3.5 h-3.5" />
-                <span>Account & License</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  clearClientSession();
-                  setClientSession(null);
-                }}
-                className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors cursor-pointer"
-              >
-                Sign Out
-              </button>
+              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" />
+                CENTRAL BOOKKEEPING SERVICE ACTIVE
+              </span>
+              <span className="text-xs text-stone-500">•</span>
+              <span className="text-xs text-stone-400">Zero Local Scripts Required</span>
+            </div>
+            <h2 className="text-base sm:text-xl font-bold text-white">
+              Effortless Receipt & Invoice Submission
+            </h2>
+            <p className="text-xs text-stone-300 max-w-2xl leading-relaxed">
+              Snap receipts with your phone or drop invoices below. Your bookkeeping team reconciles every transaction, 
+              detects tax deductions, and syncs directly into your QuickBooks Online account.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="px-4 py-2 rounded-xl bg-stone-950/80 border border-stone-800 text-center">
+              <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Total Reconciled</div>
+              <div className="text-sm sm:text-base font-bold font-mono text-emerald-400">${totalAmountProcessed.toFixed(2)}</div>
+            </div>
+            <div className="px-4 py-2 rounded-xl bg-stone-950/80 border border-stone-800 text-center">
+              <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">QBO Synced</div>
+              <div className="text-sm sm:text-base font-bold font-mono text-amber-400">{syncedCount} Receipts</div>
             </div>
           </div>
-        )}
-
-        {/* 1-Click Desktop App Download Banner (OS Aware) */}
-        {clientSession && clientSession.licenseKey && (
-          <div className="p-4 sm:p-5 rounded-2xl bg-stone-900 border border-amber-500/40 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1.5 max-w-xl">
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
-                  <Laptop className="w-3 h-3" />
-                  {detectedOs === 'windows' ? 'WINDOWS WORKSTATION DETECTED' : detectedOs === 'mac' ? 'MACOS DETECTED' : 'LINUX DETECTED'}
-                </span>
-                <span className="text-[10px] text-stone-400">Ready to install</span>
-              </div>
-
-              <h4 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
-                <span>Download Your Pre-Configured Desktop App</span>
-              </h4>
-
-              <p className="text-xs text-stone-300 leading-relaxed">
-                Your license key (<code className="text-amber-300 font-mono">{clientSession.licenseKey}</code>) is bundled inside. Includes 
-                {detectedOs === 'windows' ? (
-                  <strong className="text-emerald-400"> 1-Click run_receipt_processor.bat</strong>
-                ) : (
-                  <strong className="text-emerald-400"> run_receipt_processor.sh</strong>
-                )}, Python script, requirements, and config.
-              </p>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={handleDownloadAppBundle}
-                disabled={isDownloadingApp}
-                className="px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-stone-950 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-500/10 hover:shadow-amber-500/20 whitespace-nowrap"
-              >
-                <Download className="w-4 h-4" />
-                <span>{isDownloadingApp ? 'Packaging...' : 'Download My Desktop App (.ZIP)'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (clientSession.licenseKey) {
-                    navigator.clipboard.writeText(clientSession.licenseKey);
-                    setCopiedQuickKey(true);
-                    setTimeout(() => setCopiedQuickKey(false), 2000);
-                  }
-                }}
-                className="px-3 py-2.5 bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white text-xs font-medium rounded-xl border border-stone-700 transition-colors cursor-pointer flex items-center gap-1.5"
-                title="Copy License Key"
-              >
-                {copiedQuickKey ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedQuickKey ? 'Key Copied' : 'Copy Key'}</span>
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div className="text-center max-w-2xl mx-auto space-y-3">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-400 text-xs font-medium">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            Official Desktop Client Portal
-          </div>
-          <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-stone-100">
-            Automated Receipt OCR & Tax Prep Application
-          </h2>
-          <p className="text-xs sm:text-sm text-stone-400 leading-relaxed">
-            Eliminate hours of manual data entry. Our workstation software scans receipts, categorizes deductible business expenses, and produces clean Excel ledgers.
-          </p>
         </div>
 
-        {/* Two-Column Grid: Product Interest Form & Verify License */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6" id="request-access">
-          {/* Card 1: Product Inquiry / Request Access Form */}
-          <div className="p-6 rounded-2xl bg-stone-900/90 border border-stone-800 flex flex-col justify-between space-y-5 shadow-lg">
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-                  <Sparkles className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-stone-100">Request Software Access</h3>
-                  <p className="text-xs text-stone-400">Join our exclusive desktop release list</p>
-                </div>
+        {/* Option B Dedicated Email Intake Banner */}
+        <div className="p-4 rounded-xl bg-sky-950/30 border border-sky-800/40 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
+          <div className="flex items-start sm:items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+              <Mail className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="font-bold text-sky-200 flex items-center gap-1.5">
+                <span>Want to submit via email? (Option B Sender Mapping)</span>
               </div>
-
-              <p className="text-xs text-stone-300 leading-relaxed">
-                We are actively onboarding small businesses, accountants, and independent contractors. Fill out this brief form to request your personalized workstation build and license key.
+              <p className="text-stone-300 text-[11px] leading-relaxed">
+                Forward receipt photos or PDF invoices directly to <strong className="text-sky-300">receipts@yourfirm.com</strong> (or <strong className="text-stone-200">moisttowlett247@gmail.com</strong>).
+                Send from your registered address (<strong className="text-amber-300">{clientEntityEmail}</strong>) and our system automatically routes them to your QuickBooks!
               </p>
+            </div>
+          </div>
 
-              {inquirySubmittedSuccess ? (
-                <div className="p-5 bg-emerald-950/40 border border-emerald-800/60 rounded-xl text-xs text-emerald-200 space-y-3 animate-in fade-in duration-200">
-                  <div className="flex items-center gap-2 font-bold text-sm text-emerald-400">
-                    <CheckCircle2 className="w-5 h-5 shrink-0" />
-                    <span>Inquiry Sent & Dispatched!</span>
+          <button
+            type="button"
+            onClick={() => {
+              navigator.clipboard.writeText('moisttowlett247@gmail.com');
+              alert('Copied intake address: moisttowlett247@gmail.com');
+            }}
+            className="px-3 py-1.5 bg-sky-900/60 hover:bg-sky-800 text-sky-200 font-medium rounded-lg transition-colors cursor-pointer text-xs shrink-0 self-start sm:self-auto border border-sky-700/50"
+          >
+            Copy Intake Email
+          </button>
+        </div>
+
+        {/* Portal Navigation Tabs */}
+        <div className="flex border-b border-stone-800 gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab('upload')}
+            className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-colors cursor-pointer flex items-center gap-2 border-b-2 ${
+              activeTab === 'upload'
+                ? 'border-amber-500 text-amber-400 bg-stone-900/60'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <UploadCloud className="w-4 h-4" />
+            <span>Upload New Receipts</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('history')}
+            className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-colors cursor-pointer flex items-center gap-2 border-b-2 ${
+              activeTab === 'history'
+                ? 'border-amber-500 text-amber-400 bg-stone-900/60'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <Receipt className="w-4 h-4" />
+            <span>Submission Ledger & QBO Status</span>
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-stone-800 font-mono text-stone-300">
+              {submissions.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('services')}
+            className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-colors cursor-pointer flex items-center gap-2 border-b-2 ${
+              activeTab === 'services'
+                ? 'border-amber-500 text-amber-400 bg-stone-900/60'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>Bookkeeping Services</span>
+          </button>
+        </div>
+
+        {/* TAB 1: Upload Receipts */}
+        {activeTab === 'upload' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left 2 Cols: Dropzone & File Uploader */}
+            <div className="lg:col-span-2 space-y-4">
+              <form onSubmit={handleSubmitFiles} className="p-6 rounded-2xl bg-stone-900/90 border border-stone-800 space-y-5 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Camera className="w-4 h-4 text-amber-400" />
+                      <span>Upload Receipt Photos & Invoices</span>
+                    </h3>
+                    <p className="text-xs text-stone-400">
+                      Supports JPG, PNG, HEIC, WebP, and PDF invoices
+                    </p>
                   </div>
-                  <p className="leading-relaxed text-stone-300">
-                    Thank you, <strong className="text-stone-100">{inquiryName}</strong>! Your software access request for the <strong className="text-amber-400">{inquiryPlan}</strong> has been logged in the system and routed directly to administrator <strong className="text-stone-100">moisttowlett247@gmail.com</strong>.
-                  </p>
-                  
-                  <div className="p-3 bg-stone-900/90 rounded-lg border border-stone-800 space-y-2">
-                    <div className="text-[11px] text-stone-400 flex items-center justify-between">
-                      <span>Recipient:</span>
-                      <strong className="text-amber-400 font-mono">moisttowlett247@gmail.com</strong>
-                    </div>
-                    <div className="text-[11px] text-stone-400 flex items-center justify-between">
-                      <span>Applicant:</span>
-                      <span className="text-stone-200">{inquiryName} ({inquiryEmail})</span>
-                    </div>
+
+                  <span className="text-[11px] text-stone-400 font-mono">
+                    {selectedFiles.length} file(s) selected
+                  </span>
+                </div>
+
+                {/* Drag and Drop Zone */}
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="border-2 border-dashed border-stone-700 hover:border-amber-500/70 bg-stone-950/60 hover:bg-stone-950/90 rounded-2xl p-8 text-center cursor-pointer transition-all space-y-3 group"
+                >
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    multiple
+                    accept="image/*,application/pdf"
+                    className="hidden"
+                  />
+                  <div className="w-12 h-12 rounded-full bg-amber-500/10 group-hover:bg-amber-500/20 border border-amber-500/30 text-amber-400 flex items-center justify-center mx-auto transition-colors">
+                    <UploadCloud className="w-6 h-6" />
                   </div>
 
-                  <div className="space-y-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={handleCopyInquirySummary}
-                      className="w-full py-2.5 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white text-xs font-semibold rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      {copiedOrderDetails ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Request Details Copied to Clipboard!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Request Summary</span>
-                        </>
-                      )}
-                    </button>
-
-                    <a
-                      href={getInquiryGmailWebUrl()}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-2 px-3 bg-stone-900 hover:bg-stone-800 text-stone-300 hover:text-stone-100 font-medium text-xs rounded-xl border border-stone-800 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Mail className="w-3.5 h-3.5 text-red-400" />
-                      <span>Optional: Send Follow-up via Web Gmail</span>
-                    </a>
+                  <div className="space-y-1">
+                    <p className="text-xs sm:text-sm font-semibold text-stone-200">
+                      Click to browse or drag and drop receipts here
+                    </p>
+                    <p className="text-[11px] text-stone-400">
+                      Take a snapshot with your mobile camera or upload multi-page supplier statements
+                    </p>
                   </div>
 
-                  <div className="pt-2 border-t border-emerald-900/40 flex items-center justify-between">
-                    <span className="text-[11px] text-stone-400">We respond promptly to all incoming inquiries.</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setInquirySubmittedSuccess(false);
-                        setInquiryName('');
-                        setInquiryEmail('');
-                        setInquiryCompany('');
-                        setInquiryNotes('');
-                      }}
-                      className="text-amber-400 hover:text-amber-300 underline font-medium cursor-pointer text-xs"
-                    >
-                      Submit another inquiry
-                    </button>
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-stone-800 text-[10px] text-stone-300 font-mono">
+                    <span>JPEG • PNG • PDF • WebP</span>
                   </div>
                 </div>
-              ) : (
-                <form onSubmit={handleInquirySubmit} className="space-y-3 text-xs">
-                  {inquiryError && (
-                    <div className="p-2.5 bg-rose-950/50 border border-rose-800/60 rounded-lg text-rose-300 flex items-center gap-2">
-                      <XCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                      <span>{inquiryError}</span>
-                    </div>
-                  )}
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-stone-300 font-medium block mb-1">
-                        Full Name <span className="text-amber-400">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={inquiryName}
-                        onChange={(e) => setInquiryName(e.target.value)}
-                        placeholder="e.g. Sarah Jenkins"
-                        required
-                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-stone-300 font-medium block mb-1">
-                        Email Address <span className="text-amber-400">*</span>
-                      </label>
-                      <input
-                        type="email"
-                        value={inquiryEmail}
-                        onChange={(e) => setInquiryEmail(e.target.value)}
-                        placeholder="name@business.com"
-                        required
-                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-stone-300 font-medium block mb-1">
-                        Business / Company (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={inquiryCompany}
-                        onChange={(e) => setInquiryCompany(e.target.value)}
-                        placeholder="e.g. Jenkins Farm & Co"
-                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="text-stone-300 font-medium block mb-1">
-                        Expected Monthly Receipts
-                      </label>
-                      <select
-                        value={inquiryVolume}
-                        onChange={(e) => setInquiryVolume(e.target.value)}
-                        className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                {/* Selected File Previews */}
+                {selectedFiles.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-xs font-semibold text-stone-300 flex items-center justify-between">
+                      <span>Ready to Upload ({selectedFiles.length})</span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedFiles([])}
+                        className="text-[11px] text-rose-400 hover:underline cursor-pointer"
                       >
-                        <option value="Under 50 receipts / month">Under 50 receipts / mo</option>
-                        <option value="50 - 200 receipts / month">50 - 200 receipts / mo</option>
-                        <option value="200 - 500 receipts / month">200 - 500 receipts / mo</option>
-                        <option value="500+ receipts / month">500+ receipts / mo</option>
-                      </select>
+                        Clear All
+                      </button>
+                    </label>
+
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
+                      {selectedFiles.map((file, idx) => (
+                        <div
+                          key={`${file.name}-${idx}`}
+                          className="flex items-center justify-between p-2.5 rounded-xl bg-stone-950 border border-stone-800 text-xs"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <FileText className="w-4 h-4 text-amber-400 shrink-0" />
+                            <div className="truncate">
+                              <p className="font-medium text-stone-200 truncate">{file.name}</p>
+                              <p className="text-[10px] text-stone-500 font-mono">{(file.size / 1024).toFixed(1)} KB</p>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFile(idx)}
+                            className="p-1 text-stone-400 hover:text-rose-400 transition-colors cursor-pointer"
+                            title="Remove file"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
+                )}
 
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="text-stone-300 font-medium">
-                        Target Subscription Plan
-                      </label>
-                      <span className="text-[10px] text-amber-400 font-mono">
-                        Selected: {inquiryPlan.split('—')[0].trim()}
-                      </span>
-                    </div>
-
-                    {/* Quick selection pills to make selecting any tier instant & visually obvious */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 mb-2">
-                      {[
-                        { label: 'Monthly', val: 'Monthly Plan ($15/mo)', sub: '$15 / mo' },
-                        { label: '3-Month', val: '3-Month Quarterly ($39)', sub: '$39 / 3 mos' },
-                        { label: '6-Month', val: '6-Month Semi-Annual ($59) - Recommended', sub: '$59 / 6 mos' },
-                        { label: 'Full Year', val: 'Full Year Annual ($89) - Best Deal', sub: '$89 / yr' }
-                      ].map((item) => {
-                        const isSelected = inquiryPlan === item.val;
-                        return (
-                          <button
-                            key={item.val}
-                            type="button"
-                            onClick={() => setInquiryPlan(item.val)}
-                            className={`py-1.5 px-2 rounded-lg border text-center transition-all cursor-pointer ${
-                              isSelected
-                                ? 'bg-amber-500/20 border-amber-500 text-amber-300 font-bold shadow-sm ring-1 ring-amber-500/50'
-                                : 'bg-stone-950 border-stone-800 text-stone-400 hover:text-stone-200 hover:border-stone-700'
-                            }`}
-                          >
-                            <div className="text-[11px] leading-tight">{item.label}</div>
-                            <div className="text-[9px] opacity-75 font-mono">{item.sub}</div>
-                          </button>
-                        );
-                      })}
-                    </div>
-
+                {/* Optional Metadata Inputs */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-stone-800/80">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-stone-300 flex items-center gap-1.5">
+                      <Tag className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Category Hint (Optional)</span>
+                    </label>
                     <select
-                      value={inquiryPlan}
-                      onChange={(e) => setInquiryPlan(e.target.value)}
-                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                      value={selectedCategoryHint}
+                      onChange={(e) => setSelectedCategoryHint(e.target.value)}
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-xs text-stone-200 focus:outline-none focus:border-amber-500"
                     >
-                      <option value="Monthly Plan ($15/mo)">Monthly Plan — $15 / month</option>
-                      <option value="3-Month Quarterly ($39)">3-Month Quarterly — $39 / 3 mos</option>
-                      <option value="6-Month Semi-Annual ($59) - Recommended">6-Month Semi-Annual — $59 / 6 mos (Popular)</option>
-                      <option value="Full Year Annual ($89) - Best Deal">Full Year Annual — $89 / year (Best Deal)</option>
+                      <option value="Auto-Detect (AI)">Auto-Detect (Bookkeeper AI)</option>
+                      <option value="Supplies & Materials">Supplies & Materials</option>
+                      <option value="Farm:Feed & Fertilizer">Farm: Feed & Fertilizer</option>
+                      <option value="Farm:Livestock & Veterinary">Farm: Livestock & Veterinary</option>
+                      <option value="Repairs & Maintenance">Repairs & Maintenance</option>
+                      <option value="Automobile:Fuel & Diesel">Automobile: Fuel & Diesel</option>
+                      <option value="Meals & Entertainment">Meals & Entertainment</option>
+                      <option value="Office & Software">Office & Software</option>
+                      <option value="Utilities & Cell">Utilities & Cell</option>
                     </select>
                   </div>
 
-                  <div>
-                    <label className="text-stone-300 font-medium block mb-1">
-                      Notes or Specific Requirements (Optional)
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-stone-300 flex items-center gap-1.5">
+                      <FileCheck2 className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Memo / Note for Accountant</span>
                     </label>
+                    <input
+                      type="text"
+                      value={submissionMemo}
+                      onChange={(e) => setSubmissionMemo(e.target.value)}
+                      placeholder="e.g. John Deere part replacement, Field 4 fuel"
+                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-xs text-stone-200 focus:outline-none focus:border-amber-500 placeholder:text-stone-600"
+                    />
+                  </div>
+                </div>
+
+                {/* Upload Button */}
+                <button
+                  type="submit"
+                  disabled={selectedFiles.length === 0 || isUploading}
+                  className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-50 text-stone-950 text-xs font-bold rounded-xl transition-all cursor-pointer shadow-lg shadow-amber-500/10 flex items-center justify-center gap-2"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>{isUploading ? 'Securing & Queueing Receipts...' : `Submit ${selectedFiles.length > 0 ? selectedFiles.length : ''} Receipt(s) to Bookkeeper`}</span>
+                </button>
+              </form>
+            </div>
+
+            {/* Right Column: Account Profile & Submission Info */}
+            <div className="space-y-4">
+              <div className="p-5 rounded-2xl bg-stone-900/90 border border-stone-800 space-y-4 shadow-lg">
+                <div className="flex items-center gap-2 font-bold text-xs text-stone-200">
+                  <Building className="w-4 h-4 text-amber-400" />
+                  <span>Your Business Account</span>
+                </div>
+
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <label className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider">Business / Farm Name</label>
+                    <input
+                      type="text"
+                      value={clientEntityName}
+                      onChange={(e) => setClientEntityName(e.target.value)}
+                      className="w-full mt-1 px-3 py-1.5 bg-stone-950 border border-stone-800 rounded-lg text-xs text-stone-200 focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-semibold text-stone-400 uppercase tracking-wider">Registered Email (Option B)</label>
+                    <input
+                      type="email"
+                      value={clientEntityEmail}
+                      onChange={(e) => setClientEntityEmail(e.target.value)}
+                      className="w-full mt-1 px-3 py-1.5 bg-stone-950 border border-stone-800 rounded-lg text-xs text-stone-200 focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-stone-950 border border-stone-800 space-y-1">
+                    <div className="text-[10px] font-bold text-emerald-400 flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" />
+                      <span>QuickBooks Online Connected</span>
+                    </div>
+                    <p className="text-[11px] text-stone-400">
+                      Expenses are reconciled directly into your linked company file by the central accounting engine.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* How it works info card */}
+              <div className="p-5 rounded-2xl bg-stone-900/40 border border-stone-800/80 space-y-3 text-xs">
+                <h4 className="font-bold text-stone-200 flex items-center gap-1.5">
+                  <HelpCircle className="w-4 h-4 text-amber-400" />
+                  <span>How Your Receipts Are Handled</span>
+                </h4>
+                <ul className="space-y-2 text-[11px] text-stone-300">
+                  <li className="flex items-start gap-2">
+                    <div className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">1</div>
+                    <span>You upload or email receipts when you make purchases.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <div className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">2</div>
+                    <span>Our central AI vision engine reads the vendor, taxes, line items, and totals.</span>
+                  </li>
+                  <li className="flex items-start gap-2">
+                    <div className="w-4 h-4 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center text-[10px] font-bold shrink-0 mt-0.5">3</div>
+                    <span>Your bookkeeping team reconciles deductible business expenses and syncs them into QuickBooks Online.</span>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB 2: Submission History & Ledger */}
+        {activeTab === 'history' && (
+          <div className="space-y-4">
+            {uploadSuccessCount && (
+              <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-200 flex items-center gap-2 animate-in fade-in duration-200">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>Successfully queued <strong>{uploadSuccessCount} receipt(s)</strong>! Your bookkeeper's central engine will analyze and reconcile them shortly.</span>
+              </div>
+            )}
+
+            {/* Filter bar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-stone-900/90 border border-stone-800 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-stone-400 font-medium">Filter Status:</span>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('ALL')}
+                  className={`px-3 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                    statusFilter === 'ALL'
+                      ? 'bg-amber-500 text-stone-950 font-bold'
+                      : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+                  }`}
+                >
+                  All ({submissions.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('SYNCED_QBO')}
+                  className={`px-3 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                    statusFilter === 'SYNCED_QBO'
+                      ? 'bg-emerald-600 text-white font-bold'
+                      : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+                  }`}
+                >
+                  Synced to QBO ({syncedCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('QUEUED')}
+                  className={`px-3 py-1 rounded-lg font-medium transition-colors cursor-pointer ${
+                    statusFilter === 'QUEUED'
+                      ? 'bg-sky-600 text-white font-bold'
+                      : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
+                  }`}
+                >
+                  In Intake Queue ({submissions.filter(s => s.status === 'QUEUED').length})
+                </button>
+              </div>
+
+              <span className="text-[11px] text-stone-400">
+                Showing {filteredSubmissions.length} of {submissions.length} receipts
+              </span>
+            </div>
+
+            {/* Submissions List */}
+            {filteredSubmissions.length === 0 ? (
+              <div className="p-12 text-center rounded-2xl bg-stone-900/40 border border-stone-800 space-y-3">
+                <Receipt className="w-10 h-10 text-stone-600 mx-auto" />
+                <h4 className="text-sm font-bold text-stone-300">No receipts found for this filter</h4>
+                <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                  Click 'Upload New Receipts' to add receipts or forward receipt attachments to your intake email address.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('upload')}
+                  className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                >
+                  Upload First Receipt
+                </button>
+              </div>
+            ) : (
+              <div className="rounded-2xl bg-stone-900/90 border border-stone-800 overflow-hidden shadow-lg">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-stone-950/80 text-stone-400 text-[10px] uppercase font-mono border-b border-stone-800">
+                      <tr>
+                        <th className="py-3 px-4">Receipt / File</th>
+                        <th className="py-3 px-4">Client / Entity</th>
+                        <th className="py-3 px-4">Vendor & Category</th>
+                        <th className="py-3 px-4">Amount</th>
+                        <th className="py-3 px-4">Status</th>
+                        <th className="py-3 px-4">Submitted</th>
+                        <th className="py-3 px-4 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-stone-800 text-stone-300">
+                      {filteredSubmissions.map((sub) => (
+                        <tr key={sub.id} className="hover:bg-stone-800/40 transition-colors">
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2.5">
+                              {sub.dataUrl ? (
+                                <img
+                                  src={sub.dataUrl}
+                                  alt="Receipt thumbnail"
+                                  className="w-8 h-8 rounded-lg object-cover border border-stone-700 shrink-0"
+                                />
+                              ) : (
+                                <div className="w-8 h-8 rounded-lg bg-stone-800 border border-stone-700 flex items-center justify-center text-stone-400 shrink-0">
+                                  <FileText className="w-4 h-4" />
+                                </div>
+                              )}
+                              <div className="min-w-0 max-w-xs">
+                                <p className="font-medium text-stone-200 truncate">{sub.fileName}</p>
+                                {sub.memo && (
+                                  <p className="text-[10px] text-stone-400 truncate italic">Memo: "{sub.memo}"</p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="py-3 px-4 font-medium text-stone-300 whitespace-nowrap">
+                            {sub.clientName}
+                          </td>
+
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <div className="font-semibold text-stone-200">
+                              {sub.extractedVendor || 'Pending OCR'}
+                            </div>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-800 text-amber-400/90 font-mono">
+                              {sub.categoryHint || 'Auto-Deductible'}
+                            </span>
+                          </td>
+
+                          <td className="py-3 px-4 whitespace-nowrap font-mono font-bold text-emerald-400">
+                            {sub.extractedAmount ? `$${sub.extractedAmount.toFixed(2)}` : '—'}
+                          </td>
+
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            {sub.status === 'SYNCED_QBO' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Synced to QuickBooks
+                              </span>
+                            ) : sub.status === 'PROCESSING' ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                                <Clock className="w-3 h-3 animate-spin" />
+                                Analyzing (VM Worker)
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono bg-sky-500/10 text-sky-400 border border-sky-500/30">
+                                <Clock className="w-3 h-3" />
+                                Queued for Processing
+                              </span>
+                            )}
+                          </td>
+
+                          <td className="py-3 px-4 text-stone-400 text-[11px] whitespace-nowrap font-mono">
+                            {new Date(sub.uploadedAt).toLocaleDateString()}
+                          </td>
+
+                          <td className="py-3 px-4 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                deleteSubmission(sub.id);
+                                refreshSubmissions();
+                              }}
+                              className="text-stone-500 hover:text-rose-400 p-1 transition-colors cursor-pointer"
+                              title="Delete submission record"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 3: Bookkeeping Services & Request */}
+        {activeTab === 'services' && (
+          <div className="space-y-6">
+            <div className="text-center max-w-xl mx-auto space-y-2">
+              <h3 className="text-lg font-bold text-stone-100">
+                Managed Receipt & Expense Accounting Packages
+              </h3>
+              <p className="text-xs text-stone-400 leading-relaxed">
+                Choose the service tier that matches your monthly volume. Everything is managed locally and on our dedicated accounting engines.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {/* Card 1 */}
+              <div className="p-6 rounded-2xl bg-stone-900 border border-stone-800 space-y-4 flex flex-col justify-between hover:border-amber-500/40 transition-colors">
+                <div className="space-y-2">
+                  <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider font-mono">Starter</span>
+                  <h4 className="text-base font-bold text-white">Monthly Bookkeeping</h4>
+                  <div className="text-2xl font-extrabold text-stone-100 font-mono">
+                    $49<span className="text-xs text-stone-400 font-normal"> / month</span>
+                  </div>
+                  <p className="text-xs text-stone-400">
+                    Up to 100 receipts/month. Full OCR line item breakdown and automated QuickBooks reconciliation.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInquiryPlan('Monthly Bookkeeping & Sync ($49/mo)');
+                    const el = document.getElementById('service-form');
+                    el?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="w-full py-2 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Select Monthly
+                </button>
+              </div>
+
+              {/* Card 2 Recommended */}
+              <div className="p-6 rounded-2xl bg-gradient-to-b from-stone-900 to-amber-950/20 border-2 border-amber-500 shadow-xl space-y-4 flex flex-col justify-between relative">
+                <span className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-stone-950 font-mono">
+                  MOST POPULAR
+                </span>
+                <div className="space-y-2 pt-1">
+                  <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider font-mono">Quarterly</span>
+                  <h4 className="text-base font-bold text-white">Quarterly Tax & Expense Prep</h4>
+                  <div className="text-2xl font-extrabold text-stone-100 font-mono">
+                    $129<span className="text-xs text-stone-400 font-normal"> / quarter</span>
+                  </div>
+                  <p className="text-xs text-stone-300">
+                    Up to 400 receipts. Schedule F & Schedule C deduction categorization, mileage logs, and accountant audit pack.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInquiryPlan('Quarterly Tax & Expense Prep ($129/quarter)');
+                    const el = document.getElementById('service-form');
+                    el?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-lg shadow-amber-500/20"
+                >
+                  Select Quarterly
+                </button>
+              </div>
+
+              {/* Card 3 */}
+              <div className="p-6 rounded-2xl bg-stone-900 border border-stone-800 space-y-4 flex flex-col justify-between hover:border-amber-500/40 transition-colors">
+                <div className="space-y-2">
+                  <span className="text-[10px] font-bold text-amber-400 uppercase tracking-wider font-mono">Year-End</span>
+                  <h4 className="text-base font-bold text-white">Annual Farm & Tax Package</h4>
+                  <div className="text-2xl font-extrabold text-stone-100 font-mono">
+                    $349<span className="text-xs text-stone-400 font-normal"> / year</span>
+                  </div>
+                  <p className="text-xs text-stone-400">
+                    Unlimited receipts. Year-end CPA ledger export, multi-company reconciliation, and continuous email intake.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInquiryPlan('Annual Farm & Tax Package ($349/year)');
+                    const el = document.getElementById('service-form');
+                    el?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className="w-full py-2 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                >
+                  Select Annual
+                </button>
+              </div>
+            </div>
+
+            {/* Service Request Form */}
+            <div id="service-form" className="max-w-xl mx-auto p-6 rounded-2xl bg-stone-900 border border-stone-800 space-y-4 shadow-lg">
+              <h4 className="text-sm font-bold text-stone-100 flex items-center gap-2">
+                <Send className="w-4 h-4 text-amber-400" />
+                <span>Request Service Setup</span>
+              </h4>
+
+              {inquirySuccess ? (
+                <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-xs text-emerald-200 space-y-2">
+                  <div className="font-bold flex items-center gap-2 text-emerald-400">
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Request Received!</span>
+                  </div>
+                  <p className="text-stone-300">
+                    Thank you, <strong className="text-white">{inquiryName}</strong>! Your request for the <strong className="text-amber-400">{inquiryPlan}</strong> has been routed to your central accounting operator. We will confirm your setup within 24 hours.
+                  </p>
+                </div>
+              ) : (
+                <form onSubmit={handleServiceSubmit} className="space-y-3 text-xs">
+                  <div>
+                    <label className="text-[11px] font-medium text-stone-300">Full Name</label>
+                    <input
+                      type="text"
+                      required
+                      value={inquiryName}
+                      onChange={(e) => setInquiryName(e.target.value)}
+                      placeholder="Jane Doe"
+                      className="w-full mt-1 px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-medium text-stone-300">Contact Email Address</label>
+                    <input
+                      type="email"
+                      required
+                      value={inquiryEmail}
+                      onChange={(e) => setInquiryEmail(e.target.value)}
+                      placeholder="billing@yourfarm.com"
+                      className="w-full mt-1 px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-medium text-stone-300">Farm / Business Entity</label>
+                    <input
+                      type="text"
+                      value={inquiryCompany}
+                      onChange={(e) => setInquiryCompany(e.target.value)}
+                      placeholder="Green Valley Farms LLC"
+                      className="w-full mt-1 px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-medium text-stone-300">Selected Service Plan</label>
+                    <input
+                      type="text"
+                      readOnly
+                      value={inquiryPlan}
+                      className="w-full mt-1 px-3 py-2 bg-stone-950/60 border border-stone-800 rounded-xl text-amber-300 font-semibold cursor-not-allowed"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-medium text-stone-300">Notes / QuickBooks Details</label>
                     <textarea
                       rows={2}
                       value={inquiryNotes}
                       onChange={(e) => setInquiryNotes(e.target.value)}
-                      placeholder="e.g. Needed for Schedule F farm deductions or QuickBooks sync..."
-                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 resize-none"
+                      placeholder="Mention your QuickBooks company name or special receipt requirements..."
+                      className="w-full mt-1 px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:border-amber-500"
                     />
                   </div>
 
-                  <div className="pt-2">
-                    <button
-                      type="submit"
-                      disabled={isSubmittingInquiry}
-                      className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 font-semibold text-white rounded-xl text-xs transition-all shadow-md active:scale-[0.99] cursor-pointer flex items-center justify-center gap-2"
-                    >
-                      <Send className="w-4 h-4" />
-                      <span>{isSubmittingInquiry ? 'Submitting...' : 'Submit Interest & Request Build'}</span>
-                    </button>
-                  </div>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingInquiry}
+                    className="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl transition-colors cursor-pointer mt-2"
+                  >
+                    {isSubmittingInquiry ? 'Submitting Request...' : 'Send Request to Accounting Team'}
+                  </button>
                 </form>
               )}
             </div>
           </div>
-
-          {/* Card 2: Client License Key Verification */}
-          <div className="p-6 rounded-2xl bg-stone-900/90 border border-stone-800 flex flex-col justify-between space-y-5 shadow-lg">
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-500/30 flex items-center justify-center text-sky-400">
-                  <Key className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-stone-100">Verify License Key Status</h3>
-                  <p className="text-xs text-stone-400">Check subscription validity & expiration</p>
-                </div>
-              </div>
-
-              <p className="text-xs text-stone-300 leading-relaxed">
-                Already have an assigned license key? Enter it below to check its real-time activation status, expiration date, and verified plan privileges.
-              </p>
-
-              <form onSubmit={handleVerifyClientKey} className="space-y-3">
-                <div>
-                  <label className="text-xs font-medium text-stone-300 block mb-1">
-                    Enter Your License Key
-                  </label>
-                  <input
-                    type="text"
-                    value={clientKeyInput}
-                    onChange={(e) => setClientKeyInput(e.target.value)}
-                    placeholder="e.g. 6MONTH-9842-8710-2026 or ANNUAL-..."
-                    className="w-full text-xs font-mono px-3 py-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-100 placeholder-stone-600 focus:outline-none focus:border-sky-500 uppercase tracking-wider"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  className="w-full py-2 px-4 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white rounded-xl text-xs font-medium border border-stone-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-sky-400" />
-                  Check License Status
-                </button>
-              </form>
-
-              {checkResult && (
-                <div className={`p-3.5 rounded-xl border text-xs space-y-1.5 ${
-                  checkResult.valid 
-                    ? 'bg-emerald-950/40 border-emerald-800/60 text-emerald-200' 
-                    : 'bg-rose-950/40 border-rose-800/60 text-rose-200'
-                }`}>
-                  <div className="flex items-center gap-2 font-semibold text-sm">
-                    {checkResult.valid ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                    ) : (
-                      <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                    )}
-                    <span>{checkResult.status || (checkResult.valid ? 'License Active' : 'Invalid License')}</span>
-                  </div>
-
-                  {checkResult.plan && (
-                    <div className="text-[11px] text-stone-300">
-                      <strong>Plan:</strong> {checkResult.plan}
-                    </div>
-                  )}
-
-                  {checkResult.expiresDate && (
-                    <div className="text-[11px] text-stone-300 flex items-center justify-between">
-                      <div><strong>Expiration:</strong> {checkResult.expiresDate}</div>
-                      {checkResult.valid && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const pricingEl = document.getElementById('pricing-plans');
-                            if (pricingEl) pricingEl.scrollIntoView({ behavior: 'smooth' });
-                          }}
-                          className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 transition-colors cursor-pointer"
-                        >
-                          Renew My Plan
-                        </button>
-                      )}
-                    </div>
-                  )}
-
-                  <p className="text-[11px] text-stone-400 pt-0.5 leading-relaxed">
-                    {checkResult.message}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Pricing & Subscription Plans */}
-        <div className="space-y-6" id="pricing-plans">
-          <div className="text-center max-w-xl mx-auto space-y-2">
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
-              <Tag className="w-3.5 h-3.5" />
-              Simple, Honest Independent Pricing
-            </div>
-            <h3 className="text-xl sm:text-2xl font-bold tracking-tight text-stone-100">
-              Choose Your Subscription Plan
-            </h3>
-            <p className="text-xs text-stone-400">
-              Affordable offline-first OCR & spreadsheet generator. Save big with multi-month discounts!
-            </p>
-          </div>
-
-          {/* 4-Tier Pricing Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-            {/* 1. Monthly Plan */}
-            <div className="rounded-2xl bg-stone-900/90 border border-stone-800 p-5 flex flex-col justify-between space-y-4 hover:border-stone-700 transition-all shadow-md">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-400">Monthly</span>
-                  <span className="text-[11px] px-2 py-0.5 rounded bg-stone-800 text-stone-300 font-medium">30 Days</span>
-                </div>
-
-                <div>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-extrabold text-stone-100">$15</span>
-                    <span className="text-xs text-stone-400">/ month</span>
-                  </div>
-                  <p className="text-[11px] text-stone-500 mt-0.5">Billed monthly • Cancel anytime</p>
-                </div>
-
-                <div className="h-px bg-stone-800/80 my-2" />
-
-                <ul className="space-y-2 text-xs text-stone-300">
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Local OCR image & PDF scanning</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Excel & CSV expense export</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Unlimited receipt processing</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Pay-as-you-go flexibility</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenOrderModal({
-                    id: 'MONTHLY',
-                    name: 'Monthly Plan',
-                    price: '$15',
-                    period: '30 Days',
-                    durationDays: 30
-                  })}
-                  className="w-full py-2.5 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white text-xs font-semibold rounded-xl border border-stone-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <span>Select Monthly</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* 2. 3-Month Plan (Quarterly) */}
-            <div className="rounded-2xl bg-stone-900/90 border border-stone-800 p-5 flex flex-col justify-between space-y-4 hover:border-stone-700 transition-all shadow-md">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-400">Quarterly</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 font-semibold">
-                    Save 13%
-                  </span>
-                </div>
-
-                <div>
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-3xl font-extrabold text-stone-100">$39</span>
-                    <span className="text-xs text-stone-400">/ 3 months</span>
-                  </div>
-                  <p className="text-[11px] text-amber-400/90 font-mono mt-0.5">~$13.00 / month ($6 savings)</p>
-                </div>
-
-                <div className="h-px bg-stone-800/80 my-2" />
-
-                <ul className="space-y-2 text-xs text-stone-300">
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Everything in Monthly Plan</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Full 90 days continuous access</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Great for quarterly estimated tax prep</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Full software updates included</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenOrderModal({
-                    id: '3MONTH',
-                    name: '3-Month Quarterly Plan',
-                    price: '$39',
-                    originalPrice: '$45',
-                    period: '90 Days',
-                    durationDays: 90,
-                    savingsBadge: 'Save 13%'
-                  })}
-                  className="w-full py-2.5 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 hover:text-white text-xs font-semibold rounded-xl border border-stone-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <span>Select 3-Month</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* 3. 6-Month Plan (Semi-Annual) - POPULAR OFFER */}
-            <div className="rounded-2xl bg-stone-900 border-2 border-amber-500/60 p-5 flex flex-col justify-between space-y-4 shadow-xl relative scale-[1.02]">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-gradient-to-r from-amber-600 to-amber-500 text-stone-950 text-[10px] font-extrabold uppercase rounded-full shadow-md tracking-wider flex items-center gap-1">
-                <Sparkles className="w-3 h-3" />
-                Popular Offer • Save 35%
-              </div>
-
-              <div className="space-y-3 pt-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-amber-400">6 Months</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
-                    180 Days
-                  </span>
-                </div>
-
-                <div>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-3xl font-extrabold text-stone-100">$59</span>
-                    <span className="text-xs text-stone-500 line-through">$90</span>
-                    <span className="text-xs text-stone-400">/ 6 mos</span>
-                  </div>
-                  <p className="text-[11px] text-amber-400 font-mono mt-0.5 font-semibold">
-                    ~$9.83 / month (Under $10/mo!)
-                  </p>
-                </div>
-
-                <div className="h-px bg-stone-800/80 my-2" />
-
-                <ul className="space-y-2 text-xs text-stone-300">
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Everything in Quarterly Plan</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Save $31 compared to monthly billing</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Mid-year tax review & receipt ledger</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
-                    <span>Priority email support & feature updates</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenOrderModal({
-                    id: '6MONTH',
-                    name: '6-Month Plan (Semi-Annual)',
-                    price: '$59',
-                    originalPrice: '$90',
-                    period: '180 Days',
-                    durationDays: 180,
-                    savingsBadge: 'Save 35%'
-                  })}
-                  className="w-full py-2.5 px-3 bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>Choose 6-Month Plan</span>
-                </button>
-              </div>
-            </div>
-
-            {/* 4. Full Year Plan (Annual) - BEST VALUE / 50%+ OFF */}
-            <div className="rounded-2xl bg-stone-900 border-2 border-emerald-500/60 p-5 flex flex-col justify-between space-y-4 shadow-xl relative scale-[1.02]">
-              <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-0.5 bg-emerald-500 text-stone-950 text-[10px] font-extrabold uppercase rounded-full shadow-md tracking-wider flex items-center gap-1">
-                <Tag className="w-3 h-3" />
-                Best Value • Over 50% Off
-              </div>
-
-              <div className="space-y-3 pt-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-emerald-400">Full Year</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">
-                    365 Days
-                  </span>
-                </div>
-
-                <div>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-3xl font-extrabold text-stone-100">$89</span>
-                    <span className="text-xs text-stone-500 line-through">$180</span>
-                    <span className="text-xs text-stone-400">/ year</span>
-                  </div>
-                  <p className="text-[11px] text-emerald-400 font-mono mt-0.5 font-semibold">
-                    ~$7.42 / month (Save $91 total!)
-                  </p>
-                </div>
-
-                <div className="h-px bg-stone-800/80 my-2" />
-
-                <ul className="space-y-2 text-xs text-stone-300">
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>Complete 365-day fiscal year coverage</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>Lowest cost per month ($7.42/mo)</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>All annual and year-end tax exports</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0 mt-0.5" />
-                    <span>Continuous in-place updates included</span>
-                  </li>
-                </ul>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={() => handleOpenOrderModal({
-                    id: 'ANNUAL',
-                    name: 'Full Year Plan (Annual)',
-                    price: '$89',
-                    originalPrice: '$180',
-                    period: '365 Days',
-                    durationDays: 365,
-                    savingsBadge: 'Over 50% Off'
-                  })}
-                  className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md transition-all active:scale-[0.98] cursor-pointer flex items-center justify-center gap-1.5"
-                >
-                  <Tag className="w-3.5 h-3.5" />
-                  <span>Choose Full Year (Best Deal)</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Transparent Independent Developer & Tax Advisory Disclosure */}
-          <div className="p-5 rounded-2xl bg-stone-900/60 border border-stone-800/90 flex flex-col md:flex-row gap-4 items-start shadow-sm">
-            <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400 shrink-0">
-              <Shield className="w-5 h-5" />
-            </div>
-            <div className="space-y-1.5 text-xs">
-              <h4 className="font-bold text-stone-200 flex items-center gap-2">
-                <span>Independent Developer & Tax Advisory Disclosure</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-stone-800 text-stone-400">Transparency Notice</span>
-              </h4>
-              <p className="text-stone-400 leading-relaxed">
-                I am an independent software developer and coding enthusiast who built this desktop application to eliminate the painful, tedious chore of manual receipt entry and spreadsheet transcription. <strong className="text-stone-300">I am not a certified public accountant (CPA), licensed tax attorney, or financial advisor.</strong>
-              </p>
-              <p className="text-stone-400 leading-relaxed">
-                The pricing above directly reflects this independent status: providing an accessible, high-efficiency software utility at a fraction of enterprise software prices. This application serves strictly as an automated OCR, organization, and extraction assistant. Users should always verify their categorized expenses and consult a qualified, licensed tax professional for official tax filing and legal advice.
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Order / License Request Modal */}
-        {selectedPlanForOrder && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150">
-            <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
-              <div className="flex items-center justify-between border-b border-stone-800 pb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
-                    <Key className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-bold text-stone-100">Request License Key</h3>
-                    <p className="text-xs text-stone-400">Directly from the developer</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedPlanForOrder(null)}
-                  className="p-1 rounded-lg text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-colors cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Selected Plan Summary */}
-              <div className="p-3.5 bg-stone-950 rounded-xl border border-stone-800 flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-stone-200 block">{selectedPlanForOrder.name}</span>
-                  <span className="text-[11px] text-stone-400">{selectedPlanForOrder.period} activation duration</span>
-                </div>
-                <div className="text-right">
-                  <div className="flex items-baseline gap-1">
-                    <span className="text-lg font-extrabold text-amber-400">{selectedPlanForOrder.price}</span>
-                    {selectedPlanForOrder.originalPrice && (
-                      <span className="text-xs text-stone-500 line-through">{selectedPlanForOrder.originalPrice}</span>
-                    )}
-                  </div>
-                  {selectedPlanForOrder.savingsBadge && (
-                    <span className="text-[10px] font-semibold text-emerald-400">
-                      {selectedPlanForOrder.savingsBadge}
-                    </span>
-                  )}
-                </div>
-              </div>
-
-              {orderSubmittedSuccess ? (
-                <div className="p-4 bg-emerald-950/40 border border-emerald-800/60 rounded-xl space-y-3">
-                  <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
-                    <CheckCircle2 className="w-4 h-4 shrink-0" />
-                    <span>License Request Received!</span>
-                  </div>
-                  <p className="text-stone-300 text-xs leading-relaxed">
-                    Thank you, <strong className="text-stone-100">{orderName}</strong>. Your request for the <strong className="text-amber-400">{selectedPlanForOrder.name}</strong> ({selectedPlanForOrder.price}) has been securely logged. The administrator will contact you at <strong className="text-stone-100">{orderEmail}</strong> with activation instructions.
-                  </p>
-                  <div className="pt-2 flex flex-col gap-2">
-                    <button
-                      type="button"
-                      onClick={handleCopyOrderSummary}
-                      className="w-full py-2 px-3 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold rounded-xl border border-stone-700 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      {copiedOrderDetails ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-emerald-400">Copied to Clipboard!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>Copy Request Summary</span>
-                        </>
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPlanForOrder(null)}
-                      className="w-full py-2 px-3 bg-stone-900 hover:bg-stone-800 text-stone-300 text-xs rounded-xl border border-stone-800 transition-colors cursor-pointer"
-                    >
-                      Close Window
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <form onSubmit={handleOrderSubmitOnline} className="space-y-3 text-xs">
-                  {orderError && (
-                    <div className="p-2.5 bg-rose-950/50 border border-rose-800/60 rounded-lg text-rose-300 flex items-center gap-2">
-                      <XCircle className="w-4 h-4 shrink-0 text-rose-400" />
-                      <span>{orderError}</span>
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="text-stone-300 font-medium block mb-1">
-                      Your Name <span className="text-amber-400">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={orderName}
-                      onChange={(e) => setOrderName(e.target.value)}
-                      placeholder="e.g. John Miller"
-                      required
-                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-stone-300 font-medium block mb-1">
-                      Your Email (for license delivery) <span className="text-amber-400">*</span>
-                    </label>
-                    <input
-                      type="email"
-                      value={orderEmail}
-                      onChange={(e) => setOrderEmail(e.target.value)}
-                      placeholder="e.g. name@example.com"
-                      required
-                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-stone-300 font-medium block mb-1">Optional Message / Questions</label>
-                    <textarea
-                      rows={2}
-                      value={orderNote}
-                      onChange={(e) => setOrderNote(e.target.value)}
-                      placeholder="Any specific questions or preferred payment methods..."
-                      className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-100 placeholder-stone-600 focus:outline-none focus:border-amber-500 resize-none"
-                    />
-                  </div>
-
-                  {/* Actions: Send Email or Copy Details */}
-                  <div className="pt-2 space-y-2">
-                    <button
-                      type="submit"
-                      disabled={isSubmittingOrder}
-                      className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold text-xs rounded-xl shadow transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Send className="w-4 h-4" />
-                      <span>{isSubmittingOrder ? 'Submitting Request...' : 'Submit License Request Online'}</span>
-                    </button>
-
-                    <a
-                      href={getOrderGmailWebUrl()}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="w-full py-2 px-4 bg-stone-900 hover:bg-stone-800 text-stone-300 hover:text-stone-100 text-xs font-medium rounded-xl border border-stone-800 transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                    >
-                      <Mail className="w-3.5 h-3.5 text-red-400" />
-                      <span>Optional: Send Direct via Web Gmail</span>
-                    </a>
-                  </div>
-                </form>
-              )}
-
-              <p className="text-[11px] text-stone-500 text-center leading-relaxed">
-                Keys are issued and emailed promptly upon order confirmation and review.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Client Account Authentication Modal (Sign In / Register) */}
-        <ClientAuthModal
-          isOpen={showAuthModal}
-          initialMode={authModalMode}
-          availableKeys={licenseKeys}
-          onClose={() => setShowAuthModal(false)}
-          onLoginSuccess={(session) => {
-            setClientSession(session);
-            setShowAuthModal(false);
-          }}
-        />
-
-        {/* Client Account Settings & License Management Modal */}
-        {clientSession && (
-          <ClientAccountModal
-            isOpen={showAccountModal}
-            session={clientSession}
-            availableKeys={licenseKeys}
-            onClose={() => setShowAccountModal(false)}
-            onSessionUpdated={(updated) => setClientSession(updated)}
-            onLogout={() => {
-              clearClientSession();
-              setClientSession(null);
-              setShowAccountModal(false);
-            }}
-            onLicenseRevoked={(deletedKey) => {
-              if (onLicenseRevoked) {
-                onLicenseRevoked(deletedKey);
-              }
-            }}
-          />
         )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-stone-800/80 bg-stone-950 py-5 px-6 text-center text-xs text-stone-500 flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-400" />
-          <span>QuickBooks Online Certified OAuth 2.0 • TLS 1.3 Transport Security</span>
-        </div>
-
-        <div className="flex items-center gap-3 text-stone-400 text-[11px]">
-          <button
-            type="button"
-            onClick={() => {
-              if (onOpenLegal) onOpenLegal('privacy');
-              else window.location.hash = 'privacy';
-            }}
-            className="hover:text-emerald-400 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[11px]"
-          >
+      <footer className="border-t border-stone-800 bg-stone-900/60 py-6 px-6 mt-12 text-center text-xs text-stone-500 space-y-2">
+        <p>
+          Farm & Small Business Receipt Processor — Client Intake Portal v{currentVersion}
+        </p>
+        <div className="flex items-center justify-center gap-4 text-[11px]">
+          <button type="button" onClick={() => onOpenLegal?.('privacy')} className="hover:text-stone-300 cursor-pointer">
             Privacy Policy
           </button>
           <span>•</span>
-          <button
-            type="button"
-            onClick={() => {
-              if (onOpenLegal) onOpenLegal('terms');
-              else window.location.hash = 'terms';
-            }}
-            className="hover:text-amber-400 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[11px]"
-          >
-            Terms & EULA
+          <button type="button" onClick={() => onOpenLegal?.('terms')} className="hover:text-stone-300 cursor-pointer">
+            Terms of Service
           </button>
           <span>•</span>
-          <button
-            type="button"
-            onClick={() => {
-              if (onOpenLegal) onOpenLegal('support');
-              else window.location.hash = 'support';
-            }}
-            className="hover:text-sky-400 hover:underline cursor-pointer bg-transparent border-0 p-0 text-[11px]"
-          >
-            Support & SLA
+          <button type="button" onClick={() => onOpenLegal?.('support')} className="hover:text-stone-300 cursor-pointer">
+            Support
           </button>
         </div>
-
-        <div className="flex items-center gap-4">
-          <span>License Support: <strong className="text-stone-400">moisttowlett247@gmail.com</strong></span>
-          {onNavigateToAdmin && (
-            <>
-              <span className="text-stone-700 hidden sm:inline">•</span>
-              <button
-                type="button"
-                onClick={onNavigateToAdmin}
-                className="text-stone-600 hover:text-stone-400 text-[10px] cursor-pointer transition-colors"
-                title="Administrator Console Login"
-              >
-                Admin
-              </button>
-            </>
-          )}
-        </div>
       </footer>
+
+      {/* Modals */}
+      {showAuthModal && (
+        <ClientAuthModal
+          mode={authModalMode}
+          isOpen={showAuthModal}
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={(session) => {
+            setClientSession(session);
+            setShowAuthModal(false);
+          }}
+          onSwitchMode={(newMode) => setAuthModalMode(newMode)}
+        />
+      )}
+
+      {showAccountModal && clientSession && (
+        <ClientAccountModal
+          session={clientSession}
+          isOpen={showAccountModal}
+          onClose={() => setShowAccountModal(false)}
+          onSignOut={() => {
+            clearClientSession();
+            setClientSession(null);
+            setShowAccountModal(false);
+          }}
+          onProfileUpdated={(updated) => setClientSession(updated)}
+        />
+      )}
     </div>
   );
 };

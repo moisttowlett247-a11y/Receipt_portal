@@ -10,7 +10,10 @@ import {
   AlertCircle,
   Laptop,
   Check,
-  PackageCheck
+  PackageCheck,
+  Server,
+  Cpu,
+  Layers
 } from 'lucide-react';
 import {
   BUNDLE_FILES,
@@ -41,7 +44,7 @@ export const DownloadBundleModal: React.FC<DownloadBundleModalProps> = ({
     setStatusMsg('Packaging files into ZIP bundle...');
     try {
       await downloadFullBundleZip((msg) => setStatusMsg(msg));
-      if (onToast) onToast('Desktop application package (.zip) downloaded successfully!');
+      if (onToast) onToast('Central Engine & Multi-VM Cluster package (.zip) downloaded successfully!');
       setTimeout(() => {
         setDownloadingZip(false);
         setStatusMsg(null);
@@ -87,17 +90,17 @@ export const DownloadBundleModal: React.FC<DownloadBundleModalProps> = ({
         <div className="px-6 py-4 border-b border-stone-800 flex items-center justify-between bg-stone-900/80">
           <div className="flex items-center gap-3">
             <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400">
-              <FolderArchive className="w-5 h-5" />
+              <Server className="w-5 h-5" />
             </div>
             <div>
               <h3 className="text-base font-bold text-white flex items-center gap-2">
-                Download Desktop Runtime Package
+                Operator Engine & Multi-VM Cluster Bundle
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                  Ready to Run
+                  Ready to Deploy
                 </span>
               </h3>
               <p className="text-xs text-stone-400">
-                All scripts, Windows .bat launcher, dependencies, and configs bundled together
+                Run locally with visual GUI or scale across multiple headless Virtual Machines
               </p>
             </div>
           </div>
@@ -117,12 +120,13 @@ export const DownloadBundleModal: React.FC<DownloadBundleModalProps> = ({
             <div className="space-y-1">
               <div className="flex items-center gap-2 text-white font-semibold text-sm">
                 <PackageCheck className="w-4 h-4 text-amber-400" />
-                Complete Desktop Bundle (.ZIP)
+                Complete Operator & VM Cluster Bundle (.ZIP)
               </div>
               <p className="text-stone-300 text-[11px] leading-relaxed max-w-md">
                 Contains <code className="text-amber-300">receipt_processor.py</code>,{' '}
                 <code className="text-emerald-300">run_receipt_processor.bat</code>,{' '}
-                <code className="text-sky-300">requirements.txt</code>, and configuration files in one archive.
+                <code className="text-sky-300">run_vm_worker.sh</code>,{' '}
+                <code className="text-purple-300">README_VM_CLUSTER.txt</code>, and configs.
               </p>
               {statusMsg && (
                 <div className="text-[11px] font-mono text-amber-400 animate-pulse pt-1">
@@ -141,20 +145,33 @@ export const DownloadBundleModal: React.FC<DownloadBundleModalProps> = ({
             </button>
           </div>
 
-          {/* Quick Launch Guide */}
+          {/* Deployment Options Guide */}
           <div className="bg-stone-950/70 border border-stone-800/80 rounded-xl p-3.5 space-y-2">
             <div className="flex items-center gap-2 text-stone-200 font-semibold text-[11px]">
-              <Laptop className="w-3.5 h-3.5 text-sky-400" />
-              <span>How to Run After Extracting:</span>
+              <Cpu className="w-3.5 h-3.5 text-amber-400" />
+              <span>Deployment Modes (Local Workstation vs. Multi-VM):</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-[11px] text-stone-400">
-              <div className="bg-stone-900/90 border border-stone-800 rounded-lg p-2.5">
-                <span className="font-semibold text-emerald-400 block mb-1">🪟 Windows (Easiest):</span>
-                Double-click <span className="font-mono text-stone-200 bg-stone-800 px-1 py-0.5 rounded">run_receipt_processor.bat</span>. It verifies Python, installs dependencies automatically, and launches the app.
+              <div className="bg-stone-900/90 border border-stone-800 rounded-lg p-2.5 space-y-1">
+                <span className="font-semibold text-emerald-400 flex items-center gap-1">
+                  <Laptop className="w-3 h-3" />
+                  Operator Workstation (GUI Mode):
+                </span>
+                <p>
+                  Double-click <span className="font-mono text-stone-200 bg-stone-800 px-1 py-0.5 rounded">run_receipt_processor.bat</span> on Windows or run <span className="font-mono text-stone-200 bg-stone-800 px-1 py-0.5 rounded">./run_receipt_processor.sh</span>.
+                  Provides the rich interactive GUI, client manager, and live activity feed.
+                </p>
               </div>
-              <div className="bg-stone-900/90 border border-stone-800 rounded-lg p-2.5">
-                <span className="font-semibold text-purple-400 block mb-1">🍎 macOS / Linux:</span>
-                Open Terminal in folder and run <span className="font-mono text-stone-200 bg-stone-800 px-1 py-0.5 rounded">./run_receipt_processor.sh</span> (or <span className="font-mono text-stone-200 bg-stone-800 px-1 py-0.5 rounded">python3 receipt_processor.py</span>).
+
+              <div className="bg-stone-900/90 border border-stone-800 rounded-lg p-2.5 space-y-1">
+                <span className="font-semibold text-sky-400 flex items-center gap-1">
+                  <Server className="w-3 h-3" />
+                  Headless VM Workers (Cloud/Server):
+                </span>
+                <p>
+                  Run <span className="font-mono text-stone-200 bg-stone-800 px-1 py-0.5 rounded">./run_vm_worker.sh vm-01 /shared/inbox</span>.
+                  Runs 24/7 without GUI or X11. Distributed atomic lockfiles prevent duplicate processing across multiple VMs.
+                </p>
               </div>
             </div>
           </div>
@@ -230,7 +247,7 @@ export const DownloadBundleModal: React.FC<DownloadBundleModalProps> = ({
         <div className="px-6 py-3.5 border-t border-stone-800 bg-stone-900/90 flex items-center justify-between">
           <div className="flex items-center gap-2 text-[11px] text-stone-400">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Files match version 1.0.0 with live subscription sync support</span>
+            <span>Dual Workstation GUI & Headless Multi-VM Cluster Edition</span>
           </div>
           <button
             onClick={onClose}
