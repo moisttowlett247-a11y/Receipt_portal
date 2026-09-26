@@ -16,7 +16,8 @@ import {
   Calendar,
   Layers,
   Sparkles,
-  Clock
+  Clock,
+  Lock
 } from 'lucide-react';
 import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
 import { 
@@ -92,6 +93,10 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
   };
 
   const daysLeft = getDaysLeft();
+  const hasSubscribedPlanOrLicense = Boolean(
+    session.planStatus === 'ACTIVE' || 
+    (session.licenseKey && session.licenseKey.trim().length > 0)
+  );
 
   const handleSaveProfile = (e: React.FormEvent) => {
     e.preventDefault();
@@ -145,7 +150,7 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
   };
 
   const handleCopyIntakeEmail = () => {
-    navigator.clipboard.writeText('moisttowlett247@gmail.com');
+    navigator.clipboard.writeText('receiptcheckerv@gmail.com');
     setCopiedEmail(true);
     setTimeout(() => setCopiedEmail(false), 2000);
   };
@@ -291,8 +296,7 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                     </div>
                     <div className="text-xs text-stone-400 flex flex-wrap items-center gap-2">
                       <span>
-                        Receipts Submitted: <strong className="text-stone-200">{session.receiptsSubmittedCount || 0}</strong>
-                        {session.receiptQuota && session.receiptQuota > 0 ? ` / ${session.receiptQuota} quota` : ' (Unlimited)'}
+                        Receipts Submitted: <strong className="text-stone-200">{session.receiptsSubmittedCount || 0}</strong> • <strong className="text-emerald-400">Unlimited Receipt Ingestion</strong>
                       </span>
                       {session.planExpiresAt && (
                         <span>• Valid until: <strong className="text-amber-300">{session.planExpiresAt}</strong></span>
@@ -361,42 +365,6 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                         <span>{copiedKey ? 'Copied' : 'Copy'}</span>
                       </button>
                     </div>
-
-                    {/* Central Managed Processing Architecture Card */}
-                    <div className="p-3.5 rounded-xl bg-stone-900/60 border border-stone-800 space-y-2">
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-stone-200">
-                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Central Accounting Cluster & QuickBooks Sync</span>
-                      </div>
-                      <p className="text-[11px] text-stone-400 leading-relaxed">
-                        Receipts you upload are securely ingested and processed by your central accounting team's cluster. AI OCR reads line items, calculates tax deductions, and syncs directly to your connected QuickBooks Online account. No local Python scripts or batch files are required.
-                      </p>
-                      <div className="flex items-center gap-2 pt-1 text-[10px] text-emerald-400 font-mono">
-                        <Check className="w-3 h-3 text-emerald-400" />
-                        <span>Zero Local Installation • 100% Managed Ingestion</span>
-                      </div>
-                    </div>
-
-                    {/* Dedicated Option B Email Forwarding Intake Card */}
-                    <div className="p-3.5 rounded-xl bg-sky-950/20 border border-sky-800/40 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-1.5 text-xs font-semibold text-sky-200">
-                          <Mail className="w-3.5 h-3.5 text-sky-400" />
-                          <span>Direct Email Intake Address (Option B)</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleCopyIntakeEmail}
-                          className="text-[11px] font-medium text-sky-400 hover:text-sky-300 px-2 py-1 rounded bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 transition-colors cursor-pointer flex items-center gap-1"
-                        >
-                          {copiedEmail ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-                          <span>{copiedEmail ? 'Copied' : 'Copy Email'}</span>
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-stone-400 leading-relaxed">
-                        Forward receipt photos or PDF invoices directly from your verified email address (<strong className="text-amber-300">{session.email}</strong>) to <strong className="text-sky-300">moisttowlett247@gmail.com</strong>. Our system matches your sender address and automatically imports them into your intake queue!
-                      </p>
-                    </div>
                   </div>
                 ) : (
                   <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-300/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -412,6 +380,62 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                   </div>
                 )}
               </div>
+
+              {/* Central Managed Processing Architecture Card */}
+              <div className="p-3.5 rounded-xl bg-stone-900/60 border border-stone-800 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-stone-200">
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Central Accounting Cluster & QuickBooks Sync</span>
+                </div>
+                <p className="text-[11px] text-stone-400 leading-relaxed">
+                  Receipts you upload are securely ingested and processed by your central accounting team's cluster. AI OCR reads line items, calculates tax deductions, and syncs directly to your connected QuickBooks Online account. No local Python scripts or batch files are required.
+                </p>
+                <div className="flex items-center gap-2 pt-1 text-[10px] text-emerald-400 font-mono">
+                  <Check className="w-3 h-3 text-emerald-400" />
+                  <span>Zero Local Installation • 100% Managed Ingestion</span>
+                </div>
+              </div>
+
+              {/* Dedicated Email Forwarding Intake Card - Strictly for Active Plan or License Holders */}
+              {hasSubscribedPlanOrLicense ? (
+                <div className="p-3.5 rounded-xl bg-sky-950/20 border border-sky-800/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 text-xs font-semibold text-sky-200">
+                      <Mail className="w-3.5 h-3.5 text-sky-400" />
+                      <span>Direct Email Intake Address</span>
+                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300">ACTIVE SUBSCRIBER</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyIntakeEmail}
+                      className="text-[11px] font-medium text-sky-400 hover:text-sky-300 px-2 py-1 rounded bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      {copiedEmail ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedEmail ? 'Copied' : 'Copy Email'}</span>
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-stone-400 leading-relaxed">
+                    Forward receipt photos or PDF invoices directly from your verified email address (<strong className="text-amber-300">{session.email}</strong>) to <strong className="text-sky-300 font-mono">receiptcheckerv@gmail.com</strong>. Our system matches your sender address and automatically imports them into your intake queue!
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3.5 rounded-xl bg-stone-900/60 border border-stone-800/80 flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2.5 text-stone-400">
+                    <div className="w-7 h-7 rounded-lg bg-stone-800 border border-stone-700 flex items-center justify-center text-stone-400 shrink-0">
+                      <Lock className="w-3.5 h-3.5 text-amber-400/80" />
+                    </div>
+                    <div>
+                      <span className="font-semibold text-stone-300">Dedicated Email Intake Address</span>
+                      <p className="text-[11px] text-stone-500">
+                        Direct email forwarding to our intake pipeline is reserved for active subscribers. Subscribe to a plan or activate a license key to reveal.
+                      </p>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 font-semibold whitespace-nowrap">
+                    ACTIVE PLAN REQUIRED
+                  </span>
+                </div>
+              )}
 
               {/* Account Details Bento */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

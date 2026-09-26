@@ -32,6 +32,7 @@ import {
   Shield,
   ArrowRight,
   Plus,
+  Copy,
   Image as ImageIcon
 } from 'lucide-react';
 import { LicenseKeyRecord, ProductInquiry, ClientAccountSession, PlanTier } from '../types';
@@ -109,6 +110,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
   // Filter state for history
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'QUEUED' | 'SYNCED_QBO'>('ALL');
+  const [copiedIntakeEmail, setCopiedIntakeEmail] = useState(false);
 
   const isLoggedIn = Boolean(clientSession);
   const hasActivePlan = Boolean(
@@ -430,34 +432,76 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         </div>
 
-        {/* Option B Dedicated Email Intake Banner */}
-        <div className="p-4 rounded-xl bg-sky-950/30 border border-sky-800/40 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md">
-          <div className="flex items-start sm:items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
-              <Mail className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="font-bold text-sky-200 flex items-center gap-1.5">
-                <span>Want to submit via email? (Option B Sender Mapping)</span>
+        {/* Dedicated Email Intake Banner - Strictly gated to users with active plans or licenses */}
+        {isLoggedIn && hasActivePlan ? (
+          <div className="p-4 rounded-xl bg-sky-950/30 border border-sky-800/40 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-md animate-in fade-in duration-200">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center shrink-0 mt-0.5 sm:mt-0">
+                <Mail className="w-4 h-4" />
               </div>
-              <p className="text-stone-300 text-[11px] leading-relaxed">
-                Forward receipt photos or PDF invoices directly to <strong className="text-sky-300">receipts@yourfirm.com</strong> (or <strong className="text-stone-200">moisttowlett247@gmail.com</strong>).
-                Send from your registered address (<strong className="text-amber-300">{clientEntityEmail}</strong>) and our system automatically routes them to your QuickBooks!
-              </p>
+              <div>
+                <div className="font-bold text-sky-200 flex items-center gap-1.5">
+                  <span>Want to submit via email? (Direct Email Intake)</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">SUBSCRIBER ACTIVE</span>
+                </div>
+                <p className="text-stone-300 text-[11px] leading-relaxed">
+                  Forward receipt photos or PDF invoices directly to <strong className="text-sky-300 font-mono">receiptcheckerv@gmail.com</strong>.
+                  Send from your registered address (<strong className="text-amber-300">{clientSession?.email || clientEntityEmail}</strong>) and our system automatically routes them to your QuickBooks!
+                </p>
+              </div>
             </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={() => {
-              navigator.clipboard.writeText('moisttowlett247@gmail.com');
-              alert('Copied intake address: moisttowlett247@gmail.com');
-            }}
-            className="px-3 py-1.5 bg-sky-900/60 hover:bg-sky-800 text-sky-200 font-medium rounded-lg transition-colors cursor-pointer text-xs shrink-0 self-start sm:self-auto border border-sky-700/50"
-          >
-            Copy Intake Email
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => {
+                navigator.clipboard.writeText('receiptcheckerv@gmail.com');
+                setCopiedIntakeEmail(true);
+                setTimeout(() => setCopiedIntakeEmail(false), 2000);
+              }}
+              className="px-3 py-1.5 bg-sky-900/60 hover:bg-sky-800 text-sky-200 font-medium rounded-lg transition-colors cursor-pointer text-xs shrink-0 self-start sm:self-auto border border-sky-700/50 flex items-center gap-1.5"
+            >
+              {copiedIntakeEmail ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Copied!</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy Intake Email</span>
+                </>
+              )}
+            </button>
+          </div>
+        ) : (
+          <div className="p-3.5 rounded-xl bg-stone-900/60 border border-stone-800/80 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-stone-400">
+              <div className="w-7 h-7 rounded-lg bg-stone-800 border border-stone-700/80 flex items-center justify-center text-stone-400 shrink-0">
+                <Lock className="w-3.5 h-3.5 text-amber-400/80" />
+              </div>
+              <div>
+                <span className="font-semibold text-stone-300">Direct Email Forwarding Ingestion</span>
+                <p className="text-[11px] text-stone-500">
+                  Subscribed clients can forward receipts directly from their email. Subscribe to a plan or activate a license to reveal your dedicated intake address.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (!isLoggedIn) {
+                  setAuthModalMode('register');
+                  setShowAuthModal(true);
+                } else {
+                  setActiveTab('upload');
+                }
+              }}
+              className="px-3 py-1 text-[11px] font-semibold text-amber-400 hover:text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30 rounded-lg transition-colors cursor-pointer whitespace-nowrap self-start sm:self-auto"
+            >
+              {isLoggedIn ? 'Choose a Plan to Reveal' : 'Sign Up to Unlock'}
+            </button>
+          </div>
+        )}
 
         {/* Portal Navigation Tabs */}
         <div className="flex border-b border-stone-800 gap-2">
@@ -628,13 +672,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             $49<span className="text-xs text-stone-400 font-normal"> / mo</span>
                           </div>
                           <p className="text-[11px] text-stone-400">
-                            Up to 100 receipts/mo. Full AI OCR line item breakdown and QuickBooks sync.
+                            Unlimited receipt uploads. Full AI OCR line item breakdown and QuickBooks sync.
                           </p>
                         </div>
                         <button
                           type="button"
                           disabled={isPurchasingPlan}
-                          onClick={() => handleQuickPurchasePlan('MONTHLY', 'Monthly Bookkeeping & Sync ($49/mo)', 100)}
+                          onClick={() => handleQuickPurchasePlan('MONTHLY', 'Monthly Bookkeeping & Sync ($49/mo)', -1)}
                           className="w-full py-2 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-bold rounded-lg transition-colors cursor-pointer"
                         >
                           Activate Monthly
@@ -653,13 +697,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             $129<span className="text-xs text-stone-400 font-normal"> / qtr</span>
                           </div>
                           <p className="text-[11px] text-stone-300">
-                            Up to 400 receipts. Schedule F & Schedule C deduction categorization and CPA audit pack.
+                            Unlimited receipt uploads. Schedule F & Schedule C deduction categorization and CPA audit pack.
                           </p>
                         </div>
                         <button
                           type="button"
                           disabled={isPurchasingPlan}
-                          onClick={() => handleQuickPurchasePlan('3MONTH', 'Quarterly Tax & Expense Prep ($129/quarter)', 400)}
+                          onClick={() => handleQuickPurchasePlan('3MONTH', 'Quarterly Tax & Expense Prep ($129/quarter)', -1)}
                           className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold rounded-lg transition-all cursor-pointer shadow-md shadow-amber-500/20"
                         >
                           Activate Quarterly
@@ -675,7 +719,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             $349<span className="text-xs text-stone-400 font-normal"> / yr</span>
                           </div>
                           <p className="text-[11px] text-stone-400">
-                            Unlimited receipts. Year-end CPA ledger export, multi-company reconciliation, continuous email intake.
+                            Unlimited receipt uploads. Year-end CPA ledger export, multi-company reconciliation, continuous email intake.
                           </p>
                         </div>
                         <button
@@ -745,7 +789,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">ACTIVE</span>
                           </div>
                           <p className="text-[11px] text-stone-400">
-                            {clientSession?.planExpiresAt ? `Valid through: ${clientSession.planExpiresAt}` : 'Subscribed'} • Quota: {clientSession?.receiptsSubmittedCount || 0} / {clientSession?.receiptQuota && clientSession.receiptQuota > 0 ? clientSession.receiptQuota : 'Unlimited'} receipts
+                            {clientSession?.planExpiresAt ? `Valid through: ${clientSession.planExpiresAt}` : 'Subscribed'} • Unlimited Receipt Ingestion ({clientSession?.receiptsSubmittedCount || 0} submitted)
                           </p>
                         </div>
                       </div>
@@ -1236,7 +1280,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     $49<span className="text-xs text-stone-400 font-normal"> / month</span>
                   </div>
                   <p className="text-xs text-stone-400">
-                    Up to 100 receipts/month. Full OCR line item breakdown and automated QuickBooks reconciliation.
+                    Unlimited receipt uploads. Full OCR line item breakdown and automated QuickBooks reconciliation.
                   </p>
                 </div>
                 <button
@@ -1248,7 +1292,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       setAuthModalMode('register');
                       setShowAuthModal(true);
                     } else {
-                      handleQuickPurchasePlan('MONTHLY', 'Monthly Bookkeeping & Sync ($49/mo)', 100);
+                      handleQuickPurchasePlan('MONTHLY', 'Monthly Bookkeeping & Sync ($49/mo)', -1);
                       setActiveTab('upload');
                     }
                   }}
@@ -1281,7 +1325,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     $129<span className="text-xs text-stone-400 font-normal"> / quarter</span>
                   </div>
                   <p className="text-xs text-stone-300">
-                    Up to 400 receipts. Schedule F & Schedule C deduction categorization, mileage logs, and accountant audit pack.
+                    Unlimited receipt uploads. Schedule F & Schedule C deduction categorization, mileage logs, and accountant audit pack.
                   </p>
                 </div>
                 <button
@@ -1293,7 +1337,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       setAuthModalMode('register');
                       setShowAuthModal(true);
                     } else {
-                      handleQuickPurchasePlan('3MONTH', 'Quarterly Tax & Expense Prep ($129/quarter)', 400);
+                      handleQuickPurchasePlan('3MONTH', 'Quarterly Tax & Expense Prep ($129/quarter)', -1);
                       setActiveTab('upload');
                     }
                   }}
@@ -1323,7 +1367,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                     $349<span className="text-xs text-stone-400 font-normal"> / year</span>
                   </div>
                   <p className="text-xs text-stone-400">
-                    Unlimited receipts. Year-end CPA ledger export, multi-company reconciliation, and continuous email intake.
+                    Unlimited receipt uploads. Year-end CPA ledger export, multi-company reconciliation, and continuous email intake.
                   </p>
                 </div>
                 <button

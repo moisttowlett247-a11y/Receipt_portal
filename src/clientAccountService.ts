@@ -202,7 +202,7 @@ export async function registerClientAccount(params: {
   let planStatus: 'ACTIVE' | 'NONE' = 'NONE';
   let planExpiresAt: string | undefined = undefined;
   let planPurchasedAt: string | undefined = undefined;
-  let receiptQuota: number = 100;
+  let receiptQuota: number = -1; // Unlimited receipts on all plans
 
   if (!cleanKey) {
     const matchedRecord = await lookupLicenseByEmailAsync(cleanEmail, params.availableKeys);
@@ -213,7 +213,7 @@ export async function registerClientAccount(params: {
       planStatus = matchedRecord.status === 'ACTIVE' ? 'ACTIVE' : 'NONE';
       planExpiresAt = matchedRecord.expiresDate;
       planPurchasedAt = matchedRecord.issuedDate;
-      receiptQuota = matchedRecord.plan === 'ANNUAL' || matchedRecord.plan === 'ADMIN' ? -1 : 400;
+      receiptQuota = -1;
       if (!resolvedCompanyName && matchedRecord.clientName) {
         resolvedCompanyName = matchedRecord.clientName;
       }
@@ -226,7 +226,7 @@ export async function registerClientAccount(params: {
       planStatus = found.status === 'ACTIVE' ? 'ACTIVE' : 'NONE';
       planExpiresAt = found.expiresDate;
       planPurchasedAt = found.issuedDate;
-      receiptQuota = found.plan === 'ANNUAL' || found.plan === 'ADMIN' ? -1 : 400;
+      receiptQuota = -1;
     }
   }
 
@@ -237,7 +237,7 @@ export async function registerClientAccount(params: {
     planStatus = 'ACTIVE';
     planPurchasedAt = new Date().toISOString();
     planExpiresAt = calculateExpirationDate(planPurchasedAt, params.initialPlanTier);
-    receiptQuota = params.initialPlanTier === 'ANNUAL' || params.initialPlanTier === 'ADMIN' ? -1 : (params.initialPlanTier === '3MONTH' ? 400 : 100);
+    receiptQuota = -1;
   }
 
   const newAccount: ClientUserAccount = {
@@ -374,7 +374,10 @@ export function getCurrentClientSession(): ClientAccountSession | null {
   try {
     const raw = sessionStorage.getItem(CLIENT_CURRENT_SESSION_KEY) || localStorage.getItem(CLIENT_CURRENT_SESSION_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const session = JSON.parse(raw);
+      // All plans have unlimited receipts
+      session.receiptQuota = -1;
+      return session;
     }
   } catch {}
   return null;
@@ -492,9 +495,7 @@ export function purchaseClientPlan(
 
   const purchasedAt = new Date().toISOString();
   const expiresAt = calculateExpirationDate(purchasedAt, params.planTier);
-  const quota = params.receiptQuota !== undefined 
-    ? params.receiptQuota 
-    : (params.planTier === 'ANNUAL' || params.planTier === 'ADMIN' ? -1 : (params.planTier === '3MONTH' ? 400 : 100));
+  const quota = -1; // Unlimited receipt intake across all price plans
 
   accounts[idx].plan = params.planName;
   accounts[idx].planTier = params.planTier;
@@ -577,38 +578,32 @@ export function activateClientLicenseKey(
   let planTier: PlanTier = 'MONTHLY';
   let planName = 'Monthly Bookkeeping';
   let planExpires = 'Never (Lifetime / Non-Expiring)';
-  let quota = 100;
+  let quota = -1; // Unlimited receipts across all plans
 
   if (cleanKey.startsWith('ADMIN-')) {
     planTier = 'ADMIN';
     planName = 'Admin Master (Never Expires)';
     planExpires = 'Never (Lifetime / Non-Expiring)';
-    quota = -1;
   } else if (cleanKey.startsWith('ANNUAL-')) {
     planTier = 'ANNUAL';
     planName = 'Annual Farm & Business Package';
     planExpires = calculateExpirationDate(new Date().toISOString(), 'ANNUAL');
-    quota = -1;
   } else if (cleanKey.startsWith('3MONTH-') || cleanKey.startsWith('PRO-')) {
     planTier = '3MONTH';
     planName = 'Quarterly Tax & Expense Prep';
     planExpires = calculateExpirationDate(new Date().toISOString(), '3MONTH');
-    quota = 400;
   } else if (cleanKey.startsWith('6MONTH-')) {
     planTier = '6MONTH';
     planName = 'Semi-Annual Bookkeeping';
     planExpires = calculateExpirationDate(new Date().toISOString(), '6MONTH');
-    quota = 800;
   } else if (cleanKey.startsWith('DEMO-')) {
     planTier = 'DEMO';
     planName = 'Trial Demo (7 Days)';
     planExpires = calculateExpirationDate(new Date().toISOString(), 'DEMO');
-    quota = 25;
   } else {
     planTier = 'MONTHLY';
     planName = 'Monthly Bookkeeping';
     planExpires = calculateExpirationDate(new Date().toISOString(), 'MONTHLY');
-    quota = 100;
   }
 
   if (matchedRecord) {
@@ -698,7 +693,7 @@ export function grantPlanByAdmin(
 
   const purchasedAt = new Date().toISOString();
   const exp = expiresDate || calculateExpirationDate(purchasedAt, planTier);
-  const quota = planTier === 'ANNUAL' || planTier === 'ADMIN' ? -1 : (planTier === '3MONTH' ? 400 : 100);
+  const quota = -1; // Unlimited receipts across all plans
 
   accounts[idx].plan = planName;
   accounts[idx].planTier = planTier;

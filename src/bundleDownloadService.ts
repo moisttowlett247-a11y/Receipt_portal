@@ -281,18 +281,21 @@ UPDATE_CHANNEL=stable
 `;
     }
 
-    // Add all 6 files directly from embedded verified source code
+    // Add all files directly from embedded verified source code
     zip.file('receipt_processor.py', EMBEDDED_FILES.py.content);
     zip.file('run_receipt_processor.bat', EMBEDDED_FILES.bat.content);
     zip.file('run_receipt_processor.sh', EMBEDDED_FILES.sh.content);
+    zip.file('run_vm_worker.sh', EMBEDDED_FILES.vm_sh.content);
+    zip.file('run_vm_worker.bat', EMBEDDED_FILES.vm_bat.content);
     zip.file('requirements.txt', EMBEDDED_FILES.req.content);
     zip.file('.env.example', EMBEDDED_FILES.env.content);
     if (options?.licenseKey) {
       zip.file('.env', envContent);
     }
     zip.file('README_DESKTOP_APP.txt', EMBEDDED_FILES.doc.content);
+    zip.file('README_VM_CLUSTER.txt', EMBEDDED_FILES.vm_doc.content);
 
-    onProgress?.('Compressing ZIP archive (6 complete files)...');
+    onProgress?.('Compressing ZIP archive (complete operator & VM cluster bundle)...');
     const contentBlob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',

@@ -1961,7 +1961,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         self.qbo_accounts_data = []
 
         # Email integration state
-        self.email_user = os.getenv("EMAIL_USER", "").strip()
+        self.email_user = os.getenv("EMAIL_USER", "receiptcheckerv@gmail.com").strip()
         self.email_pass = os.getenv("EMAIL_PASS", "").strip()
         self.imap_server = os.getenv("IMAP_SERVER", "imap.gmail.com").strip()
         self.watch_gmail_enabled = True
@@ -4130,8 +4130,8 @@ class HeadlessWorkerEngine:
         self.load_hash_cache()
 
         # Email Settings (Option B Sender Mapping)
-        self.email_user = os.getenv("EMAIL_USER", "")
-        self.email_pass = os.getenv("EMAIL_PASS", "")
+        self.email_user = os.getenv("EMAIL_USER", "receiptcheckerv@gmail.com").strip()
+        self.email_pass = os.getenv("EMAIL_PASS", "").strip()
         self.imap_server = os.getenv("IMAP_SERVER", "imap.gmail.com")
         self.watch_gmail = os.getenv("WATCH_GMAIL", "true").lower() in ("1", "true", "yes")
         self.last_gmail_check = 0

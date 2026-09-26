@@ -69,16 +69,17 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
       const inboxFolder = zip.folder('inbox');
       
       for (const sub of submissions) {
-        const safeClient = sub.clientName.replace(/[^a-zA-Z0-9_\-]/g, '_').trim() || 'General';
+        const safeClient = sub.clientName.replace(/[/\\?%*:|"<>]/g, '_').trim() || 'General';
+        const safeFileName = (sub.fileName || 'receipt.jpg').replace(/[/\\?%*:|"<>]/g, '_').trim();
         const clientFolder = inboxFolder?.folder(safeClient);
         
         if (sub.dataUrl && sub.dataUrl.includes(',')) {
           const base64Data = sub.dataUrl.split(',')[1];
-          clientFolder?.file(sub.fileName, base64Data, { base64: true });
+          clientFolder?.file(safeFileName, base64Data, { base64: true });
         } else {
           // Placeholder receipt text if image data isn't in memory
           const textContent = `RECEIPT INTAKE FILE\nClient: ${sub.clientName}\nFile: ${sub.fileName}\nUploaded: ${sub.uploadedAt}\nMemo: ${sub.memo || 'None'}\n`;
-          clientFolder?.file(sub.fileName, textContent);
+          clientFolder?.file(safeFileName, textContent);
         }
       }
 
@@ -160,7 +161,7 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
               <span>Client Submits</span>
             </div>
             <p className="text-[11px] text-stone-400">
-              Client drops receipts on the web portal or emails from their authorized address (Option B sender mapping).
+              Client drops receipts on the web portal or emails directly to <strong className="text-amber-300">receiptcheckerv@gmail.com</strong>.
             </p>
           </div>
 
