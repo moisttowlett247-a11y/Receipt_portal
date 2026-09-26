@@ -175,6 +175,13 @@ export interface ClientUserAccount {
   email: string;
   companyName?: string;
   licenseKey?: string;
+  plan?: string; // e.g. "Monthly Bookkeeping", "Quarterly Tax & Expense Prep", "Annual Farm & Tax Package"
+  planTier?: PlanTier;
+  planStatus?: 'ACTIVE' | 'EXPIRED' | 'TRIAL' | 'NONE';
+  planPurchasedAt?: string;
+  planExpiresAt?: string;
+  receiptQuota?: number; // e.g. 100, 400, or -1 for unlimited
+  receiptsSubmittedCount?: number;
   passwordHash: string; // Salted PBKDF2 / SHA-256
   salt: string;
   createdAt: string;
@@ -188,6 +195,13 @@ export interface ClientAccountSession {
   email: string;
   companyName?: string;
   licenseKey?: string;
+  plan?: string;
+  planTier?: PlanTier;
+  planStatus?: 'ACTIVE' | 'EXPIRED' | 'TRIAL' | 'NONE';
+  planPurchasedAt?: string;
+  planExpiresAt?: string;
+  receiptQuota?: number;
+  receiptsSubmittedCount?: number;
   token: string;
   loggedInAt: string;
 }

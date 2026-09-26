@@ -19,24 +19,44 @@ import {
   findLicenseRecordByEmail,
   lookupLicenseByEmailAsync
 } from '../clientAccountService';
-import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
+import { ClientAccountSession, LicenseKeyRecord, PlanTier, getPlanLabel } from '../types';
 
 interface ClientAuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onLoginSuccess: (session: ClientAccountSession) => void;
+  onLoginSuccess?: (session: ClientAccountSession) => void;
+  onSuccess?: (session: ClientAccountSession) => void;
+  onSwitchMode?: (mode: 'login' | 'register') => void;
   availableKeys?: LicenseKeyRecord[];
   initialMode?: 'login' | 'register';
+  initialPlan?: string;
+  initialPlanTier?: PlanTier;
+  mode?: 'login' | 'register';
 }
 
 export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
   isOpen,
   onClose,
   onLoginSuccess,
+  onSuccess,
+  onSwitchMode,
   availableKeys = [],
-  initialMode = 'login'
+  initialMode = 'login',
+  initialPlan,
+  initialPlanTier,
+  mode: propMode
 }) => {
-  const [mode, setMode] = useState<'login' | 'register'>(initialMode);
+  const [internalMode, setInternalMode] = useState<'login' | 'register'>(propMode || initialMode);
+  const mode = propMode || internalMode;
+  const setMode = (newMode: 'login' | 'register') => {
+    setInternalMode(newMode);
+    if (onSwitchMode) onSwitchMode(newMode);
+  };
+
+  const handleSuccess = (session: ClientAccountSession) => {
+    if (onLoginSuccess) onLoginSuccess(session);
+    if (onSuccess) onSuccess(session);
+  };
 
   // Form states
   const [username, setUsername] = useState('');
@@ -112,7 +132,7 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
       if (mode === 'login') {
         const res = await authenticateClientAccount(username, password);
         if (res.success && res.session) {
-          onLoginSuccess(res.session);
+          handleSuccess(res.session);
           onClose();
         } else {
           setErrorMsg(res.error || 'Authentication failed. Please verify credentials.');
@@ -133,13 +153,15 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
           displayName: displayName || username,
           companyName,
           licenseKey: detectedLicense ? detectedLicense.key : undefined,
+          initialPlan,
+          initialPlanTier,
           availableKeys
         });
 
         if (res.success && res.account) {
           const authRes = await authenticateClientAccount(username, password);
           if (authRes.success && authRes.session) {
-            onLoginSuccess(authRes.session);
+            handleSuccess(authRes.session);
             onClose();
           }
         } else {
@@ -210,6 +232,18 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {mode === 'register' && initialPlan && (
+            <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="text-stone-300">Selected Plan: <strong className="text-amber-300">{initialPlan}</strong></span>
+              </div>
+              <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/20 px-2 py-0.5 rounded">
+                Pending Activation
+              </span>
+            </div>
+          )}
+
           {errorMsg && (
             <div className="p-3 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-200 text-xs flex items-start gap-2 animate-fade-in">
               <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />

@@ -1,4 +1,4 @@
-import { ClientUserAccount, ClientAccountSession, LicenseKeyRecord } from './types';
+import { ClientUserAccount, ClientAccountSession, LicenseKeyRecord, PlanTier, calculateExpirationDate, getPlanLabel } from './types';
 import { computeClientPasswordHash, generateCryptographicSalt } from './hashUtils';
 import { CLOUDFLARE_WORKER_URL } from './licenseSyncService';
 
@@ -173,6 +173,8 @@ export async function registerClientAccount(params: {
   displayName: string;
   companyName?: string;
   licenseKey?: string;
+  initialPlan?: string;
+  initialPlanTier?: PlanTier;
   availableKeys?: LicenseKeyRecord[];
 }): Promise<{ success: boolean; account?: ClientUserAccount; error?: string }> {
   const check = isUsernameAvailable(params.username);
@@ -195,15 +197,47 @@ export async function registerClientAccount(params: {
   // Automatically find matching license key by email if not explicitly provided
   let cleanKey = params.licenseKey?.trim().toUpperCase();
   let resolvedCompanyName = params.companyName?.trim();
+  let planTier: PlanTier | undefined = params.initialPlanTier;
+  let planName: string | undefined = params.initialPlan;
+  let planStatus: 'ACTIVE' | 'NONE' = 'NONE';
+  let planExpiresAt: string | undefined = undefined;
+  let planPurchasedAt: string | undefined = undefined;
+  let receiptQuota: number = 100;
 
   if (!cleanKey) {
     const matchedRecord = await lookupLicenseByEmailAsync(cleanEmail, params.availableKeys);
     if (matchedRecord) {
       cleanKey = matchedRecord.key.toUpperCase();
+      planTier = matchedRecord.plan;
+      planName = getPlanLabel(matchedRecord.plan);
+      planStatus = matchedRecord.status === 'ACTIVE' ? 'ACTIVE' : 'NONE';
+      planExpiresAt = matchedRecord.expiresDate;
+      planPurchasedAt = matchedRecord.issuedDate;
+      receiptQuota = matchedRecord.plan === 'ANNUAL' || matchedRecord.plan === 'ADMIN' ? -1 : 400;
       if (!resolvedCompanyName && matchedRecord.clientName) {
         resolvedCompanyName = matchedRecord.clientName;
       }
     }
+  } else if (params.availableKeys) {
+    const found = params.availableKeys.find(k => k.key.toUpperCase() === cleanKey);
+    if (found) {
+      planTier = found.plan;
+      planName = getPlanLabel(found.plan);
+      planStatus = found.status === 'ACTIVE' ? 'ACTIVE' : 'NONE';
+      planExpiresAt = found.expiresDate;
+      planPurchasedAt = found.issuedDate;
+      receiptQuota = found.plan === 'ANNUAL' || found.plan === 'ADMIN' ? -1 : 400;
+    }
+  }
+
+  // If registering with a paid plan selection
+  if (params.initialPlanTier && !cleanKey) {
+    planTier = params.initialPlanTier;
+    planName = params.initialPlan || getPlanLabel(params.initialPlanTier);
+    planStatus = 'ACTIVE';
+    planPurchasedAt = new Date().toISOString();
+    planExpiresAt = calculateExpirationDate(planPurchasedAt, params.initialPlanTier);
+    receiptQuota = params.initialPlanTier === 'ANNUAL' || params.initialPlanTier === 'ADMIN' ? -1 : (params.initialPlanTier === '3MONTH' ? 400 : 100);
   }
 
   const newAccount: ClientUserAccount = {
@@ -213,6 +247,13 @@ export async function registerClientAccount(params: {
     email: cleanEmail,
     companyName: resolvedCompanyName || undefined,
     licenseKey: cleanKey || undefined,
+    plan: planName,
+    planTier,
+    planStatus,
+    planPurchasedAt,
+    planExpiresAt,
+    receiptQuota,
+    receiptsSubmittedCount: 0,
     passwordHash,
     salt,
     createdAt: new Date().toISOString(),
@@ -231,6 +272,13 @@ export async function registerClientAccount(params: {
     email: newAccount.email,
     companyName: newAccount.companyName,
     licenseKey: newAccount.licenseKey,
+    plan: newAccount.plan,
+    planTier: newAccount.planTier,
+    planStatus: newAccount.planStatus,
+    planPurchasedAt: newAccount.planPurchasedAt,
+    planExpiresAt: newAccount.planExpiresAt,
+    receiptQuota: newAccount.receiptQuota,
+    receiptsSubmittedCount: newAccount.receiptsSubmittedCount,
     token: 'tk_' + generateCryptographicSalt(24),
     loggedInAt: new Date().toISOString()
   };
@@ -304,6 +352,13 @@ export async function authenticateClientAccount(
     email: account.email,
     companyName: account.companyName,
     licenseKey: account.licenseKey,
+    plan: account.plan,
+    planTier: account.planTier,
+    planStatus: account.planStatus || (account.licenseKey ? 'ACTIVE' : 'NONE'),
+    planPurchasedAt: account.planPurchasedAt,
+    planExpiresAt: account.planExpiresAt,
+    receiptQuota: account.receiptQuota,
+    receiptsSubmittedCount: account.receiptsSubmittedCount || 0,
     token: 'tk_' + generateCryptographicSalt(24),
     loggedInAt: new Date().toISOString()
   };
@@ -416,4 +471,254 @@ export function deleteClientAccountAndData(
   }
 
   return { success: true, revokedKey };
+}
+
+/**
+ * Purchases and immediately activates a bookkeeping plan for a client account.
+ */
+export function purchaseClientPlan(
+  userId: string,
+  params: {
+    planTier: PlanTier;
+    planName: string;
+    receiptQuota?: number;
+  }
+): { success: boolean; session?: ClientAccountSession; error?: string } {
+  const accounts = getStoredClientAccounts();
+  const idx = accounts.findIndex(a => a.id === userId);
+  if (idx === -1) {
+    return { success: false, error: 'Client account not found.' };
+  }
+
+  const purchasedAt = new Date().toISOString();
+  const expiresAt = calculateExpirationDate(purchasedAt, params.planTier);
+  const quota = params.receiptQuota !== undefined 
+    ? params.receiptQuota 
+    : (params.planTier === 'ANNUAL' || params.planTier === 'ADMIN' ? -1 : (params.planTier === '3MONTH' ? 400 : 100));
+
+  accounts[idx].plan = params.planName;
+  accounts[idx].planTier = params.planTier;
+  accounts[idx].planStatus = 'ACTIVE';
+  accounts[idx].planPurchasedAt = purchasedAt;
+  accounts[idx].planExpiresAt = expiresAt;
+  accounts[idx].receiptQuota = quota;
+
+  saveStoredClientAccounts(accounts);
+
+  // Update session
+  const current = getCurrentClientSession();
+  let updatedSession: ClientAccountSession;
+  if (current && current.userId === userId) {
+    updatedSession = {
+      ...current,
+      plan: accounts[idx].plan,
+      planTier: accounts[idx].planTier,
+      planStatus: 'ACTIVE',
+      planPurchasedAt: accounts[idx].planPurchasedAt,
+      planExpiresAt: accounts[idx].planExpiresAt,
+      receiptQuota: accounts[idx].receiptQuota
+    };
+    saveClientSession(updatedSession);
+  } else {
+    updatedSession = {
+      userId: accounts[idx].id,
+      username: accounts[idx].username,
+      displayName: accounts[idx].displayName,
+      email: accounts[idx].email,
+      companyName: accounts[idx].companyName,
+      licenseKey: accounts[idx].licenseKey,
+      plan: accounts[idx].plan,
+      planTier: accounts[idx].planTier,
+      planStatus: accounts[idx].planStatus,
+      planPurchasedAt: accounts[idx].planPurchasedAt,
+      planExpiresAt: accounts[idx].planExpiresAt,
+      receiptQuota: accounts[idx].receiptQuota,
+      receiptsSubmittedCount: accounts[idx].receiptsSubmittedCount || 0,
+      token: 'tk_' + generateCryptographicSalt(24),
+      loggedInAt: new Date().toISOString()
+    };
+    saveClientSession(updatedSession);
+  }
+
+  return { success: true, session: updatedSession };
+}
+
+/**
+ * Activates a client license key or voucher, unlocking an active plan on the account.
+ */
+export function activateClientLicenseKey(
+  userId: string,
+  keyStr: string,
+  availableKeys?: LicenseKeyRecord[]
+): { success: boolean; session?: ClientAccountSession; error?: string } {
+  const cleanKey = keyStr.trim().toUpperCase();
+  if (!cleanKey) {
+    return { success: false, error: 'Please enter a valid license key or voucher code.' };
+  }
+
+  const accounts = getStoredClientAccounts();
+  const idx = accounts.findIndex(a => a.id === userId);
+  if (idx === -1) {
+    return { success: false, error: 'Account not found.' };
+  }
+
+  // Find record in availableKeys or localStorage
+  let matchedRecord = availableKeys?.find(k => k.key.toUpperCase() === cleanKey);
+  if (!matchedRecord) {
+    try {
+      const raw = localStorage.getItem('receipt_processor_keys_v4') || localStorage.getItem('receipt_processor_keys_v3');
+      if (raw) {
+        const keys: LicenseKeyRecord[] = JSON.parse(raw);
+        matchedRecord = keys.find(k => k.key.toUpperCase() === cleanKey);
+      }
+    } catch {}
+  }
+
+  let planTier: PlanTier = 'MONTHLY';
+  let planName = 'Monthly Bookkeeping';
+  let planExpires = 'Never (Lifetime / Non-Expiring)';
+  let quota = 100;
+
+  if (cleanKey.startsWith('ADMIN-')) {
+    planTier = 'ADMIN';
+    planName = 'Admin Master (Never Expires)';
+    planExpires = 'Never (Lifetime / Non-Expiring)';
+    quota = -1;
+  } else if (cleanKey.startsWith('ANNUAL-')) {
+    planTier = 'ANNUAL';
+    planName = 'Annual Farm & Business Package';
+    planExpires = calculateExpirationDate(new Date().toISOString(), 'ANNUAL');
+    quota = -1;
+  } else if (cleanKey.startsWith('3MONTH-') || cleanKey.startsWith('PRO-')) {
+    planTier = '3MONTH';
+    planName = 'Quarterly Tax & Expense Prep';
+    planExpires = calculateExpirationDate(new Date().toISOString(), '3MONTH');
+    quota = 400;
+  } else if (cleanKey.startsWith('6MONTH-')) {
+    planTier = '6MONTH';
+    planName = 'Semi-Annual Bookkeeping';
+    planExpires = calculateExpirationDate(new Date().toISOString(), '6MONTH');
+    quota = 800;
+  } else if (cleanKey.startsWith('DEMO-')) {
+    planTier = 'DEMO';
+    planName = 'Trial Demo (7 Days)';
+    planExpires = calculateExpirationDate(new Date().toISOString(), 'DEMO');
+    quota = 25;
+  } else {
+    planTier = 'MONTHLY';
+    planName = 'Monthly Bookkeeping';
+    planExpires = calculateExpirationDate(new Date().toISOString(), 'MONTHLY');
+    quota = 100;
+  }
+
+  if (matchedRecord) {
+    planTier = matchedRecord.plan;
+    planName = getPlanLabel(matchedRecord.plan);
+    planExpires = matchedRecord.expiresDate;
+  }
+
+  accounts[idx].licenseKey = cleanKey;
+  accounts[idx].plan = planName;
+  accounts[idx].planTier = planTier;
+  accounts[idx].planStatus = 'ACTIVE';
+  accounts[idx].planPurchasedAt = new Date().toISOString();
+  accounts[idx].planExpiresAt = planExpires;
+  accounts[idx].receiptQuota = quota;
+
+  saveStoredClientAccounts(accounts);
+
+  const current = getCurrentClientSession();
+  let updatedSession: ClientAccountSession;
+  if (current && current.userId === userId) {
+    updatedSession = {
+      ...current,
+      licenseKey: cleanKey,
+      plan: accounts[idx].plan,
+      planTier: accounts[idx].planTier,
+      planStatus: 'ACTIVE',
+      planPurchasedAt: accounts[idx].planPurchasedAt,
+      planExpiresAt: accounts[idx].planExpiresAt,
+      receiptQuota: accounts[idx].receiptQuota
+    };
+    saveClientSession(updatedSession);
+  } else {
+    updatedSession = {
+      userId: accounts[idx].id,
+      username: accounts[idx].username,
+      displayName: accounts[idx].displayName,
+      email: accounts[idx].email,
+      companyName: accounts[idx].companyName,
+      licenseKey: cleanKey,
+      plan: accounts[idx].plan,
+      planTier: accounts[idx].planTier,
+      planStatus: 'ACTIVE',
+      planPurchasedAt: accounts[idx].planPurchasedAt,
+      planExpiresAt: accounts[idx].planExpiresAt,
+      receiptQuota: accounts[idx].receiptQuota,
+      receiptsSubmittedCount: accounts[idx].receiptsSubmittedCount || 0,
+      token: 'tk_' + generateCryptographicSalt(24),
+      loggedInAt: new Date().toISOString()
+    };
+    saveClientSession(updatedSession);
+  }
+
+  return { success: true, session: updatedSession };
+}
+
+/**
+ * Increments submitted receipt count for quota tracking.
+ */
+export function recordReceiptSubmitted(userId: string, count: number = 1): void {
+  const accounts = getStoredClientAccounts();
+  const idx = accounts.findIndex(a => a.id === userId);
+  if (idx !== -1) {
+    accounts[idx].receiptsSubmittedCount = (accounts[idx].receiptsSubmittedCount || 0) + count;
+    saveStoredClientAccounts(accounts);
+
+    const current = getCurrentClientSession();
+    if (current && current.userId === userId) {
+      current.receiptsSubmittedCount = accounts[idx].receiptsSubmittedCount;
+      saveClientSession(current);
+    }
+  }
+}
+
+/**
+ * Operator / Accountant action: directly grant or change a client's plan.
+ */
+export function grantPlanByAdmin(
+  userId: string,
+  planTier: PlanTier,
+  planName: string,
+  expiresDate?: string
+): { success: boolean; account?: ClientUserAccount } {
+  const accounts = getStoredClientAccounts();
+  const idx = accounts.findIndex(a => a.id === userId);
+  if (idx === -1) return { success: false };
+
+  const purchasedAt = new Date().toISOString();
+  const exp = expiresDate || calculateExpirationDate(purchasedAt, planTier);
+  const quota = planTier === 'ANNUAL' || planTier === 'ADMIN' ? -1 : (planTier === '3MONTH' ? 400 : 100);
+
+  accounts[idx].plan = planName;
+  accounts[idx].planTier = planTier;
+  accounts[idx].planStatus = 'ACTIVE';
+  accounts[idx].planPurchasedAt = purchasedAt;
+  accounts[idx].planExpiresAt = exp;
+  accounts[idx].receiptQuota = quota;
+
+  saveStoredClientAccounts(accounts);
+
+  const current = getCurrentClientSession();
+  if (current && current.userId === userId) {
+    current.plan = planName;
+    current.planTier = planTier;
+    current.planStatus = 'ACTIVE';
+    current.planPurchasedAt = purchasedAt;
+    current.planExpiresAt = exp;
+    current.receiptQuota = quota;
+    saveClientSession(current);
+  }
+
+  return { success: true, account: accounts[idx] };
 }
