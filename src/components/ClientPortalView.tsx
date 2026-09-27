@@ -33,7 +33,10 @@ import {
   ArrowRight,
   Plus,
   Copy,
-  Image as ImageIcon
+  Image as ImageIcon,
+  FileSpreadsheet,
+  Printer,
+  Download
 } from 'lucide-react';
 import { LicenseKeyRecord, ProductInquiry, ClientAccountSession, PlanTier } from '../types';
 import { 
@@ -51,6 +54,8 @@ import {
 } from '../clientSubmissionService';
 import { ClientAuthModal } from './ClientAuthModal';
 import { ClientAccountModal } from './ClientAccountModal';
+import { ClientTaxSchedulesView } from './ClientTaxSchedulesView';
+import { classifyReceiptTaxSchedule } from '../taxScheduleService';
 
 interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
@@ -87,7 +92,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [uploadSuccessCount, setUploadSuccessCount] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'services'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'tax_schedules' | 'services'>('upload');
 
   // Plan Activation & Voucher state
   const [authInitialPlan, setAuthInitialPlan] = useState<string | undefined>(undefined);
@@ -429,6 +434,18 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">QBO Synced</div>
               <div className="text-sm sm:text-base font-bold font-mono text-amber-400">{syncedCount} Receipts</div>
             </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('tax_schedules')}
+              className="px-3.5 py-2 rounded-xl bg-emerald-950/40 hover:bg-emerald-950/80 border border-emerald-500/30 text-center transition-colors cursor-pointer hidden sm:block"
+              title="Click to view Schedule C & F Tax Deduction Packs"
+            >
+              <div className="text-[10px] text-emerald-400 uppercase tracking-wider font-semibold flex items-center justify-center gap-1">
+                <FileSpreadsheet className="w-3 h-3" />
+                <span>IRS Tax Hub</span>
+              </div>
+              <div className="text-sm sm:text-base font-bold font-mono text-emerald-300">Sch C & F</div>
+            </button>
           </div>
         </div>
 
@@ -531,6 +548,22 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             <span>Submission Ledger & QBO Status</span>
             <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-stone-800 font-mono text-stone-300">
               {submissions.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('tax_schedules')}
+            className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-colors cursor-pointer flex items-center gap-2 border-b-2 ${
+              activeTab === 'tax_schedules'
+                ? 'border-amber-500 text-amber-400 bg-stone-900/60'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+            <span>Tax Schedules (C & F)</span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-400 font-mono hidden sm:inline">
+              QuickBooks-Free
             </span>
           </button>
 
@@ -1134,9 +1167,19 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 </button>
               </div>
 
-              <span className="text-[11px] text-stone-400">
-                Showing {filteredSubmissions.length} of {submissions.length} receipts
-              </span>
+              <div className="flex items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('tax_schedules')}
+                  className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-700/50 transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>View Tax Schedules (C & F)</span>
+                </button>
+                <span className="text-[11px] text-stone-400">
+                  Showing {filteredSubmissions.length} of {submissions.length} receipts
+                </span>
+              </div>
             </div>
 
             {/* Submissions List */}
@@ -1203,9 +1246,23 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             <div className="font-semibold text-stone-200">
                               {sub.extractedVendor || 'Pending OCR'}
                             </div>
-                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-800 text-amber-400/90 font-mono">
-                              {sub.categoryHint || 'Auto-Deductible'}
-                            </span>
+                            <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-800 text-amber-400/90 font-mono">
+                                {sub.categoryHint || 'Auto-Deductible'}
+                              </span>
+                              {(() => {
+                                const cls = classifyReceiptTaxSchedule(sub);
+                                return (
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                                    cls.schedule === 'SCHEDULE_F'
+                                      ? 'bg-emerald-950/70 text-emerald-300 border border-emerald-800/40'
+                                      : 'bg-sky-950/70 text-sky-300 border border-sky-800/40'
+                                  }`}>
+                                    {cls.schedule === 'SCHEDULE_F' ? 'Sch F' : 'Sch C'} {cls.lineNumber}
+                                  </span>
+                                );
+                              })()}
+                            </div>
                           </td>
 
                           <td className="py-3 px-4 whitespace-nowrap font-mono font-bold text-emerald-400">
@@ -1258,7 +1315,19 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           </div>
         )}
 
-        {/* TAB 3: Bookkeeping Services & Request */}
+        {/* TAB 3: Tax Schedules (C & F) */}
+        {activeTab === 'tax_schedules' && (
+          <ClientTaxSchedulesView
+            submissions={submissions}
+            clientSession={clientSession}
+            onSubscribeClick={() => setActiveTab('services')}
+            onActivateKeyClick={() => {
+              setShowAccountModal(true);
+            }}
+          />
+        )}
+
+        {/* TAB 4: Bookkeeping Services & Request */}
         {activeTab === 'services' && (
           <div className="space-y-6">
             <div className="text-center max-w-xl mx-auto space-y-2">

@@ -19,7 +19,8 @@ import {
   ArrowRight,
   ShieldCheck,
   Check,
-  Copy
+  Copy,
+  Sliders
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { 
@@ -29,6 +30,7 @@ import {
   ClientSubmission 
 } from '../clientSubmissionService';
 import { DesktopPackageCard } from './DesktopPackageCard';
+import { AdminRoutingAndTaxRulesModal } from './AdminRoutingAndTaxRulesModal';
 
 interface ClientIntakeManagerProps {
   onOpenBundleModal: () => void;
@@ -44,6 +46,7 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
   const [filterStatus, setFilterStatus] = useState<string>('ALL');
   const [isExportingZip, setIsExportingZip] = useState(false);
   const [copiedVmCmd, setCopiedVmCmd] = useState(false);
+  const [showRulesModal, setShowRulesModal] = useState(false);
 
   const refreshList = () => {
     setSubmissions(getClientSubmissions());
@@ -242,6 +245,16 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
 
           <div className="flex flex-wrap items-center gap-2.5">
             <button
+              type="button"
+              onClick={() => setShowRulesModal(true)}
+              className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+              title="Configure email routing rules and custom CPA tax line overrides"
+            >
+              <Sliders className="w-3.5 h-3.5 text-amber-400" />
+              <span>Routing & Tax Overrides</span>
+            </button>
+
+            <button
               onClick={handleExportInboxZip}
               disabled={isExportingZip || submissions.length === 0}
               className="px-3.5 py-1.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 disabled:opacity-50 text-stone-950 font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-2"
@@ -424,6 +437,13 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Admin Email Routing & Tax Overrides Modal */}
+      <AdminRoutingAndTaxRulesModal
+        isOpen={showRulesModal}
+        onClose={() => setShowRulesModal(false)}
+        onToast={onToast}
+      />
     </div>
   );
 };

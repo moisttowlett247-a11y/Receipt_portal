@@ -134,6 +134,13 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   const [manualStatus, setManualStatus] = useState<LicenseStatus>('ACTIVE');
   const [manualInUse, setManualInUse] = useState(true);
 
+  // Batch Key Generator State
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [batchCount, setBatchCount] = useState<number>(10);
+  const [batchPlan, setBatchPlan] = useState<PlanTier>('ANNUAL');
+  const [batchPrefix, setBatchPrefix] = useState('COOP-2026');
+  const [batchClientPrefix, setBatchClientPrefix] = useState('Farm Partner');
+
   const handleCopy = (id: string, text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedKeyId(id);
@@ -301,6 +308,50 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   const inUseKeysCount = keys.filter(k => k.inUse).length;
   const availableKeysCount = keys.filter(k => !k.inUse).length;
 
+  // Keys expiring in next 14 days
+  const expiringSoonKeys = keys.filter(k => {
+    if (k.status !== 'ACTIVE' || isKeyExpired(k)) return false;
+    const days = getDaysLeft(k.expiresDate, k.plan);
+    return days !== null && days >= 0 && days <= 14;
+  });
+
+  const submitBatchGenerate = (e: React.FormEvent) => {
+    e.preventDefault();
+    const count = Math.min(Math.max(1, batchCount), 100);
+    const today = new Date().toISOString().split('T')[0];
+    const generatedKeys: LicenseKeyRecord[] = [];
+
+    for (let i = 1; i <= count; i++) {
+      const randSeg1 = Math.floor(1000 + Math.random() * 9000);
+      const randSeg2 = Math.floor(1000 + Math.random() * 9000);
+      const keyStr = `${batchPrefix.toUpperCase()}-${randSeg1}-${randSeg2}`;
+      
+      const newRec: LicenseKeyRecord = {
+        id: `key-batch-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 4)}`,
+        key: keyStr,
+        clientName: `${batchClientPrefix} #${i.toString().padStart(2, '0')}`,
+        clientEmail: `partner${i}@farmtax.internal`,
+        plan: batchPlan,
+        status: 'ACTIVE',
+        inUse: false,
+        issuedDate: today,
+        expiresDate: `Pending (${getPlanDurationDays(batchPlan)} days upon activation)`,
+        notes: `Batch-generated key for ${batchPrefix}`
+      };
+      generatedKeys.push(newRec);
+    }
+
+    if (onImportKeys) {
+      onImportKeys(generatedKeys);
+      setImportStatusMsg(`✅ Successfully generated and registered ${count} ${batchPlan} license keys!`);
+      setTimeout(() => setImportStatusMsg(null), 3500);
+    } else {
+      generatedKeys.forEach(k => onAddManualKey(k));
+    }
+
+    setShowBatchModal(false);
+  };
+
   const submitManualAdd = (e: React.FormEvent) => {
     e.preventDefault();
     if (!manualKey.trim()) return;
@@ -378,6 +429,32 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Expiring Soon Alert Banner */}
+      {expiringSoonKeys.length > 0 && (
+        <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-md">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <div>
+              <span className="font-bold text-amber-300">
+                {expiringSoonKeys.length} License Key(s) Expiring within 14 Days:
+              </span>
+              <span className="text-stone-300 ml-1.5">
+                {expiringSoonKeys.map(k => `${k.clientName} (${k.key})`).slice(0, 3).join(', ')}
+                {expiringSoonKeys.length > 3 ? ` and ${expiringSoonKeys.length - 3} more...` : ''}
+              </span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setSearchTerm(expiringSoonKeys[0]?.key || '')}
+            className="px-2.5 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-[11px] transition-colors cursor-pointer self-start sm:self-auto shrink-0"
+          >
+            Review Expiring Keys
+          </button>
+        </div>
+      )}
 
       {/* Action Controls & Search */}
       <div className="p-4 bg-stone-900 border border-stone-800 rounded-xl flex flex-col md:flex-row gap-3 items-center justify-between">
@@ -481,6 +558,15 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
           >
             <FileJson className="w-3.5 h-3.5" />
             Export license_registry.json
+          </button>
+
+          <button
+            onClick={() => setShowBatchModal(true)}
+            title="Generate batch of license keys with custom prefix and plan"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-900/60 hover:bg-emerald-800 text-emerald-300 border border-emerald-700/60 rounded-md transition-colors cursor-pointer"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+            <span>Batch Keys</span>
           </button>
 
           <button
@@ -909,6 +995,115 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                   className="px-4 py-1.5 bg-amber-600 hover:bg-amber-500 font-semibold text-white rounded cursor-pointer"
                 >
                   Save to Registry
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Generate Keys Modal */}
+      {showBatchModal && (
+        <div className="fixed inset-0 bg-stone-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-stone-900 border border-stone-700 rounded-xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-stone-800">
+              <h3 className="text-sm font-bold text-stone-100 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-400" />
+                <span>Batch License Key Generator</span>
+              </h3>
+              <button
+                onClick={() => setShowBatchModal(false)}
+                className="text-stone-400 hover:text-stone-200 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={submitBatchGenerate} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-stone-300 font-medium mb-1">Key Prefix</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. COOP-2026, AGRI-CORP, MIDWEST"
+                  value={batchPrefix}
+                  onChange={(e) => setBatchPrefix(e.target.value.toUpperCase())}
+                  className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded text-stone-200 focus:outline-none focus:border-emerald-500 uppercase"
+                />
+                <span className="text-[10px] text-stone-500 mt-1 block">
+                  Keys will look like: <code className="text-amber-400 font-mono">{batchPrefix || 'PREFIX'}-4829-1920</code>
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-stone-300 font-medium mb-1">Quantity</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    required
+                    value={batchCount}
+                    onChange={(e) => setBatchCount(parseInt(e.target.value) || 1)}
+                    className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded text-stone-200 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-stone-300 font-medium mb-1">Subscription Plan</label>
+                  <select
+                    value={batchPlan}
+                    onChange={(e) => setBatchPlan(e.target.value as PlanTier)}
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded text-stone-200 focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="DEMO">Demo (7 Days)</option>
+                    <option value="MONTHLY">Monthly (30 Days)</option>
+                    <option value="THREE_MONTH">3 Month (90 Days)</option>
+                    <option value="SIX_MONTH">6 Month (180 Days)</option>
+                    <option value="ANNUAL">Annual (365 Days)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-stone-300 font-medium mb-1">Client Tag / Name Prefix</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Farm Partner, Co-Op Member"
+                  value={batchClientPrefix}
+                  onChange={(e) => setBatchClientPrefix(e.target.value)}
+                  className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded text-stone-200 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="p-3 bg-stone-950 rounded-lg border border-stone-800/80 text-[11px] text-stone-400 space-y-1">
+                <div className="flex justify-between">
+                  <span>Batch Size:</span>
+                  <span className="font-bold text-stone-200 font-mono">{batchCount} keys</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Total Duration:</span>
+                  <span className="font-bold text-emerald-400 font-mono">{getPlanDurationDays(batchPlan)} days each</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Status:</span>
+                  <span className="font-bold text-amber-400 font-mono">Issued (Ready to distribute)</span>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-stone-800 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBatchModal(false)}
+                  className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-300 rounded cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 font-bold text-white rounded cursor-pointer"
+                >
+                  Generate {batchCount} Keys
                 </button>
               </div>
             </form>
