@@ -93,6 +93,9 @@ export interface ReceiptInputItem {
   clientEmail?: string;
   memo?: string;
   categoryHint?: string;
+  vendorHint?: string;
+  amountHint?: number;
+  dateHint?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -347,8 +350,17 @@ export function evaluateReceiptDuplicate(
 
     if (vendorMatches && amountMatches) {
       const existDateMs = new Date(existing.date).getTime();
-      const diffDays = Math.abs(candDateMs - existDateMs) / (1000 * 60 * 60 * 24);
-      if (diffDays <= 3.0) {
+      let diffDays = 0;
+      let dateWithinWindow = false;
+
+      if (!isNaN(candDateMs) && !isNaN(existDateMs)) {
+        diffDays = Math.abs(candDateMs - existDateMs) / (1000 * 60 * 60 * 24);
+        dateWithinWindow = diffDays <= 3.0;
+      } else {
+        dateWithinWindow = candidate.date === existing.date;
+      }
+
+      if (dateWithinWindow) {
         return {
           isDuplicate: true,
           status: 'DUPLICATE_FUZZY',
@@ -391,7 +403,8 @@ export async function computeReceiptHash(input: File | Blob | string): Promise<s
 export function extractReceiptMetadata(
   fileName: string,
   rawTextContent?: string,
-  hintCategory?: string
+  hintCategory?: string,
+  hints?: { vendor?: string; amount?: number; date?: string; memo?: string }
 ): {
   vendor: string;
   date: string;
@@ -423,17 +436,22 @@ export function extractReceiptMetadata(
     if (matchedProfile) break;
   }
 
-  const vendor = matchedProfile ? matchedProfile.name : normalizeVendorName(fileName.replace(/[._-]/g, ' '));
+  let vendor = matchedProfile ? matchedProfile.name : normalizeVendorName(fileName.replace(/[._-]/g, ' '));
+  if (hints?.vendor && hints.vendor.trim()) {
+    vendor = normalizeVendorName(hints.vendor.trim());
+  }
   
   // 2. Extract or Synthesize Date
-  let date = new Date().toISOString().split('T')[0];
-  const dateMatch = text.match(/\b(202[0-9])[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])\b/) ||
-                    text.match(/\b(0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])[-/.](202[0-9])\b/);
-  if (dateMatch) {
-    if (dateMatch[1].length === 4) {
-      date = `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`;
-    } else {
-      date = `${dateMatch[3]}-${dateMatch[1].padStart(2, '0')}-${dateMatch[2].padStart(2, '0')}`;
+  let date = hints?.date || new Date().toISOString().split('T')[0];
+  if (!hints?.date) {
+    const dateMatch = text.match(/\b(202[0-9])[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])\b/) ||
+                      text.match(/\b(0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])[-/.](202[0-9])\b/);
+    if (dateMatch) {
+      if (dateMatch[1].length === 4) {
+        date = `${dateMatch[1]}-${dateMatch[2].padStart(2, '0')}-${dateMatch[3].padStart(2, '0')}`;
+      } else {
+        date = `${dateMatch[3]}-${dateMatch[1].padStart(2, '0')}-${dateMatch[2].padStart(2, '0')}`;
+      }
     }
   }
 
@@ -445,7 +463,17 @@ export function extractReceiptMetadata(
   let lineItems: ExtractedLineItem[] = [];
 
   const amountMatch = text.match(/\$?\b([0-9]{1,4}\.[0-9]{2})\b/);
-  if (matchedProfile) {
+  if (hints?.amount && hints.amount > 0) {
+    total = Number(hints.amount.toFixed(2));
+    tax = Number((total * 0.08).toFixed(2));
+    subtotal = Number((total - tax).toFixed(2));
+    lineItems = [{
+      description: hints.memo || 'Verified Item Line',
+      quantity: 1,
+      unitPrice: subtotal,
+      total: subtotal
+    }];
+  } else if (matchedProfile) {
     lineItems = matchedProfile.typicalItems.map(ti => ({
       description: ti.desc,
       quantity: 1,
@@ -662,13 +690,28 @@ export async function runParallelBatchScan(
       worker.progressPercent = 20;
       options.onWorkerUpdate([...workers]);
 
-      // 1. Compute file hash
+      // 1. Compute file hash & preserve dataUrl for previews and audit export
       let fileHash = '';
+      let dataUrl = item.dataUrl;
+
+      if (item.file && !dataUrl) {
+        try {
+          dataUrl = await new Promise<string>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve((reader.result as string) || '');
+            reader.onerror = () => resolve('');
+            reader.readAsDataURL(item.file!);
+          });
+        } catch {
+          // ignore
+        }
+      }
+
       try {
         if (item.file) {
           fileHash = await computeReceiptHash(item.file);
-        } else if (item.dataUrl) {
-          fileHash = await computeReceiptHash(item.dataUrl);
+        } else if (dataUrl) {
+          fileHash = await computeReceiptHash(dataUrl);
         } else {
           fileHash = await computeReceiptHash(`${item.fileName}_${item.fileSize || 0}`);
         }
@@ -684,7 +727,17 @@ export async function runParallelBatchScan(
       // Small async yield to allow UI rendering and simulate parallel CPU throughput
       await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
 
-      const extracted = extractReceiptMetadata(item.fileName, undefined, item.categoryHint);
+      const extracted = extractReceiptMetadata(
+        item.fileName,
+        undefined,
+        item.categoryHint,
+        {
+          vendor: item.vendorHint,
+          amount: item.amountHint,
+          date: item.dateHint,
+          memo: item.memo
+        }
+      );
 
       // 3. Tax Classification
       worker.currentStep = 'Classifying IRS Form 1040 Schedule...';
@@ -720,7 +773,7 @@ export async function runParallelBatchScan(
         fileName: item.fileName,
         fileSize: item.fileSize || (item.file?.size ?? 125000),
         fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
-        dataUrl: item.dataUrl,
+        dataUrl: dataUrl || item.dataUrl,
         fileHash,
         clientName: item.clientName || options.defaultClientName || 'Prairie Wind Agriculture',
         clientEmail: item.clientEmail,
@@ -788,7 +841,7 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
-function rowsToSheetXml(rows: (string | number)[][]): string {
+function rowsToSheetXml(rows: (string | number)[][], allowFormulas: boolean = true): string {
   const xml: string[] = [
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
@@ -804,7 +857,7 @@ function rowsToSheetXml(rows: (string | number)[][]): string {
 
       if (typeof val === 'number') {
         xml.push(`<c r="${cellRef}"><v>${val}</v></c>`);
-      } else if (typeof val === 'string' && val.startsWith('=')) {
+      } else if (allowFormulas && typeof val === 'string' && val.startsWith('=')) {
         const formula = val.substring(1);
         xml.push(`<c r="${cellRef}"><f>${escapeXml(formula)}</f></c>`);
       } else {
@@ -851,23 +904,7 @@ export async function exportMultiSheetExcelXLSX(
     }
   }
 
-  // Sheet 1: Tax Summary
-  const s1Rows: (string | number)[][] = [
-    ['IRS TAX SCHEDULE RECONCILIATION SUMMARY', ''],
-    ['Client Entity', clientName],
-    ['Tax Year', taxYear],
-    ['Report Generated', new Date().toLocaleString()],
-    ['', ''],
-    ['Tax Schedule Form', 'Total Deductible Amount ($)'],
-    ['IRS Form 1040 Schedule F (Farm Operating Deductions)', "='Schedule F'!B24"],
-    ['IRS Form 1040 Schedule C (Business Deductions)', "='Schedule C'!B20"],
-    ['GRAND TOTAL VERIFIED TAX DEDUCTIONS', '=B7+B8'],
-    ['', ''],
-    ['Total Receipts Processed', receipts.length],
-    ['Active Worker Engine', 'Integrated Multi-Worker Parallel Engine']
-  ];
-
-  // Sheet 2: Schedule F
+  // Sheet 2: Schedule F (Constructed first to obtain exact total row index)
   const s2Rows: (string | number)[][] = [
     ['IRS FORM 1040 SCHEDULE F - FARM EXPENSES', ''],
     ['Client Entity', clientName],
@@ -881,8 +918,9 @@ export async function exportMultiSheetExcelXLSX(
   }
   const fEnd = s2Rows.length;
   s2Rows.push(['TOTAL SCHEDULE F DEDUCTIONS', `=SUM(B${fStart}:B${fEnd})`]);
+  const s2TotalRow = s2Rows.length;
 
-  // Sheet 3: Schedule C
+  // Sheet 3: Schedule C (Constructed first to obtain exact total row index)
   const s3Rows: (string | number)[][] = [
     ['IRS FORM 1040 SCHEDULE C - BUSINESS EXPENSES', ''],
     ['Client Entity', clientName],
@@ -896,6 +934,23 @@ export async function exportMultiSheetExcelXLSX(
   }
   const cEnd = s3Rows.length;
   s3Rows.push(['TOTAL SCHEDULE C DEDUCTIONS', `=SUM(B${cStart}:B${cEnd})`]);
+  const s3TotalRow = s3Rows.length;
+
+  // Sheet 1: Tax Summary (dynamically linked to exact total rows)
+  const s1Rows: (string | number)[][] = [
+    ['IRS TAX SCHEDULE RECONCILIATION SUMMARY', ''],
+    ['Client Entity', clientName],
+    ['Tax Year', taxYear],
+    ['Report Generated', new Date().toLocaleString()],
+    ['', ''],
+    ['Tax Schedule Form', 'Total Deductible Amount ($)'],
+    ['IRS Form 1040 Schedule F (Farm Operating Deductions)', `='Schedule F'!B${s2TotalRow}`],
+    ['IRS Form 1040 Schedule C (Business Deductions)', `='Schedule C'!B${s3TotalRow}`],
+    ['GRAND TOTAL VERIFIED TAX DEDUCTIONS', '=B7+B8'],
+    ['', ''],
+    ['Total Receipts Processed', receipts.length],
+    ['Active Worker Engine', 'Integrated Multi-Worker Parallel Engine']
+  ];
 
   // Sheet 4: Itemized Audit Ledger
   const s4Rows: (string | number)[][] = [
@@ -977,10 +1032,10 @@ export async function exportMultiSheetExcelXLSX(
   zip.file('_rels/.rels', rootRelsXml);
   zip.file('xl/workbook.xml', workbookXml);
   zip.file('xl/_rels/workbook.xml.rels', workbookRelsXml);
-  zip.file('xl/worksheets/sheet1.xml', rowsToSheetXml(s1Rows));
-  zip.file('xl/worksheets/sheet2.xml', rowsToSheetXml(s2Rows));
-  zip.file('xl/worksheets/sheet3.xml', rowsToSheetXml(s3Rows));
-  zip.file('xl/worksheets/sheet4.xml', rowsToSheetXml(s4Rows));
+  zip.file('xl/worksheets/sheet1.xml', rowsToSheetXml(s1Rows, true));
+  zip.file('xl/worksheets/sheet2.xml', rowsToSheetXml(s2Rows, true));
+  zip.file('xl/worksheets/sheet3.xml', rowsToSheetXml(s3Rows, true));
+  zip.file('xl/worksheets/sheet4.xml', rowsToSheetXml(s4Rows, false));
 
   const blob = await zip.generateAsync({ type: 'blob' });
   const url = URL.createObjectURL(blob);

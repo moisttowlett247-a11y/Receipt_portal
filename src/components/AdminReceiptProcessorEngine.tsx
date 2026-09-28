@@ -102,6 +102,29 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   // Modal inspection view
   const [inspectingReceipt, setInspectingReceipt] = useState<ProcessedReceipt | null>(null);
   const [isEditingReceipt, setIsEditingReceipt] = useState<boolean>(false);
+  const [confirmClearLedger, setConfirmClearLedger] = useState<boolean>(false);
+  const [showClientRoster, setShowClientRoster] = useState<boolean>(true);
+
+  // Edit form state
+  const [editFormData, setEditFormData] = useState<{
+    vendor: string;
+    date: string;
+    total: number;
+    tax: number;
+    schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
+    irsLineNumber: string;
+    irsLineTitle: string;
+    status: ProcessedReceipt['status'];
+  }>({
+    vendor: '',
+    date: '',
+    total: 0,
+    tax: 0,
+    schedule: 'SCHEDULE_F',
+    irsLineNumber: 'Line 27',
+    irsLineTitle: 'Supplies purchased',
+    status: 'PROCESSED'
+  });
 
   // Timer for elapsed seconds during scanning
   useEffect(() => {
@@ -185,6 +208,126 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     };
   }, [receipts]);
 
+  // Detailed per-client tracking: volume of uploaded, pending, and processed receipts
+  const clientBreakdown = useMemo(() => {
+    let subs: any[] = [];
+    try {
+      subs = getClientSubmissions();
+    } catch {}
+
+    const map: Record<string, {
+      clientName: string;
+      pendingIntake: number;
+      scannedCount: number;
+      verifiedCount: number;
+      totalDeductions: number;
+      duplicateCount: number;
+    }> = {};
+
+    availableClients.forEach(c => {
+      map[c] = {
+        clientName: c,
+        pendingIntake: 0,
+        scannedCount: 0,
+        verifiedCount: 0,
+        totalDeductions: 0,
+        duplicateCount: 0
+      };
+    });
+
+    subs.forEach(s => {
+      const c = s.clientName || 'Unassigned';
+      if (!map[c]) {
+        map[c] = { clientName: c, pendingIntake: 0, scannedCount: 0, verifiedCount: 0, totalDeductions: 0, duplicateCount: 0 };
+      }
+      if (s.status === 'QUEUED') {
+        map[c].pendingIntake++;
+      }
+    });
+
+    receipts.forEach(r => {
+      const c = r.clientName || 'Unassigned';
+      if (!map[c]) {
+        map[c] = { clientName: c, pendingIntake: 0, scannedCount: 0, verifiedCount: 0, totalDeductions: 0, duplicateCount: 0 };
+      }
+      map[c].scannedCount++;
+      if (r.status === 'VERIFIED') map[c].verifiedCount++;
+      if (r.duplicateStatus !== 'UNIQUE') map[c].duplicateCount++;
+      if (!(r.duplicateStatus === 'DUPLICATE_EXACT' && r.status === 'REJECTED')) {
+        map[c].totalDeductions += r.total;
+      }
+    });
+
+    return Object.values(map);
+  }, [availableClients, receipts]);
+
+  const handleOpenInspect = (r: ProcessedReceipt) => {
+    setInspectingReceipt(r);
+    setIsEditingReceipt(false);
+    setEditFormData({
+      vendor: r.vendor,
+      date: r.date,
+      total: r.total,
+      tax: r.tax,
+      schedule: r.schedule,
+      irsLineNumber: r.irsLineNumber,
+      irsLineTitle: r.irsLineTitle,
+      status: r.status
+    });
+  };
+
+  const handleSaveReceiptEdits = () => {
+    if (!inspectingReceipt) return;
+    const updated: ProcessedReceipt = {
+      ...inspectingReceipt,
+      vendor: editFormData.vendor.trim() || inspectingReceipt.vendor,
+      date: editFormData.date || inspectingReceipt.date,
+      total: Number(editFormData.total) || 0,
+      tax: Number(editFormData.tax) || 0,
+      schedule: editFormData.schedule,
+      irsLineNumber: editFormData.irsLineNumber,
+      irsLineTitle: editFormData.irsLineTitle,
+      status: editFormData.status
+    };
+    setReceipts(prev => prev.map(item => item.id === updated.id ? updated : item));
+    setInspectingReceipt(updated);
+    setIsEditingReceipt(false);
+    if (onToast) onToast(`Updated details for receipt (${updated.id.slice(0, 10)})`);
+  };
+
+  const handleScanSpecificClientQueue = (clientName: string) => {
+    try {
+      const subs = getClientSubmissions();
+      const queued = subs.filter(s => s.status === 'QUEUED' && s.clientName === clientName);
+      if (queued.length === 0) {
+        if (onToast) onToast(`No pending queued receipts for ${clientName}.`);
+        return;
+      }
+
+      const inputItems: ReceiptInputItem[] = queued.map(s => ({
+        id: s.id,
+        fileName: s.fileName,
+        fileSize: s.fileSize,
+        fileType: s.fileType,
+        dataUrl: s.dataUrl,
+        clientName: s.clientName,
+        clientEmail: s.clientEmail,
+        memo: s.memo,
+        categoryHint: s.categoryHint,
+        vendorHint: s.extractedVendor,
+        amountHint: s.extractedAmount,
+        dateHint: s.extractedDate
+      }));
+
+      setSelectedClientTarget(clientName);
+      setFilterClient(clientName);
+      setQueuedFiles(prev => [...prev, ...inputItems]);
+      if (onToast) onToast(`Queued ${queued.length} receipt(s) for ${clientName}. Ready to scan!`);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   // -------------------------------------------------------------------------
   // INGESTION & BATCH DISPATCH
   // -------------------------------------------------------------------------
@@ -248,7 +391,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         clientName: s.clientName,
         clientEmail: s.clientEmail,
         memo: s.memo,
-        categoryHint: s.categoryHint
+        categoryHint: s.categoryHint,
+        vendorHint: s.extractedVendor,
+        amountHint: s.extractedAmount,
+        dateHint: s.extractedDate
       }));
 
       setQueuedFiles(prev => [...prev, ...inputItems]);
@@ -343,11 +489,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   };
 
   const handleClearAll = () => {
-    if (confirm('Are you sure you want to clear all scanned receipt records from the audit ledger?')) {
-      setReceipts([]);
-      setSelectedIds(new Set());
-      if (onToast) onToast('Audit ledger cleared.');
+    if (!confirmClearLedger) {
+      setConfirmClearLedger(true);
+      return;
     }
+    setReceipts([]);
+    setSelectedIds(new Set());
+    setConfirmClearLedger(false);
+    if (onToast) onToast('Audit ledger cleared.');
   };
 
   const handleToggleDuplicateStatus = (id: string) => {
@@ -779,6 +928,105 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         </div>
       </div>
 
+      {/* CLIENT ROSTER & RECEIPT VOLUME TRACKER */}
+      <div className="rounded-2xl bg-stone-900 border border-stone-800 shadow-xl overflow-hidden">
+        <div 
+          onClick={() => setShowClientRoster(!showClientRoster)}
+          className="p-4 bg-stone-950/70 border-b border-stone-800/80 flex items-center justify-between cursor-pointer hover:bg-stone-950/90 transition-colors"
+        >
+          <div className="flex items-center gap-2.5">
+            <Building2 className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-2">
+              <span>Client Roster &amp; Receipt Ingestion Volume</span>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-stone-800 text-stone-300">
+                {clientBreakdown.length} Entities
+              </span>
+            </h3>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-stone-400">
+            <span>{showClientRoster ? 'Collapse' : 'Expand Roster'}</span>
+            <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${showClientRoster ? 'rotate-180' : ''}`} />
+          </div>
+        </div>
+
+        {showClientRoster && (
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 bg-stone-900/60">
+            {clientBreakdown.map(cb => {
+              const isSelected = filterClient === cb.clientName;
+              return (
+                <div
+                  key={cb.clientName}
+                  className={`p-3.5 rounded-xl border transition-all text-xs space-y-2.5 ${
+                    isSelected
+                      ? 'bg-emerald-950/20 border-emerald-500/50 shadow-md'
+                      : 'bg-stone-950/60 border-stone-800 hover:border-stone-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-bold text-white truncate text-sm flex items-center gap-1.5">
+                      <Building2 className="w-3.5 h-3.5 text-stone-400 shrink-0" />
+                      <span className="truncate">{cb.clientName}</span>
+                    </div>
+                    {isSelected && (
+                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                        Active Filter
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Volume Grid */}
+                  <div className="grid grid-cols-3 gap-1.5 text-center font-mono">
+                    <div className="p-1.5 rounded-lg bg-stone-900 border border-stone-800/80">
+                      <div className="text-[10px] text-stone-400 uppercase font-sans">Pending</div>
+                      <div className={`text-xs font-bold ${cb.pendingIntake > 0 ? 'text-amber-400 font-extrabold' : 'text-stone-400'}`}>
+                        {cb.pendingIntake}
+                      </div>
+                    </div>
+                    <div className="p-1.5 rounded-lg bg-stone-900 border border-stone-800/80">
+                      <div className="text-[10px] text-stone-400 uppercase font-sans">Processed</div>
+                      <div className="text-xs font-bold text-emerald-400">
+                        {cb.scannedCount}
+                      </div>
+                    </div>
+                    <div className="p-1.5 rounded-lg bg-stone-900 border border-stone-800/80">
+                      <div className="text-[10px] text-stone-400 uppercase font-sans">Deductions</div>
+                      <div className="text-xs font-bold text-teal-300">
+                        ${cb.totalDeductions.toFixed(0)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick Action Buttons */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      onClick={() => setFilterClient(isSelected ? 'ALL' : cb.clientName)}
+                      className={`flex-1 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer text-center ${
+                        isSelected
+                          ? 'bg-stone-800 text-stone-200 hover:bg-stone-700'
+                          : 'bg-stone-800/80 hover:bg-stone-700 text-stone-300 border border-stone-700/60'
+                      }`}
+                    >
+                      {isSelected ? 'Show All Clients' : 'Filter Ledger'}
+                    </button>
+
+                    {cb.pendingIntake > 0 && (
+                      <button
+                        onClick={() => handleScanSpecificClientQueue(cb.clientName)}
+                        className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                        title="Load this client's queued intake receipts into scanner"
+                      >
+                        <Zap className="w-3 h-3 text-amber-400" />
+                        <span>Scan ({cb.pendingIntake})</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {/* FILTER & SEARCH TOOLBAR */}
       <div className="p-4 rounded-xl bg-stone-900 border border-stone-800 shadow-md flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5">
@@ -859,13 +1107,33 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         )}
 
         {receipts.length > 0 && (
-          <button
-            onClick={handleClearAll}
-            className="text-stone-400 hover:text-rose-400 text-xs flex items-center gap-1 transition-colors cursor-pointer"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>Clear Ledger</span>
-          </button>
+          <div className="flex items-center gap-1.5">
+            {confirmClearLedger ? (
+              <div className="flex items-center gap-2 bg-rose-950/80 border border-rose-500/50 px-2.5 py-1 rounded-lg text-xs">
+                <span className="text-rose-200 font-medium">Clear all records?</span>
+                <button
+                  onClick={handleClearAll}
+                  className="px-2 py-0.5 rounded bg-rose-600 hover:bg-rose-500 text-white font-bold text-[11px] cursor-pointer"
+                >
+                  Yes, Clear
+                </button>
+                <button
+                  onClick={() => setConfirmClearLedger(false)}
+                  className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-stone-300 text-[11px] cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={handleClearAll}
+                className="text-stone-400 hover:text-rose-400 text-xs flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear Ledger</span>
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -1038,10 +1306,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
                           <button
-                            onClick={() => {
-                              setInspectingReceipt(r);
-                              setIsEditingReceipt(false);
-                            }}
+                            onClick={() => handleOpenInspect(r)}
                             className="p-1.5 rounded-lg hover:bg-stone-800 text-stone-300 hover:text-white transition-colors cursor-pointer"
                             title="Inspect OCR & Line Items"
                           >
@@ -1106,102 +1371,263 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </div>
             </div>
 
-            {/* Core Metadata Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-stone-950 p-4 rounded-xl border border-stone-800">
-              <div>
-                <div className="text-stone-400 text-[10px] uppercase font-semibold">Vendor / Payee</div>
-                <div className="font-bold text-white mt-0.5">{inspectingReceipt.vendor}</div>
-              </div>
-              <div>
-                <div className="text-stone-400 text-[10px] uppercase font-semibold">Transaction Date</div>
-                <div className="font-mono text-stone-200 mt-0.5">{inspectingReceipt.date}</div>
-              </div>
-              <div>
-                <div className="text-stone-400 text-[10px] uppercase font-semibold">Total Amount</div>
-                <div className="font-mono font-bold text-emerald-400 mt-0.5">
-                  ${inspectingReceipt.total.toFixed(2)}
+            {/* LIVE EDIT MODE vs VIEW MODE */}
+            {isEditingReceipt ? (
+              <div className="p-4 rounded-xl bg-stone-950 border border-emerald-500/40 space-y-4">
+                <div className="flex items-center justify-between border-b border-stone-800 pb-2">
+                  <div className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 uppercase tracking-wider">
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Editing Receipt Extraction &amp; Line Mapping</span>
+                  </div>
+                  <span className="text-[10px] text-stone-400 font-mono">Changes apply to ledger &amp; tax exports</span>
                 </div>
-              </div>
-              <div>
-                <div className="text-stone-400 text-[10px] uppercase font-semibold">Payment Tender</div>
-                <div className="font-mono text-stone-200 mt-0.5">
-                  {inspectingReceipt.paymentMethod} {inspectingReceipt.cardLast4 ? `(*${inspectingReceipt.cardLast4})` : ''}
-                </div>
-              </div>
-            </div>
 
-            {/* IRS Form 1040 Tax Classification */}
-            <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 space-y-2">
-              <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>IRS Tax Classification Details</span>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div>
-                  <span className="text-stone-400 block text-[10px]">IRS Schedule:</span>
-                  <span className="font-semibold text-white">
-                    {inspectingReceipt.schedule === 'SCHEDULE_F'
-                      ? 'IRS Form 1040 Schedule F (Farm)'
-                      : 'IRS Form 1040 Schedule C (Business)'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-stone-400 block text-[10px]">Tax Line Assignment:</span>
-                  <span className="font-semibold text-emerald-300">
-                    {inspectingReceipt.irsLineNumber}: {inspectingReceipt.irsLineTitle}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-stone-400 block text-[10px]">Extraction Confidence:</span>
-                  <span className="font-mono text-emerald-400">
-                    {(inspectingReceipt.confidence * 100).toFixed(0)}% (Verified)
-                  </span>
-                </div>
-              </div>
-            </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Vendor / Payee</label>
+                    <input
+                      type="text"
+                      value={editFormData.vendor}
+                      onChange={e => setEditFormData({ ...editFormData, vendor: e.target.value })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
 
-            {/* Line Items Table if present */}
-            {inspectingReceipt.lineItems && inspectingReceipt.lineItems.length > 0 && (
-              <div className="space-y-2">
-                <div className="text-xs font-bold text-stone-300 uppercase tracking-wider">
-                  Itemized Line Items
-                </div>
-                <div className="rounded-xl border border-stone-800 overflow-hidden">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-stone-950 text-stone-400 font-mono text-[10px]">
-                      <tr>
-                        <th className="py-2 px-3">Item Description</th>
-                        <th className="py-2 px-3 text-center">Qty</th>
-                        <th className="py-2 px-3 text-right">Unit Price</th>
-                        <th className="py-2 px-3 text-right">Line Total</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-stone-800 font-sans">
-                      {inspectingReceipt.lineItems.map((li, idx) => (
-                        <tr key={idx} className="hover:bg-stone-800/30">
-                          <td className="py-2 px-3 text-stone-200">{li.description}</td>
-                          <td className="py-2 px-3 text-center font-mono text-stone-400">{li.quantity}</td>
-                          <td className="py-2 px-3 text-right font-mono text-stone-400">${li.unitPrice.toFixed(2)}</td>
-                          <td className="py-2 px-3 text-right font-mono font-bold text-white">${li.total.toFixed(2)}</td>
-                        </tr>
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Transaction Date</label>
+                    <input
+                      type="date"
+                      value={editFormData.date}
+                      onChange={e => setEditFormData({ ...editFormData, date: e.target.value })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Total Amount ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={editFormData.total}
+                      onChange={e => setEditFormData({ ...editFormData, total: parseFloat(e.target.value) || 0 })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-emerald-400 font-bold font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Tax Amount ($)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={editFormData.tax}
+                      onChange={e => setEditFormData({ ...editFormData, tax: parseFloat(e.target.value) || 0 })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">IRS Tax Schedule</label>
+                    <select
+                      value={editFormData.schedule}
+                      onChange={e => {
+                        const sch = e.target.value as 'SCHEDULE_F' | 'SCHEDULE_C';
+                        const firstLineKey = sch === 'SCHEDULE_F' ? 'Line 15' : 'Line 22';
+                        const firstLineTitle = sch === 'SCHEDULE_F' ? IRS_SCHEDULE_F_LINES['Line 15'] : IRS_SCHEDULE_C_LINES['Line 22'];
+                        setEditFormData({
+                          ...editFormData,
+                          schedule: sch,
+                          irsLineNumber: firstLineKey,
+                          irsLineTitle: firstLineTitle
+                        });
+                      }}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="SCHEDULE_F">IRS Form 1040 Schedule F (Farm Operating Deductions)</option>
+                      <option value="SCHEDULE_C">IRS Form 1040 Schedule C (General Business Expenses)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">IRS Form Line Item</label>
+                    <select
+                      value={editFormData.irsLineNumber}
+                      onChange={e => {
+                        const key = e.target.value;
+                        const lineMap = editFormData.schedule === 'SCHEDULE_F' ? IRS_SCHEDULE_F_LINES : IRS_SCHEDULE_C_LINES;
+                        setEditFormData({
+                          ...editFormData,
+                          irsLineNumber: key,
+                          irsLineTitle: lineMap[key] || 'Expenses'
+                        });
+                      }}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500 truncate"
+                    >
+                      {Object.entries(editFormData.schedule === 'SCHEDULE_F' ? IRS_SCHEDULE_F_LINES : IRS_SCHEDULE_C_LINES).map(([k, title]) => (
+                        <option key={k} value={k}>{k}: {title}</option>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
+                    </select>
+                  </div>
 
-            {/* Duplicate Notice Banner if applicable */}
-            {inspectingReceipt.duplicateStatus !== 'UNIQUE' && (
-              <div className="p-3.5 rounded-xl bg-amber-950/20 border border-amber-500/40 text-xs space-y-1">
-                <div className="font-bold text-amber-300 flex items-center gap-1.5">
-                  <AlertTriangle className="w-4 h-4 text-amber-400" />
-                  <span>Duplicate Receipt Detection Alert</span>
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Verification Status</label>
+                    <select
+                      value={editFormData.status}
+                      onChange={e => setEditFormData({ ...editFormData, status: e.target.value as any })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="PROCESSED">PROCESSED (Under Review)</option>
+                      <option value="VERIFIED">VERIFIED (Approved for Tax Return)</option>
+                      <option value="REJECTED">REJECTED (Suppressed / Duplicate)</option>
+                    </select>
+                  </div>
                 </div>
-                <p className="text-stone-300 text-[11px] leading-relaxed">
-                  {inspectingReceipt.duplicateReason}
-                </p>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
+                  <button
+                    onClick={() => setIsEditingReceipt(false)}
+                    className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 font-medium text-xs cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleSaveReceiptEdits}
+                    className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer flex items-center gap-1.5 shadow-md"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Save Changes</span>
+                  </button>
+                </div>
               </div>
+            ) : (
+              <>
+                {/* Receipt Source Image / Document Preview */}
+                {inspectingReceipt.dataUrl && (
+                  <div className="p-3 bg-stone-950 rounded-xl border border-stone-800 space-y-2">
+                    <div className="text-[10px] text-stone-400 font-semibold uppercase tracking-wider flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Source Receipt Document Preview</span>
+                      </span>
+                      <span className="font-mono text-stone-500">
+                        {inspectingReceipt.fileName} ({Math.round(inspectingReceipt.fileSize / 1024)} KB)
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-center bg-black/60 rounded-lg p-2 max-h-56 overflow-hidden border border-stone-800/80">
+                      {inspectingReceipt.dataUrl.startsWith('data:image/') || inspectingReceipt.fileType.startsWith('image/') ? (
+                        <img
+                          src={inspectingReceipt.dataUrl}
+                          alt={inspectingReceipt.fileName}
+                          className="max-h-52 max-w-full object-contain rounded"
+                        />
+                      ) : (
+                        <div className="text-center py-5 space-y-1">
+                          <FileText className="w-8 h-8 text-stone-500 mx-auto" />
+                          <div className="text-xs text-stone-300 font-mono">{inspectingReceipt.fileName}</div>
+                          <div className="text-[10px] text-stone-500">PDF / Binary Source Document attached to vault</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Core Metadata Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-stone-950 p-4 rounded-xl border border-stone-800">
+                  <div>
+                    <div className="text-stone-400 text-[10px] uppercase font-semibold">Vendor / Payee</div>
+                    <div className="font-bold text-white mt-0.5">{inspectingReceipt.vendor}</div>
+                  </div>
+                  <div>
+                    <div className="text-stone-400 text-[10px] uppercase font-semibold">Transaction Date</div>
+                    <div className="font-mono text-stone-200 mt-0.5">{inspectingReceipt.date}</div>
+                  </div>
+                  <div>
+                    <div className="text-stone-400 text-[10px] uppercase font-semibold">Total Amount</div>
+                    <div className="font-mono font-bold text-emerald-400 mt-0.5">
+                      ${inspectingReceipt.total.toFixed(2)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-stone-400 text-[10px] uppercase font-semibold">Payment Tender</div>
+                    <div className="font-mono text-stone-200 mt-0.5">
+                      {inspectingReceipt.paymentMethod} {inspectingReceipt.cardLast4 ? `(*${inspectingReceipt.cardLast4})` : ''}
+                    </div>
+                  </div>
+                </div>
+
+                {/* IRS Form 1040 Tax Classification */}
+                <div className="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/30 space-y-2">
+                  <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    <span>IRS Tax Classification Details</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <span className="text-stone-400 block text-[10px]">IRS Schedule:</span>
+                      <span className="font-semibold text-white">
+                        {inspectingReceipt.schedule === 'SCHEDULE_F'
+                          ? 'IRS Form 1040 Schedule F (Farm)'
+                          : 'IRS Form 1040 Schedule C (Business)'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-stone-400 block text-[10px]">Tax Line Assignment:</span>
+                      <span className="font-semibold text-emerald-300">
+                        {inspectingReceipt.irsLineNumber}: {inspectingReceipt.irsLineTitle}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-stone-400 block text-[10px]">Extraction Confidence:</span>
+                      <span className="font-mono text-emerald-400">
+                        {(inspectingReceipt.confidence * 100).toFixed(0)}% (Verified)
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Line Items Table if present */}
+                {inspectingReceipt.lineItems && inspectingReceipt.lineItems.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="text-xs font-bold text-stone-300 uppercase tracking-wider">
+                      Itemized Line Items
+                    </div>
+                    <div className="rounded-xl border border-stone-800 overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-stone-950 text-stone-400 font-mono text-[10px]">
+                          <tr>
+                            <th className="py-2 px-3">Item Description</th>
+                            <th className="py-2 px-3 text-center">Qty</th>
+                            <th className="py-2 px-3 text-right">Unit Price</th>
+                            <th className="py-2 px-3 text-right">Line Total</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-stone-800 font-sans">
+                          {inspectingReceipt.lineItems.map((li, idx) => (
+                            <tr key={idx} className="hover:bg-stone-800/30">
+                              <td className="py-2 px-3 text-stone-200">{li.description}</td>
+                              <td className="py-2 px-3 text-center font-mono text-stone-400">{li.quantity}</td>
+                              <td className="py-2 px-3 text-right font-mono text-stone-400">${li.unitPrice.toFixed(2)}</td>
+                              <td className="py-2 px-3 text-right font-mono font-bold text-white">${li.total.toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Duplicate Notice Banner if applicable */}
+                {inspectingReceipt.duplicateStatus !== 'UNIQUE' && (
+                  <div className="p-3.5 rounded-xl bg-amber-950/20 border border-amber-500/40 text-xs space-y-1">
+                    <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-400" />
+                      <span>Duplicate Receipt Detection Alert</span>
+                    </div>
+                    <p className="text-stone-300 text-[11px] leading-relaxed">
+                      {inspectingReceipt.duplicateReason}
+                    </p>
+                  </div>
+                )}
+              </>
             )}
 
             {/* Modal Footer Actions */}
@@ -1211,6 +1637,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </span>
 
               <div className="flex items-center gap-2">
+                {!isEditingReceipt && (
+                  <button
+                    onClick={() => setIsEditingReceipt(true)}
+                    className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-semibold text-xs transition-colors cursor-pointer flex items-center gap-1.5 border border-stone-700"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Edit Details</span>
+                  </button>
+                )}
+
                 <button
                   onClick={() => {
                     handleToggleDuplicateStatus(inspectingReceipt.id);
