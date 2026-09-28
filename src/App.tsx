@@ -31,7 +31,8 @@ import {
   Radio,
   Building2,
   Mail,
-  Inbox
+  Inbox,
+  Cpu
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -53,6 +54,7 @@ import { ActiveDevicesMonitor } from './components/ActiveDevicesMonitor';
 import { QuickBooksProductionCenter } from './components/QuickBooksProductionCenter';
 import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { ClientIntakeManager } from './components/ClientIntakeManager';
+import { AdminReceiptProcessorEngine } from './components/AdminReceiptProcessorEngine';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
@@ -62,7 +64,7 @@ import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'intake' | 'licensing' | 'devices' | 'qbo' | 'updater' | 'code' | 'guide'>('intake');
+  const [activeTab, setActiveTab] = useState<'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'updater' | 'code' | 'guide'>('scanner');
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
@@ -1008,6 +1010,21 @@ export default function App() {
       {/* Main Tab Navigation */}
       <nav className="border-b border-stone-800/80 bg-stone-900/40 px-6 flex gap-2 overflow-x-auto">
         <button
+          onClick={() => setActiveTab('scanner')}
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'scanner'
+              ? 'border-emerald-500 text-emerald-400 font-bold'
+              : 'border-transparent text-stone-400 hover:text-stone-200'
+          }`}
+        >
+          <Cpu className="w-4 h-4 text-emerald-400 animate-pulse" />
+          <span>Receipt Processing &amp; Parallel Engine</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
+            Multi-Worker
+          </span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('intake')}
           className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
             activeTab === 'intake'
@@ -1106,11 +1123,21 @@ export default function App() {
 
       {/* Main Content Area */}
       <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
+        {/* TAB: RECEIPT SCANNER & MULTI-WORKER PARALLEL ENGINE */}
+        {activeTab === 'scanner' && (
+          <AdminReceiptProcessorEngine
+            onToast={showToast}
+            onNavigateToQBO={() => setActiveTab('qbo')}
+            onNavigateToIntake={() => setActiveTab('intake')}
+          />
+        )}
+
         {/* TAB 0: CLIENT INTAKE & MULTI-VM CLUSTER */}
         {activeTab === 'intake' && (
           <ClientIntakeManager
             onOpenBundleModal={() => setIsBundleModalOpen(true)}
             onToast={showToast}
+            onOpenScanner={() => setActiveTab('scanner')}
           />
         )}
 

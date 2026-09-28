@@ -35,11 +35,13 @@ import { AdminRoutingAndTaxRulesModal } from './AdminRoutingAndTaxRulesModal';
 interface ClientIntakeManagerProps {
   onOpenBundleModal: () => void;
   onToast?: (msg: string) => void;
+  onOpenScanner?: () => void;
 }
 
 export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
   onOpenBundleModal,
   onToast,
+  onOpenScanner,
 }) => {
   const [submissions, setSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
   const [filterClient, setFilterClient] = useState<string>('ALL');
@@ -244,6 +246,18 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
+            {onOpenScanner && (
+              <button
+                type="button"
+                onClick={onOpenScanner}
+                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md transition-all cursor-pointer flex items-center gap-1.5"
+                title="Launch the parallel worker scanning engine directly in the browser"
+              >
+                <Cpu className="w-3.5 h-3.5 text-emerald-200 animate-pulse" />
+                <span>Launch Parallel Scanner ({queuedCount} Queued)</span>
+              </button>
+            )}
+
             <button
               type="button"
               onClick={() => setShowRulesModal(true)}
