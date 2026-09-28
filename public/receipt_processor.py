@@ -1389,7 +1389,12 @@ def normalize_extracted_date(date_raw: str) -> str:
             yr = f"19{yr}" if num_yr > 50 else f"20{yr}"
         return f"{yr}-{int(m_us.group(1)):02d}-{int(m_us.group(2)):02d}"
 
-    # 3. Try month name matches
+    # 3. Check for already formatted YYYY-MM-DD but maybe with dots or spaces
+    m_alt_iso = re.search(r'\b(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})\b', clean)
+    if m_alt_iso:
+        return f"{m_alt_iso.group(1)}-{int(m_alt_iso.group(2)):02d}-{int(m_alt_iso.group(3)):02d}"
+
+    # 4. Try month name matches
     month_map = {
         'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
         'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
@@ -4048,9 +4053,26 @@ class FarmReceiptApp(_TK_BASE_TK):
                 resp = GLOBAL_SESSION.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=35)
                 if resp.status_code == 200:
                     res_json = resp.json()
-                    text_part = res_json['candidates'][0]['content']['parts'][0]['text']
-                    data = json.loads(text_part.strip())
-                    break
+                    # Robust path traversal for Gemini API response
+                    candidates = res_json.get('candidates', [])
+                    if candidates:
+                        content = candidates[0].get('content', {})
+                        parts = content.get('parts', [])
+                        if parts:
+                            text_part = parts[0].get('text', '')
+                            if text_part:
+                                try:
+                                    data = json.loads(text_part.strip())
+                                    break
+                                except json.JSONDecodeError:
+                                    # Try to find JSON block if model returned conversational text
+                                    m_json = re.search(r'(\{.*\})', text_part.strip(), re.DOTALL)
+                                    if m_json:
+                                        try:
+                                            data = json.loads(m_json.group(1))
+                                            break
+                                        except:
+                                            pass
                 elif resp.status_code == 429:
                     self.log(f"⚠️ Rate limit (429) hit. Instantly switching to next API key in pool...", "warning")
                     continue
