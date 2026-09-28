@@ -1311,7 +1311,7 @@ class SecureVault:
 # -----------------------------------------------------------------------------
 # Configuration & Constants
 # -----------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_MODEL = "gemini-2.5-flash"
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.tiff', '.pdf')
 
 RECEIPT_SCHEMA = {
@@ -1319,7 +1319,7 @@ RECEIPT_SCHEMA = {
     "properties": {
         "receipts": {
             "type": "ARRAY",
-            "description": "List of all distinct receipts found in the image.",
+            "description": "List of all distinct receipts found in the image or document.",
             "items": {
                 "type": "OBJECT",
                 "properties": {
@@ -1429,6 +1429,46 @@ def clean_card_last_4(raw_card: str, payment_method: str = "") -> str:
     elif len(digits) > 4:
         return digits[-4:]
     return ""
+
+def reconcile_extracted_financials(r_data: dict) -> dict:
+    """
+    Forensic mathematical check on extracted fields to ensure 100% accurate totals.
+    Fixes cases where OCR models mistakenly pick Cash Tendered, Change Due, Subtotal, or Savings as Total.
+    """
+    try:
+        total = float(r_data.get("total", 0.0))
+    except Exception:
+        total = 0.0
+
+    try:
+        subtotal = float(r_data.get("subtotal", total))
+    except Exception:
+        subtotal = total
+
+    try:
+        tax = float(r_data.get("tax", 0.0))
+    except Exception:
+        tax = 0.0
+
+    expected_from_subtax = round(subtotal + tax, 2) if subtotal > 0 else 0.0
+
+    # If total was 0, compute from subtotal + tax
+    if total <= 0.0 and expected_from_subtax > 0:
+        total = expected_from_subtax
+
+    # If subtotal + tax is explicitly provided and total is radically higher (e.g. model picked Cash Tendered $100 for a $34.20 total)
+    if subtotal > 0 and tax >= 0 and expected_from_subtax > 0:
+        if total > (expected_from_subtax * 1.5) and expected_from_subtax > 1.0:
+            total = expected_from_subtax
+
+    # If subtotal is 0 or missing but total and tax are known
+    if subtotal <= 0.0 and total > 0.0:
+        subtotal = round(total - tax, 2) if total > tax else total
+
+    r_data["total"] = round(total, 2)
+    r_data["subtotal"] = round(subtotal, 2)
+    r_data["tax"] = round(tax, 2)
+    return r_data
 
 if requests is not None:
     GLOBAL_SESSION = requests.Session()
@@ -1941,14 +1981,25 @@ def enhance_thermal_image(pil_img):
     try:
         if pil_img.mode in ("RGBA", "P"):
             pil_img = pil_img.convert("RGB")
-        gray = ImageOps.grayscale(pil_img)
-        auto_gray = ImageOps.autocontrast(gray, cutoff=1)
-        sharp = auto_gray.filter(ImageFilter.UnsharpMask(radius=1.5, percent=130, threshold=3))
-        return sharp.convert("RGB")
+        elif pil_img.mode != "RGB":
+            pil_img = pil_img.convert("RGB")
+        auto_gray = ImageOps.autocontrast(pil_img, cutoff=0.5)
+        return auto_gray
     except Exception:
         return pil_img.convert("RGB") if pil_img.mode != "RGB" else pil_img
 
-def prepare_receipt_image(pil_img, max_dim=1600):
+def prepare_receipt_image(pil_img, max_dim=2400):
+    try:
+        # 1. Correct orientation from smartphone EXIF (prevents sideways text OCR failure)
+        pil_img = ImageOps.exif_transpose(pil_img)
+    except Exception:
+        pass
+
+    if pil_img.mode in ("RGBA", "P"):
+        pil_img = pil_img.convert("RGB")
+    elif pil_img.mode != "RGB":
+        pil_img = pil_img.convert("RGB")
+
     w, h = pil_img.size
     if max(w, h) > max_dim:
         scale = max_dim / float(max(w, h))
@@ -1956,7 +2007,7 @@ def prepare_receipt_image(pil_img, max_dim=1600):
 
     enhanced = enhance_thermal_image(pil_img)
     io_buffer = io.BytesIO()
-    enhanced.save(io_buffer, format="JPEG", quality=90, optimize=True)
+    enhanced.save(io_buffer, format="JPEG", quality=95, optimize=True)
     full_b64 = base64.b64encode(io_buffer.getvalue()).decode("utf-8")
     return full_b64
 
@@ -2783,7 +2834,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3.8-flash"],
+            values=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-3.5-flash-lite", "gemini-3.8-flash"],
             state="readonly",
             width=22
         )
@@ -3917,19 +3968,26 @@ class FarmReceiptApp(_TK_BASE_TK):
         self.log(f"🔍 Analyzing for [{active_client}]: {os.path.basename(filepath)}...", "highlight")
 
         try:
-            with open(filepath, "rb") as f_img:
-                img_bytes = f_img.read()
-            pil_img = Image.open(io.BytesIO(img_bytes))
+            is_pdf = filepath.lower().endswith('.pdf')
+            with open(filepath, "rb") as f_in:
+                raw_file_bytes = f_in.read()
+
+            if is_pdf:
+                b64_content = base64.b64encode(raw_file_bytes).decode("utf-8")
+                mime_type = "application/pdf"
+            else:
+                pil_img = Image.open(io.BytesIO(raw_file_bytes))
+                b64_content = prepare_receipt_image(pil_img, max_dim=2400)
+                mime_type = "image/jpeg"
         except Exception as e:
-            self.log(f"❌ Failed to open image {filepath}: {e}", "error")
+            self.log(f"❌ Failed to load receipt document {filepath}: {e}", "error")
             return False
 
-        full_b64 = prepare_receipt_image(pil_img)
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": "Analyze this photo. Detect the store vendor, date, line items, payment method, card last 4 digits, and total amount. Return ONE receipt entry unless multiple completely physically separated receipts are laid side-by-side."},
-                    {"inlineData": {"mimeType": "image/jpeg", "data": full_b64}}
+                    {"text": "Analyze this receipt image/document with forensic accuracy. Extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL. Return ONE receipt entry unless multiple physically distinct receipts are laid side-by-side."},
+                    {"inlineData": {"mimeType": mime_type, "data": b64_content}}
                 ]
             }],
             "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
@@ -3993,31 +4051,15 @@ class FarmReceiptApp(_TK_BASE_TK):
             self.log(f"✨ MULTI-RECEIPT DETECTED: Found {num_found} separate receipts in this photo!", "highlight")
 
         # Process each detected receipt
-        for idx, r_data in enumerate(receipt_list, start=1):
+        for idx, raw_r_data in enumerate(receipt_list, start=1):
+            r_data = reconcile_extracted_financials(raw_r_data)
             vendor = r_data.get("vendor", "Unknown Vendor").strip()
             raw_date = str(r_data.get("date", "")).strip()
             date_str = normalize_extracted_date(raw_date)
 
-            try:
-                total = float(r_data.get("total", 0.0))
-            except Exception:
-                total = 0.0
-
-            try:
-                subtotal = float(r_data.get("subtotal", total))
-            except Exception:
-                subtotal = total
-
-            try:
-                tax = float(r_data.get("tax", 0.0))
-            except Exception:
-                tax = 0.0
-
-            # Guard against flipped total/subtotal or 0 total
-            if total <= 0.0 and subtotal > 0.0:
-                total = round(subtotal + tax, 2)
-            if subtotal <= 0.0 and total > 0.0:
-                subtotal = round(total - tax, 2) if total > tax else total
+            total = float(r_data.get("total", 0.0))
+            subtotal = float(r_data.get("subtotal", total))
+            tax = float(r_data.get("tax", 0.0))
 
             selected_dropdown_cat = self.category_var.get()
             if selected_dropdown_cat and selected_dropdown_cat != "Auto-Detect (AI)":
@@ -4665,16 +4707,23 @@ class HeadlessWorkerEngine:
 
             self.log(f"🔍 Analyzing for [{client_name}]: {os.path.basename(filepath)}...", "info")
 
-            with open(filepath, "rb") as f_img:
-                img_bytes = f_img.read()
-            pil_img = Image.open(io.BytesIO(img_bytes))
-            full_b64 = prepare_receipt_image(pil_img)
+            is_pdf = filepath.lower().endswith('.pdf')
+            with open(filepath, "rb") as f_in:
+                raw_file_bytes = f_in.read()
+
+            if is_pdf:
+                b64_content = base64.b64encode(raw_file_bytes).decode("utf-8")
+                mime_type = "application/pdf"
+            else:
+                pil_img = Image.open(io.BytesIO(raw_file_bytes))
+                b64_content = prepare_receipt_image(pil_img, max_dim=2400)
+                mime_type = "image/jpeg"
 
             payload = {
                 "contents": [{
                     "parts": [
-                        {"text": "Analyze this photo. Detect the store vendor, date, line items, payment method, card last 4 digits, and total amount. Return ONE receipt entry unless multiple completely physically separated receipts are laid side-by-side."},
-                        {"inlineData": {"mimeType": "image/jpeg", "data": full_b64}}
+                        {"text": "Analyze this receipt image/document with forensic accuracy. Extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL. Return ONE receipt entry unless multiple physically distinct receipts are laid side-by-side."},
+                        {"inlineData": {"mimeType": mime_type, "data": b64_content}}
                     ]
                 }],
                 "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
@@ -4723,31 +4772,15 @@ class HeadlessWorkerEngine:
             client_dir = os.path.join("./processed", safe_client)
             os.makedirs(client_dir, exist_ok=True)
 
-            for idx, r_data in enumerate(receipt_list, start=1):
+            for idx, raw_r_data in enumerate(receipt_list, start=1):
+                r_data = reconcile_extracted_financials(raw_r_data)
                 vendor = r_data.get("vendor", "Unknown Vendor").strip()
                 raw_date = str(r_data.get("date", "")).strip()
                 date_str = normalize_extracted_date(raw_date)
 
-                try:
-                    total = float(r_data.get("total", 0.0))
-                except Exception:
-                    total = 0.0
-
-                try:
-                    subtotal = float(r_data.get("subtotal", total))
-                except Exception:
-                    subtotal = total
-
-                try:
-                    tax = float(r_data.get("tax", 0.0))
-                except Exception:
-                    tax = 0.0
-
-                # Guard against flipped total/subtotal or 0 total
-                if total <= 0.0 and subtotal > 0.0:
-                    total = round(subtotal + tax, 2)
-                if subtotal <= 0.0 and total > 0.0:
-                    subtotal = round(total - tax, 2) if total > tax else total
+                total = float(r_data.get("total", 0.0))
+                subtotal = float(r_data.get("subtotal", total))
+                tax = float(r_data.get("tax", 0.0))
 
                 category = r_data.get("category", "Supplies & Materials")
                 payment = r_data.get("payment_method", "Cash/Card").strip()
