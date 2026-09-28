@@ -345,11 +345,22 @@ export default function App() {
   };
 
   const handleImportKeys = (imported: LicenseKeyRecord[]) => {
-    setLicenseKeys(imported);
-    try {
-      localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(imported));
-    } catch {}
-    showToast(`Successfully imported ${imported.length} license key records.`);
+    setLicenseKeys(prev => {
+      const map = new Map<string, LicenseKeyRecord>();
+      for (const k of prev) {
+        map.set(k.key.trim().toUpperCase(), k);
+      }
+      for (const k of imported) {
+        map.set(k.key.trim().toUpperCase(), k);
+      }
+      const merged = Array.from(map.values());
+      try {
+        localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(merged));
+      } catch {}
+      return merged;
+    });
+    batchSyncKeysToServer(imported);
+    showToast(`Successfully registered/imported ${imported.length} license key records.`);
   };
 
   const handleAdminUnlockSuccess = () => {

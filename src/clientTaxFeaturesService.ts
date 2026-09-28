@@ -248,3 +248,55 @@ export function calculateQuarterlyEstimates(totalDeductionsUsd: number, taxYear:
     effectiveTaxRate: 0.25
   };
 }
+
+/**
+ * Exports logged mileage trips directly to an official Form 1040 Schedule C/F reconciliation CSV
+ */
+export function exportMileageLogCSV(trips: MileageTrip[], clientName: string = 'Client'): void {
+  if (!trips || trips.length === 0) return;
+
+  const headers = [
+    'Date',
+    'Purpose / Route Description',
+    'IRS Target Schedule',
+    'Vehicle',
+    'Start Odometer',
+    'End Odometer',
+    'Miles Logged',
+    'IRS Standard Rate ($/mi)',
+    'Deduction Amount ($)',
+    'Notes'
+  ];
+
+  const rows = trips.map(t => [
+    t.date,
+    `"${(t.purpose || '').replace(/"/g, '""')}"`,
+    t.schedule === 'SCHEDULE_F' ? 'Form 1040 Schedule F (Line 10 - Gasoline, Fuel & Oil)' : 'Form 1040 Schedule C (Line 9 - Car and Truck Expenses)',
+    `"${(t.vehicleDescription || 'Business Vehicle').replace(/"/g, '""')}"`,
+    t.startOdometer !== undefined ? t.startOdometer : '',
+    t.endOdometer !== undefined ? t.endOdometer : '',
+    t.miles,
+    `$${t.ratePerMile.toFixed(2)}`,
+    `$${t.calculatedDeduction.toFixed(2)}`,
+    `"${(t.notes || '').replace(/"/g, '""')}"`
+  ]);
+
+  const csvContent = [
+    `# Form 1040 IRS Mileage Deduction Log`,
+    `# Entity / Client: ${clientName}`,
+    `# Export Date: ${new Date().toISOString().split('T')[0]}`,
+    headers.join(','),
+    ...rows.map(r => r.join(','))
+  ].join('\n');
+
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `Mileage_Log_Schedule_C_F_${new Date().toISOString().split('T')[0]}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+

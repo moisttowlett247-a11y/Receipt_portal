@@ -1932,6 +1932,283 @@ def get_file_sha256(filepath):
 # -----------------------------------------------------------------------------
 # Main Desktop GUI Window
 # -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# IRS Schedule C & Schedule F Categorization & Native Multi-Sheet Excel Engine
+# -----------------------------------------------------------------------------
+IRS_SCHEDULE_F_LINES = {
+    "Line 10": "Car and truck expenses",
+    "Line 11": "Chemicals",
+    "Line 12": "Conservation expenses",
+    "Line 13": "Custom hire (machine work)",
+    "Line 14": "Depreciation and section 179",
+    "Line 15": "Feed purchased",
+    "Line 16": "Fertilizers and lime",
+    "Line 17": "Freight and trucking",
+    "Line 18": "Gasoline, fuel, and oil",
+    "Line 19": "Insurance (other than health)",
+    "Line 21": "Labor hired (less employment credits)",
+    "Line 22": "Pension and profit-sharing plans",
+    "Line 24": "Repairs and maintenance",
+    "Line 25": "Seeds and plants",
+    "Line 26": "Storage and warehousing",
+    "Line 27": "Supplies purchased",
+    "Line 28": "Taxes",
+    "Line 29": "Utilities",
+    "Line 30": "Veterinary, breeding, and medicine",
+    "Line 32": "Other expenses"
+}
+
+IRS_SCHEDULE_C_LINES = {
+    "Line 8": "Advertising",
+    "Line 9": "Car and truck expenses",
+    "Line 10": "Commissions and fees",
+    "Line 11": "Contract labor",
+    "Line 13": "Depreciation and section 179",
+    "Line 15": "Insurance (other than health)",
+    "Line 16": "Interest (mortgage & other)",
+    "Line 17": "Legal and professional services",
+    "Line 18": "Office expense",
+    "Line 20": "Rent or lease (vehicles, machinery, equipment)",
+    "Line 21": "Repairs and maintenance",
+    "Line 22": "Supplies (not included in Part III)",
+    "Line 23": "Taxes and licenses",
+    "Line 24": "Travel and meals",
+    "Line 25": "Utilities",
+    "Line 27": "Other expenses"
+}
+
+def classify_receipt_tax_schedule(category: str, vendor: str = "", memo: str = "") -> dict:
+    cat_lower = (category or "").lower()
+    ven_lower = (vendor or "").lower()
+    mem_lower = (memo or "").lower()
+    text = f"{cat_lower} {ven_lower} {mem_lower}"
+
+    # Schedule F specific farm rules
+    if any(k in text for k in ["feed", "hay", "grain", "pellet", "mineral", "silage", "forage", "salt lick", "agway", "purina"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 15", "line_title": "Feed purchased", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["fertilizer", "lime", "nitrogen", "potash", "manure", "soil amendment"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 16", "line_title": "Fertilizers and lime", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["vet", "veterinary", "vaccine", "antibiotic", "deworm", "breeding", "livestock medicine", "animal health"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 30", "line_title": "Veterinary, breeding, and medicine", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["seed", "plants", "alfalfa", "clover", "seed corn", "soybean seed"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 25", "line_title": "Seeds and plants", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["chemical", "herbicide", "pesticide", "roundup", "fungicide", "spray"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 11", "line_title": "Chemicals", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["diesel", "tractor fuel", "off-road diesel", "bulk fuel", "heating oil", "propane", "cenex"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 18", "line_title": "Gasoline, fuel, and oil", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["tractor repair", "combine", "harvester", "hydraulic", "baler", "implement", "john deere", "case ih", "kubota", "new holland"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 24", "line_title": "Repairs and maintenance", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    if any(k in text for k in ["fencing", "barbed wire", "t-post", "baling twine", "gate", "tote", "farm:cows", "farm:chickens", "farm:general"]):
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 27", "line_title": "Supplies purchased", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+
+    # General / Schedule C business rules
+    if any(k in text for k in ["gas", "fuel", "chevron", "shell", "exxon", "speedway", "parking", "toll", "mileage", "uber", "lyft"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 9", "line_title": "Car and truck expenses", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+    if any(k in text for k in ["staples", "office depot", "paper", "printer", "ink", "software", "adobe", "google", "microsoft", "zoom"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 18", "line_title": "Office expense", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+    if any(k in text for k in ["advertising", "google ads", "facebook ads", "meta", "flyer", "billboard", "marketing"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 8", "line_title": "Advertising", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+    if any(k in text for k in ["electric", "power", "water", "utility", "trash", "internet", "verizon", "att", "t-mobile"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 25", "line_title": "Utilities", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+    if any(k in text for k in ["restaurant", "meal", "diner", "cafe", "hotel", "lodging", "flight"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 24", "line_title": "Travel and meals", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+    if any(k in text for k in ["attorney", "legal", "cpa", "accounting", "bookkeeping", "consulting"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 17", "line_title": "Legal and professional services", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+    if any(k in text for k in ["hardware", "tools", "fasteners", "home depot", "lowes", "menards", "supplies"]):
+        return {"schedule": "SCHEDULE_C", "line_number": "Line 22", "line_title": "Supplies (not included in Part III)", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+
+    if "farm" in cat_lower or "farm" in ven_lower:
+        return {"schedule": "SCHEDULE_F", "line_number": "Line 27", "line_title": "Supplies purchased", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
+    return {"schedule": "SCHEDULE_C", "line_number": "Line 27", "line_title": "Other expenses", "schedule_name": "IRS Form 1040 Schedule C (Business)"}
+
+
+class DuplicateReceiptDetector:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.seen_transactions = {}
+
+    def _normalize_vendor(self, vendor: str) -> str:
+        if not vendor:
+            return "unknown"
+        import re
+        words = [w for w in re.findall(r"[a-zA-Z]+", vendor.lower()) if w not in ("inc", "llc", "corp", "co", "store", "market", "supermarket", "the", "shop")]
+        return "".join(words) if words else "".join(re.findall(r"[a-zA-Z0-9]+", vendor.lower()))
+
+    def _parse_date(self, date_str: str):
+        if not date_str:
+            return None
+        date_str = str(date_str).split("T")[0].strip()
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d", "%d/%m/%Y"):
+            try:
+                return datetime.strptime(date_str, fmt).date()
+            except ValueError:
+                pass
+        return None
+
+    def check_and_register(self, vendor: str, amount: float, date_str: str, filename: str) -> tuple:
+        try:
+            amt = round(float(amount), 2)
+        except Exception:
+            return False, ""
+
+        norm_v = self._normalize_vendor(vendor)
+        dt = self._parse_date(date_str) or datetime.now().date()
+        key = (norm_v, amt)
+
+        with self.lock:
+            existing_list = self.seen_transactions.get(key, [])
+            for ex_dt, ex_fn in existing_list:
+                day_diff = abs((dt - ex_dt).days)
+                if day_diff <= 3:
+                    self.seen_transactions[key].append((dt, filename))
+                    return True, f"POTENTIAL DUPLICATE: ${amt:.2f} at '{vendor}' matches prior receipt '{ex_fn}' within {day_diff} day(s)!"
+
+            if key not in self.seen_transactions:
+                self.seen_transactions[key] = []
+            self.seen_transactions[key].append((dt, filename))
+            return False, ""
+
+
+def escape_xml(s: str) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+def generate_tax_schedules_excel(receipt_rows: list, output_filepath: str):
+    import zipfile
+
+    sch_f_map = {k: 0.0 for k in IRS_SCHEDULE_F_LINES.keys()}
+    sch_c_map = {k: 0.0 for k in IRS_SCHEDULE_C_LINES.keys()}
+    ledger_items = []
+
+    for row in receipt_rows:
+        if not row or len(row) < 7:
+            continue
+        try:
+            client = row[0]
+            dt = row[1]
+            ven = row[2]
+            cat = row[3]
+            tot = float(row[6]) if row[6] else 0.0
+            dup = row[12] if len(row) > 12 else (row[11] if len(row) > 11 else "UNIQUE")
+            memo = row[9] if len(row) > 9 else ""
+            src_file = row[10] if len(row) > 10 else ""
+        except Exception:
+            continue
+
+        cls = classify_receipt_tax_schedule(cat, ven, memo)
+        sched = cls["schedule"]
+        line_num = cls["line_number"]
+
+        if sched == "SCHEDULE_F":
+            if line_num in sch_f_map:
+                sch_f_map[line_num] += tot
+            else:
+                sch_f_map["Line 32"] += tot
+        else:
+            if line_num in sch_c_map:
+                sch_c_map[line_num] += tot
+            else:
+                sch_c_map["Line 27"] += tot
+
+        ledger_items.append({
+            "client": client,
+            "date": dt,
+            "vendor": ven,
+            "category": cat,
+            "total": tot,
+            "schedule": "Schedule F" if sched == "SCHEDULE_F" else "Schedule C",
+            "line": f"{line_num}: {cls['line_title']}",
+            "dup_status": dup,
+            "source": src_file
+        })
+
+    s1_rows = [
+        ["TAX SCHEDULE RECONCILIATION SUMMARY", ""],
+        ["Report Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
+        ["", ""],
+        ["Tax Schedule Form", "Total Deductible Amount"],
+        ["IRS Form 1040 Schedule F (Farm Total)", "='Schedule F'!B23"],
+        ["IRS Form 1040 Schedule C (Business Total)", "='Schedule C'!B19"],
+        ["GRAND TOTAL TAX DEDUCTIONS", "=B5+B6"]
+    ]
+
+    s2_rows = [
+        ["IRS FORM 1040 SCHEDULE F - FARM EXPENSES", ""],
+        ["Line Item", "Amount"]
+    ]
+    f_line_start = 3
+    for lk, ltitle in IRS_SCHEDULE_F_LINES.items():
+        amt = sch_f_map.get(lk, 0.0)
+        s2_rows.append([f"{lk} - {ltitle}", amt])
+    f_line_end = len(s2_rows)
+    s2_rows.append(["TOTAL SCHEDULE F DEDUCTIONS", f"=SUM(B{f_line_start}:B{f_line_end})"])
+
+    s3_rows = [
+        ["IRS FORM 1040 SCHEDULE C - BUSINESS EXPENSES", ""],
+        ["Line Item", "Amount"]
+    ]
+    c_line_start = 3
+    for lk, ltitle in IRS_SCHEDULE_C_LINES.items():
+        amt = sch_c_map.get(lk, 0.0)
+        s3_rows.append([f"{lk} - {ltitle}", amt])
+    c_line_end = len(s3_rows)
+    s3_rows.append(["TOTAL SCHEDULE C DEDUCTIONS", f"=SUM(B{c_line_start}:B{c_line_end})"])
+
+    s4_rows = [
+        ["Date", "Client", "Vendor", "Category", "Amount", "Tax Schedule", "IRS Line Item", "Duplicate Status", "Source File"]
+    ]
+    for itm in ledger_items:
+        s4_rows.append([
+            itm["date"],
+            itm["client"],
+            itm["vendor"],
+            itm["category"],
+            itm["total"],
+            itm["schedule"],
+            itm["line"],
+            itm["dup_status"],
+            itm["source"]
+        ])
+
+    def rows_to_xml(rows):
+        xml_buf = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>', '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">', '<sheetData>']
+        for r_idx, r in enumerate(rows, 1):
+            xml_buf.append(f'<row r="{r_idx}">')
+            for c_idx, val in enumerate(r, 1):
+                col_letter = chr(64 + c_idx) if c_idx <= 26 else f"A{chr(64 + c_idx - 26)}"
+                cell_ref = f"{col_letter}{r_idx}"
+                if isinstance(val, (int, float)):
+                    xml_buf.append(f'<c r="{cell_ref}"><v>{val}</v></c>')
+                elif isinstance(val, str) and val.startswith("="):
+                    formula = val[1:]
+                    xml_buf.append(f'<c r="{cell_ref}"><f>{escape_xml(formula)}</f></c>')
+                else:
+                    esc = escape_xml(str(val))
+                    xml_buf.append(f'<c r="{cell_ref}" t="inlineStr"><is><t>{esc}</t></is></c>')
+            xml_buf.append('</row>')
+        xml_buf.append('</sheetData></worksheet>')
+        return "".join(xml_buf)
+
+    content_types = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet4.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'
+
+    root_rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
+
+    workbook_xml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Tax Summary" sheetId="1" r:id="rId1"/><sheet name="Schedule F" sheetId="2" r:id="rId2"/><sheet name="Schedule C" sheetId="3" r:id="rId3"/><sheet name="Itemized Receipts" sheetId="4" r:id="rId4"/></sheets></workbook>'
+
+    workbook_rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet4.xml"/></Relationships>'
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_filepath)), exist_ok=True)
+    with zipfile.ZipFile(output_filepath, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("[Content_Types].xml", content_types)
+        z.writestr("_rels/.rels", root_rels)
+        z.writestr("xl/workbook.xml", workbook_xml)
+        z.writestr("xl/_rels/workbook.xml.rels", workbook_rels)
+        z.writestr("xl/worksheets/sheet1.xml", rows_to_xml(s1_rows))
+        z.writestr("xl/worksheets/sheet2.xml", rows_to_xml(s2_rows))
+        z.writestr("xl/worksheets/sheet3.xml", rows_to_xml(s3_rows))
+        z.writestr("xl/worksheets/sheet4.xml", rows_to_xml(s4_rows))
+
+
 class FarmReceiptApp(_TK_BASE_TK):
     def __init__(self):
         super().__init__()
@@ -1953,6 +2230,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         self.active_jobs_lock = threading.Lock()
         self.active_jobs = set()
         self.file_write_lock = threading.Lock()
+        self.dup_detector = DuplicateReceiptDetector()
         self.stats_lock = threading.Lock()
         self.hash_lock = threading.Lock()
         self.key_lock = threading.Lock()
@@ -2314,6 +2592,20 @@ class FarmReceiptApp(_TK_BASE_TK):
             cursor="hand2"
         )
         self.watch_btn.pack(side="left", padx=(0, 6))
+
+        excel_btn = tk.Button(
+            btn_row,
+            text="📊 Export Tax Schedules (.XLSX)",
+            command=self.export_tax_schedules_excel,
+            bg="#065f46",
+            fg="#a7f3d0",
+            font=("Segoe UI", 9, "bold"),
+            relief="flat",
+            padx=10,
+            pady=6,
+            cursor="hand2"
+        )
+        excel_btn.pack(side="left", padx=4)
 
         scan_now_btn = tk.Button(
             btn_row,
@@ -3512,6 +3804,38 @@ class FarmReceiptApp(_TK_BASE_TK):
     # -------------------------------------------------------------------------
     # Core Gemini Processing Worker & QBO Sync
     # -------------------------------------------------------------------------
+    
+    def export_tax_schedules_excel(self):
+        csv_path = "Receipt_Data.csv"
+        if not os.path.exists(csv_path):
+            self.log("⚠️ No Receipt_Data.csv found to export.", "warning")
+            if messagebox:
+                messagebox.showinfo("Export Tax Schedules", "No processed receipts found in Receipt_Data.csv to export yet.")
+            return
+
+        rows = []
+        try:
+            with open(csv_path, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                for r in reader:
+                    if r:
+                        rows.append(r)
+        except Exception as e:
+            self.log(f"❌ Failed to read Receipt_Data.csv: {e}", "error")
+            return
+
+        out_name = f"Tax_Schedules_Reconciliation_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        try:
+            generate_tax_schedules_excel(rows, out_name)
+            self.log(f"📊 Exported Tax Schedules Workbook: {out_name}", "success")
+            if messagebox:
+                messagebox.showinfo("Export Successful", f"Created IRS Tax Schedules Workbook:\n\n{os.path.abspath(out_name)}\n\nIncludes Tax Summary, Schedule F, Schedule C, and Itemized Ledger.")
+        except Exception as e:
+            self.log(f"❌ Failed to generate Excel workbook: {e}", "error")
+            if messagebox:
+                messagebox.showerror("Export Failed", str(e))
+
     def process_image_file(self, filepath, client_name=None):
         if not os.path.exists(filepath):
             return False
@@ -3669,7 +3993,13 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(csv_path, "a", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                     if not csv_exists:
-                        writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                        writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
+                    is_dup, dup_msg = self.dup_detector.check_and_register(vendor, total, date_str, os.path.basename(filepath))
+                    dup_status = "POTENTIAL_DUPLICATE" if is_dup else "UNIQUE"
+                    if is_dup:
+                        self.log(f"⚠️ {dup_msg}", "warning")
+                    tax_info = classify_receipt_tax_schedule(category, vendor)
+
                     writer.writerow([
                         sanitize_csv_field(active_client),
                         sanitize_csv_field(date_str),
@@ -3682,7 +4012,10 @@ class FarmReceiptApp(_TK_BASE_TK):
                         sanitize_csv_field(card_last_4),
                         sanitize_csv_field(ref_num),
                         os.path.basename(filepath),
-                        idx
+                        idx,
+                        dup_status,
+                        tax_info.get("schedule", ""),
+                        tax_info.get("line_number", "")
                     ])
 
                 # 3. Client-Specific Individual CSV
@@ -3691,7 +4024,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(cl_csv_path, "a", newline="", encoding="utf-8") as f_cl:
                     cl_writer = csv.writer(f_cl, quoting=csv.QUOTE_MINIMAL)
                     if not cl_csv_exists:
-                        cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                        cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
                     cl_writer.writerow([
                         sanitize_csv_field(active_client),
                         sanitize_csv_field(date_str),
@@ -4356,7 +4689,7 @@ class HeadlessWorkerEngine:
                     with open(cl_csv_path, "a", newline="", encoding="utf-8") as f_cl:
                         cl_writer = csv.writer(f_cl, quoting=csv.QUOTE_MINIMAL)
                         if not cl_exists:
-                            cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number"])
+                            cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
                         cl_writer.writerow([
                             sanitize_csv_field(client_name),
                             sanitize_csv_field(date_str),

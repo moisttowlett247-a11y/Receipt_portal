@@ -33,6 +33,7 @@ import {
   fetchCloudflareHealth,
   unlockHwidOnCloudflare,
   revokeLicenseOnCloudflare,
+  pruneCloudflareSessions,
   CLOUDFLARE_WORKER_URL
 } from '../licenseSyncService';
 
@@ -249,6 +250,10 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
     }
     setIsPruning(true);
     try {
+      // 1. Prune Cloudflare KV Edge sessions
+      pruneCloudflareSessions(clearAll).catch(err => console.warn('CF prune notice:', err));
+
+      // 2. Prune local backend sessions
       const res = await fetch('/api/licenses/sessions/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

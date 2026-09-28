@@ -851,6 +851,98 @@ export default {
       });
     }
 
+    if ((pathname === "/api/devices/sessions/clear" || pathname === "/api/licenses/sessions/clear" || pathname === "/api/devices/sessions/prune") && (request.method === "POST" || request.method === "DELETE")) {
+      const isAuth = await verifyAdminAuth(request, env);
+      if (!isAuth) {
+        return jsonResponse({ success: false, error: "Unauthorized. Admin session required." }, 401);
+      }
+
+      try {
+        const body = await request.json().catch(() => ({}));
+        const clearAll = Boolean(body.clearAll) || request.method === "DELETE";
+        const listResult = await env.LICENSES.list({ prefix: "SESSION:" });
+        const now = Date.now();
+        let prunedCount = 0;
+
+        for (const keyObj of listResult.keys) {
+          if (clearAll) {
+            await env.LICENSES.delete(keyObj.name);
+            prunedCount++;
+          } else {
+            const val = await env.LICENSES.get(keyObj.name);
+            if (val) {
+              try {
+                const s = JSON.parse(val);
+                const diffMs = Math.max(0, now - (s.lastPingMs || 0));
+                if (diffMs >= 90000) {
+                  await env.LICENSES.delete(keyObj.name);
+                  prunedCount++;
+                }
+              } catch {
+                await env.LICENSES.delete(keyObj.name);
+                prunedCount++;
+              }
+            }
+          }
+        }
+
+        return jsonResponse({
+          success: true,
+          message: clearAll ? "All Cloudflare KV active sessions cleared." : `Pruned ${prunedCount} inactive session(s) from Cloudflare KV.`,
+          prunedCount
+        });
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 400);
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // 7. Routing Rules & Global Tax Overrides Backup
+    // -------------------------------------------------------------------------
+    if (pathname === "/api/admin/routing-rules") {
+      if (request.method === "GET") {
+        const raw = await env.LICENSES.get("SYS:ROUTING_RULES");
+        const rules = raw ? JSON.parse(raw) : [];
+        return jsonResponse({ success: true, count: rules.length, rules });
+      }
+      if (request.method === "POST") {
+        const isAuth = await verifyAdminAuth(request, env);
+        if (!isAuth) {
+          return jsonResponse({ success: false, error: "Unauthorized. Admin session required." }, 401);
+        }
+        try {
+          const body = await request.json();
+          const rules = Array.isArray(body.rules) ? body.rules : (Array.isArray(body) ? body : []);
+          await env.LICENSES.put("SYS:ROUTING_RULES", JSON.stringify(rules));
+          return jsonResponse({ success: true, message: `Saved ${rules.length} routing rules to Cloudflare KV.`, rules });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+    }
+
+    if (pathname === "/api/admin/tax-rules") {
+      if (request.method === "GET") {
+        const raw = await env.LICENSES.get("SYS:TAX_OVERRIDES");
+        const overrides = raw ? JSON.parse(raw) : [];
+        return jsonResponse({ success: true, count: overrides.length, overrides });
+      }
+      if (request.method === "POST") {
+        const isAuth = await verifyAdminAuth(request, env);
+        if (!isAuth) {
+          return jsonResponse({ success: false, error: "Unauthorized. Admin session required." }, 401);
+        }
+        try {
+          const body = await request.json();
+          const overrides = Array.isArray(body.overrides) ? body.overrides : (Array.isArray(body) ? body : []);
+          await env.LICENSES.put("SYS:TAX_OVERRIDES", JSON.stringify(overrides));
+          return jsonResponse({ success: true, message: `Saved ${overrides.length} tax overrides to Cloudflare KV.`, overrides });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+    }
+
     return jsonResponse({ error: "Endpoint not found on Cloudflare Worker: " + pathname }, 404);
   }
 };

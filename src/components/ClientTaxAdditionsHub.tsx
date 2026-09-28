@@ -29,7 +29,8 @@ import {
   saveExemptionCertificate, 
   deleteExemptionCertificate, 
   calculateQuarterlyEstimates, 
-  IRS_2026_MILEAGE_RATE 
+  IRS_2026_MILEAGE_RATE,
+  exportMileageLogCSV
 } from '../clientTaxFeaturesService';
 import { ClientAccountSession } from '../types';
 
@@ -212,25 +213,37 @@ export const ClientTaxAdditionsHub: React.FC<ClientTaxAdditionsHubProps> = ({
                 </div>
                 <span className="text-[10px] text-stone-400">Total Mileage Deductions</span>
               </div>
-              {hasActivePlan ? (
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowAddMileageModal(true)}
-                  className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs transition-colors flex items-center gap-1.5 cursor-pointer shadow-md"
+                  onClick={() => exportMileageLogCSV(mileageList, clientSession?.displayName || 'Client')}
+                  disabled={mileageList.length === 0}
+                  className="px-3 py-2 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 font-medium text-xs transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  title="Download Mileage Log (.CSV)"
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Log Trip</span>
+                  <Download className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Export Mileage (.CSV)</span>
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onSubscribeClick}
-                  className="px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-amber-400 border border-amber-500/30 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Lock className="w-3.5 h-3.5" />
-                  <span>Unlock Mileage Log</span>
-                </button>
-              )}
+                {hasActivePlan ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddMileageModal(true)}
+                    className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs transition-colors flex items-center gap-1.5 cursor-pointer shadow-md"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Log Trip</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={onSubscribeClick}
+                    className="px-3 py-1.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-amber-400 border border-amber-500/30 font-semibold text-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Unlock Mileage Log</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 

@@ -352,6 +352,26 @@ export async function revokeLicenseOnCloudflare(key: string): Promise<{ success:
 }
 
 /**
+ * Prunes inactive sessions or clears all sessions from Cloudflare KV Edge API
+ */
+export async function pruneCloudflareSessions(clearAll = false): Promise<{ success: boolean; message?: string }> {
+  try {
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/devices/sessions/clear`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ clearAll })
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      return { success: true, message: data.message };
+    }
+  } catch (err) {
+    console.warn('Notice pruning Cloudflare sessions:', err);
+  }
+  return { success: false, message: 'Cloudflare pruning skipped' };
+}
+
+/**
  * Fetches all licenses with real-time telemetry from Cloudflare KV
  */
 export async function fetchCloudflareLicenses(): Promise<CloudflareLicenseRecord[]> {
