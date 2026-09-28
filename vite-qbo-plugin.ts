@@ -120,9 +120,10 @@ export function quickbooksApiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const urlObj = new URL(req.url || '', 'http://localhost');
         const pathname = urlObj.pathname;
+        const normalizedPath = pathname.replace(/^\/Receipt_portal\/?/i, '/');
 
         // Intercept /api/qbo/* and /api/scan/receipt routes
-        if (!pathname.startsWith('/api/qbo') && pathname !== '/api/scan/receipt') {
+        if (!normalizedPath.startsWith('/api/qbo') && normalizedPath !== '/api/scan/receipt') {
           return next();
         }
 
@@ -159,7 +160,7 @@ export function quickbooksApiPlugin(): Plugin {
         };
 
         // 0. POST /api/scan/receipt (High-Precision Multimodal Vision OCR)
-        if (pathname === '/api/scan/receipt' && req.method === 'POST') {
+        if (normalizedPath === '/api/scan/receipt' && req.method === 'POST') {
           const body = await readJsonBody();
           const { imageBase64, mimeType, fileName } = body;
 
@@ -169,7 +170,14 @@ export function quickbooksApiPlugin(): Plugin {
           }
 
           try {
-            const ai = new GoogleGenAI({});
+            const rawApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+            const apiKeys = rawApiKey.split(/[,;\s]+/).map(k => k.trim()).filter(Boolean);
+
+            if (apiKeys.length === 0) {
+              sendJson(503, { success: false, error: 'GEMINI_API_KEY is not configured on server' });
+              return;
+            }
+
             let cleanBase64 = imageBase64;
             let cleanMime = mimeType || 'image/jpeg';
 
@@ -182,96 +190,152 @@ export function quickbooksApiPlugin(): Plugin {
               }
             }
 
-            const promptText = `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.
+            const promptText = `Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.`;
 
-CRITICAL ACCURACY RULES:
-1. TOTAL AMOUNT (CRITICAL ACCURACY):
-   - 'total' MUST be the FINAL GRAND TOTAL actually charged to the card or paid in cash (e.g. 34.20, 142.50).
-   - NEVER extract 'Cash Tendered' / 'Amount Tendered' (e.g., customer handing a $100 bill on a $32.50 order -> Total is 32.50, NOT 100.00).
-   - NEVER extract 'Change Due', 'Subtotal', 'Tax', 'Savings Amount' ('You Saved $5.00'), or 'Previous Balance' as the total.
-   - Verify that Subtotal + Tax = Total.
+            const systemInstructionText = 
+              `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n` +
+              `CRITICAL RULES:\n` +
+              `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple separate receipts, process EVERY one of them.\n` +
+              `2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n3. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'.\n4. MATH VALIDATION: Verify that Line Items Sum + Tax + Tip = Total. If they do not match, use the line item sum as the primary source of truth for the subtotal.\n5. VENDOR: Extract the full legal merchant name from the top of the receipt.\n6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n7. Return strictly valid JSON conforming to the schema.`;
 
-2. TRANSACTION DATE (CRITICAL ACCURACY):
-   - Extract the exact printed purchase date formatted strictly as 'YYYY-MM-DD'.
-   - Standard US receipts use MM/DD/YYYY (e.g., '04/09/2024' -> '2024-04-09', '11/02/25' -> '2025-11-02', 'OCT 14, 2024' -> '2024-10-14').
-   - NEVER use the current date if the receipt date is printed on the slip.
-
-3. VENDOR / PAYEE:
-   - Store, merchant, supplier, or business name at top of receipt (e.g. "The Home Depot", "Walmart", "Agway", "Nutrien Ag", "Tractor Supply Co.", "John Deere", "Shell").
-
-4. CARD LAST 4 DIGITS & PAYMENT METHOD:
-   - Look at payment/tender authorization section at bottom of receipt.
-   - Find masked card number (e.g. '************4821', 'XXXX-9102', 'ACCT: ...3045', 'VISA 1234').
-   - 'cardLast4' MUST be ONLY the 4 digits (e.g. '4821').
-   - If paid by Cash or Check, return empty string "".`;
-
-            const schemaConfig = {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  vendor: { type: Type.STRING, description: 'Store/merchant name' },
-                  date: { type: Type.STRING, description: 'Exact printed transaction date in YYYY-MM-DD format' },
-                  total: { type: Type.NUMBER, description: 'Final grand total paid/charged' },
-                  subtotal: { type: Type.NUMBER, description: 'Subtotal before sales tax' },
-                  tax: { type: Type.NUMBER, description: 'Sales tax amount' },
-                  paymentMethod: { type: Type.STRING, description: 'Tender type (VISA, MASTERCARD, AMEX, DEBIT, CASH, CHECK)' },
-                  cardLast4: { type: Type.STRING, description: '4 digits of masked card or empty' },
-                  memo: { type: Type.STRING, description: 'Summary description of purchase' },
-                  categoryHint: { type: Type.STRING, description: 'IRS tax expense category' },
+            const receiptSchema = {
+              type: "OBJECT",
+              properties: {
+                receipts: {
+                  type: "ARRAY",
                   items: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        description: { type: Type.STRING },
-                        amount: { type: Type.NUMBER },
-                        quantity: { type: Type.NUMBER },
-                        unitPrice: { type: Type.NUMBER }
+                    type: "OBJECT",
+                    properties: {
+                      vendor: { type: "STRING", description: "Store or merchant name" },
+                      date: { type: "STRING", description: "YYYY-MM-DD format" },
+                      total: { type: "NUMBER", description: "Final Grand Total amount actually charged" },
+                      subtotal: { type: "NUMBER", description: "Pre-tax subtotal" },
+                      tax: { type: "NUMBER", description: "Total sales tax" },
+                      tip: { type: "NUMBER", description: "Tip amount if applicable" },
+                      payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
+                      card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
+                      invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
+                      category: {
+                        type: "STRING",
+                        enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
                       },
-                      required: ['description', 'amount']
-                    }
+                      items: {
+                        type: "ARRAY",
+                        items: {
+                          type: "OBJECT",
+                          properties: {
+                            description: { type: "STRING" },
+                            amount: { type: "NUMBER" }
+                          }
+                        }
+                      },
+                      memo: { type: "STRING" }
+                    },
+                    required: ["vendor", "date", "total", "category"]
                   }
-                },
-                required: ['vendor', 'date', 'total', 'paymentMethod']
+                }
+              },
+              required: ["receipts"]
+            };
+
+            const payload = {
+              contents: [{
+                role: "user",
+                parts: [
+                  { text: promptText },
+                  { inlineData: { mimeType: cleanMime, data: cleanBase64 } }
+                ]
+              }],
+              systemInstruction: { parts: [{ text: systemInstructionText }] },
+              safetySettings: [
+                { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+              ],
+              generationConfig: {
+                temperature: 0.0,
+                responseMimeType: "application/json",
+                responseSchema: receiptSchema
               }
             };
 
-            let response;
-            try {
-              // Primary model: gemini-flash-latest (high throughput and generous rate limits)
-              response = await ai.models.generateContent({
-                model: 'gemini-flash-latest',
-                contents: [
-                  {
-                    inlineData: {
-                      data: cleanBase64,
-                      mimeType: cleanMime
+            const modelsToTry = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
+            let rawResult: any = null;
+            let lastError = "";
+
+            outerLoop:
+            for (const model of modelsToTry) {
+              for (const currentKey of apiKeys) {
+                try {
+                  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+                  const gResp = await fetch(geminiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                  });
+
+                  if (gResp.ok) {
+                    const gData = await gResp.json();
+                    
+                    if (gData.error) {
+                      lastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
+                      continue;
                     }
-                  },
-                  promptText
-                ],
-                config: schemaConfig
-              });
-            } catch (modelErr) {
-              console.warn('Primary gemini-flash-latest failed, attempting fallback to gemini-2.5-flash:', modelErr);
-              response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: [
-                  {
-                    inlineData: {
-                      data: cleanBase64,
-                      mimeType: cleanMime
+
+                    const candidates = gData?.candidates || [];
+                    if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
+                      lastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
+                      continue;
                     }
-                  },
-                  promptText
-                ],
-                config: schemaConfig
-              });
+
+                    const text = candidates[0]?.content?.parts?.[0]?.text;
+                    if (text) {
+                      let parsed: any = null;
+                      const cleanText = text.trim();
+                      try {
+                        parsed = JSON.parse(cleanText);
+                      } catch (e) {
+                        const jsonMatch = cleanText.match(/(\{.*\})/s);
+                        if (jsonMatch) {
+                          try {
+                            parsed = JSON.parse(jsonMatch[1]);
+                          } catch (e2) {}
+                        }
+                      }
+
+                      if (parsed) {
+                        if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                          rawResult = parsed.receipts[0];
+                          break outerLoop;
+                        } else if (parsed.vendor && parsed.total !== undefined) {
+                          rawResult = parsed;
+                          break outerLoop;
+                        }
+                      }
+                    } else {
+                      lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
+                    }
+                  } else {
+                    const errText = await gResp.text();
+                    lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 100)}`;
+                  }
+                } catch (mErr: any) {
+                  lastError = `Fetch error [${model}]: ${mErr.message}`;
+                }
+              }
             }
 
-            const rawText = response.text ? response.text.trim() : '{}';
-            const parsed = JSON.parse(rawText);
+            if (!rawResult) {
+              sendJson(502, { 
+                success: false, 
+                error: 'OCR model extraction failed after multiple attempts',
+                details: lastError 
+              });
+              return;
+            }
+
+            const parsed = rawResult;
 
             // Forensic post-processing for 100% accurate dates & totals
             // 1. Normalize Date
@@ -323,7 +387,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 1. GET /api/qbo/config (Publicly safe configuration status)
-        if (pathname === '/api/qbo/config' && req.method === 'GET') {
+        if (normalizedPath === '/api/qbo/config' && req.method === 'GET') {
           const cfg = getStoredConfig();
           const companies = getCompanies();
           const connectedList = Object.values(companies).filter(c => c.status === 'CONNECTED');
@@ -343,7 +407,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 2. POST /api/qbo/config (Update Intuit App Credentials securely)
-        if (pathname === '/api/qbo/config' && req.method === 'POST') {
+        if (normalizedPath === '/api/qbo/config' && req.method === 'POST') {
           const body = await readJsonBody();
           const updated = saveConfig({
             clientId: body.clientId !== undefined ? body.clientId.trim() : undefined,
@@ -363,7 +427,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 3. GET /api/qbo/auth-url (Generate official Intuit OAuth 2.0 Authorization Link)
-        if (pathname === '/api/qbo/auth-url' && req.method === 'GET') {
+        if (normalizedPath === '/api/qbo/auth-url' && req.method === 'GET') {
           const cfg = getStoredConfig();
           const queryClientId = urlObj.searchParams.get('client_id');
           const queryRedirectUri = urlObj.searchParams.get('redirect_uri');
@@ -414,7 +478,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 4. GET /api/qbo/callback (OAuth 2.0 redirect target from Intuit)
-        if (pathname === '/api/qbo/callback' && req.method === 'GET') {
+        if (normalizedPath === '/api/qbo/callback' && req.method === 'GET') {
           const code = urlObj.searchParams.get('code');
           const realmId = urlObj.searchParams.get('realmId');
           const state = urlObj.searchParams.get('state');
@@ -605,7 +669,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 5. GET /api/qbo/companies (List all connected accounts - sanitized)
-        if (pathname === '/api/qbo/companies' && req.method === 'GET') {
+        if (normalizedPath === '/api/qbo/companies' && req.method === 'GET') {
           const companies = getCompanies();
           const list = Object.values(companies).map(c => {
             const now = Date.now();
@@ -639,7 +703,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 6. POST /api/qbo/token (Secure Token Broker: Hands short-lived access token to Desktop App)
-        if (pathname === '/api/qbo/token' && req.method === 'POST') {
+        if (normalizedPath === '/api/qbo/token' && req.method === 'POST') {
           const body = await readJsonBody();
           const realmId = (body.realmId || '').trim();
           const licenseKey = (body.licenseKey || req.headers['x-license-key'] || '').toString().trim().toUpperCase();
@@ -753,7 +817,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 7. POST /api/qbo/disconnect (Revoke access token and purge connection)
-        if (pathname === '/api/qbo/disconnect' && req.method === 'POST') {
+        if (normalizedPath === '/api/qbo/disconnect' && req.method === 'POST') {
           const body = await readJsonBody();
           const realmId = (body.realmId || '').trim();
 
@@ -798,7 +862,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 8. POST /api/qbo/webhook (Intuit App Disconnect & CDC Events)
-        if (pathname === '/api/qbo/webhook' && req.method === 'POST') {
+        if (normalizedPath === '/api/qbo/webhook' && req.method === 'POST') {
           const body = await readJsonBody();
           const signature = req.headers['intuit-signature'];
           console.log('[QBO Webhook] Received event payload:', JSON.stringify(body), 'signature:', signature);
@@ -827,7 +891,7 @@ CRITICAL ACCURACY RULES:
         }
 
         // 9. POST /api/qbo/mock-connect (Instant Sandbox/Production Simulator for development)
-        if (pathname === '/api/qbo/mock-connect' && req.method === 'POST') {
+        if (normalizedPath === '/api/qbo/mock-connect' && req.method === 'POST') {
           const body = await readJsonBody();
           const realmId = (body.realmId || `934145${Math.floor(1000000 + Math.random() * 9000000)}`).toString().trim();
           const companyName = body.companyName || 'Oak Creek Agriculture & Cattle LLC';

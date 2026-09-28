@@ -13,9 +13,10 @@ function licenseSyncApiPlugin(): Plugin {
       server.middlewares.use((req, res, next) => {
         const urlObj = new URL(req.url || '', 'http://localhost');
         const pathname = urlObj.pathname;
+        const normalizedPath = pathname.replace(/^\/Receipt_portal\/?/i, '/');
 
         // Set permissive CORS and no-cache on all license queries
-        if (pathname.startsWith('/api/licenses') || pathname.startsWith('/licenses/')) {
+        if (normalizedPath.startsWith('/api/licenses') || normalizedPath.startsWith('/licenses/')) {
           res.setHeader('Access-Control-Allow-Origin', '*');
           res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
           res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control');
@@ -29,7 +30,6 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // Explicit download handler for ZIP bundle and all desktop runtime package files
-        const normalizedPath = pathname.replace(/^\/Receipt_portal\/?/i, '/');
         const desktopFilesMap: Record<string, { file: string; type: string }> = {
           '/receipt_processor_bundle.zip': { file: 'receipt_processor_bundle.zip', type: 'application/zip' },
           '/api/download/bundle': { file: 'receipt_processor_bundle.zip', type: 'application/zip' },
@@ -146,7 +146,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // GET /api/licenses/check?key=... or ?hash=...
-        if (pathname === '/api/licenses/check' && req.method === 'GET') {
+        if (normalizedPath === '/api/licenses/check' && req.method === 'GET') {
           const keyParam = urlObj.searchParams.get('key')?.trim().toUpperCase() || '';
           let hashParam = urlObj.searchParams.get('hash')?.trim().toLowerCase() || '';
           const hwidParam = urlObj.searchParams.get('hwid')?.trim() || '';
@@ -244,7 +244,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // POST /api/licenses/heartbeat - Direct heartbeat ping from desktop app
-        if (pathname === '/api/licenses/heartbeat' && req.method === 'POST') {
+        if (normalizedPath === '/api/licenses/heartbeat' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', chunk => {
             bodyStr += chunk;
@@ -298,7 +298,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // GET /api/licenses/sessions or /api/devices/sessions - Retrieve all active/recent connected devices
-        if ((pathname === '/api/licenses/sessions' || pathname === '/api/devices/sessions') && req.method === 'GET') {
+        if ((normalizedPath === '/api/licenses/sessions' || normalizedPath === '/api/devices/sessions') && req.method === 'GET') {
           try {
             const sessionsObj = loadSessions();
             const now = Date.now();
@@ -350,7 +350,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // POST /api/licenses/sessions/clear or /api/devices/sessions/clear - Prune offline/all sessions
-        if ((pathname === '/api/licenses/sessions/clear' || pathname === '/api/devices/sessions/clear' || pathname === '/api/devices/sessions/prune') && (req.method === 'POST' || req.method === 'DELETE')) {
+        if ((normalizedPath === '/api/licenses/sessions/clear' || normalizedPath === '/api/devices/sessions/clear' || normalizedPath === '/api/devices/sessions/prune') && (req.method === 'POST' || req.method === 'DELETE')) {
           let bodyStr = '';
           req.on('data', chunk => { bodyStr += chunk; });
           req.on('end', () => {
@@ -401,7 +401,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // GET /api/inquiries - List all submitted access requests & customer inquiries
-        if (pathname === '/api/inquiries' && req.method === 'GET') {
+        if (normalizedPath === '/api/inquiries' && req.method === 'GET') {
           try {
             const inquiriesFile = path.join(licensesDir, 'inquiries.json');
             let list: any[] = [];
@@ -423,7 +423,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // POST /api/inquiries - Submit access request & inquiry for moisttowlett247@gmail.com
-        if (pathname === '/api/inquiries' && req.method === 'POST') {
+        if (normalizedPath === '/api/inquiries' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', chunk => { bodyStr += chunk; });
           req.on('end', () => {
@@ -472,7 +472,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // POST /api/licenses/sync - Upsert or Delete license record
-        if (pathname === '/api/licenses/sync' && req.method === 'POST') {
+        if (normalizedPath === '/api/licenses/sync' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', chunk => {
             bodyStr += chunk;
@@ -578,7 +578,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // GET /api/licenses/all - List all active server records
-        if (pathname === '/api/licenses/all' && req.method === 'GET') {
+        if (normalizedPath === '/api/licenses/all' && req.method === 'GET') {
           try {
             const files = fs.readdirSync(licensesDir).filter(f => 
               f.endsWith('.json') && 
@@ -625,7 +625,7 @@ function licenseSyncApiPlugin(): Plugin {
         }
 
         // POST /api/scan/receipt - High-accuracy AI OCR Receipt extraction via Gemini
-        if (pathname === '/api/scan/receipt' && req.method === 'POST') {
+        if (normalizedPath === '/api/scan/receipt' && req.method === 'POST') {
           let bodyStr = '';
           req.on('data', chunk => { bodyStr += chunk; });
           req.on('end', async () => {
@@ -636,9 +636,10 @@ function licenseSyncApiPlugin(): Plugin {
               const fileName = body.fileName || 'receipt.jpg';
               const clientName = body.clientName || 'General';
 
-              const apiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+              const rawApiKey = process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || '';
+              const apiKeys = rawApiKey.split(/[,;\s]+/).map(k => k.trim()).filter(Boolean);
 
-              if (!apiKey) {
+              if (apiKeys.length === 0) {
                 res.statusCode = 503;
                 res.setHeader('Content-Type', 'application/json');
                 res.end(JSON.stringify({ success: false, error: 'GEMINI_API_KEY is not configured on server' }));
@@ -737,62 +738,65 @@ function licenseSyncApiPlugin(): Plugin {
               let rawResult: any = null;
               let lastError = "";
 
+              outerLoop:
               for (const model of modelsToTry) {
-                try {
-                  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-                  const gResp = await fetch(geminiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                  });
+                for (const currentKey of apiKeys) {
+                  try {
+                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+                    const gResp = await fetch(geminiUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(payload)
+                    });
 
-                  if (gResp.ok) {
-                    const gData = await gResp.json();
-                    
-                    if (gData.error) {
-                      lastError = `API Error [${model}]: ${gData.error.message}`;
-                      continue;
-                    }
-
-                    const candidates = gData?.candidates || [];
-                    if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
-                      lastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
-                      continue;
-                    }
-
-                    const text = candidates[0]?.content?.parts?.[0]?.text;
-                    if (text) {
-                      let parsed: any = null;
-                      const cleanText = text.trim();
-                      try {
-                        parsed = JSON.parse(cleanText);
-                      } catch (e) {
-                        const jsonMatch = cleanText.match(/(\{.*\})/s);
-                        if (jsonMatch) {
-                          try {
-                            parsed = JSON.parse(jsonMatch[1]);
-                          } catch (e2) {}
-                        }
+                    if (gResp.ok) {
+                      const gData = await gResp.json();
+                      
+                      if (gData.error) {
+                        lastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
+                        continue;
                       }
 
-                      if (parsed) {
-                        if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
-                          rawResult = parsed.receipts[0];
-                          break;
-                        } else if (parsed.vendor && parsed.total !== undefined) {
-                          rawResult = parsed;
-                          break;
+                      const candidates = gData?.candidates || [];
+                      if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
+                        lastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
+                        continue;
+                      }
+
+                      const text = candidates[0]?.content?.parts?.[0]?.text;
+                      if (text) {
+                        let parsed: any = null;
+                        const cleanText = text.trim();
+                        try {
+                          parsed = JSON.parse(cleanText);
+                        } catch (e) {
+                          const jsonMatch = cleanText.match(/(\{.*\})/s);
+                          if (jsonMatch) {
+                            try {
+                              parsed = JSON.parse(jsonMatch[1]);
+                            } catch (e2) {}
+                          }
                         }
+
+                        if (parsed) {
+                          if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                            rawResult = parsed.receipts[0];
+                            break outerLoop;
+                          } else if (parsed.vendor && parsed.total !== undefined) {
+                            rawResult = parsed;
+                            break outerLoop;
+                          }
+                        }
+                      } else {
+                        lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
                       }
                     } else {
-                      lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
+                      const errText = await gResp.text();
+                      lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 100)}`;
                     }
-                  } else {
-                    const errText = await gResp.text();
-                    lastError = `HTTP ${gResp.status}: ${errText.slice(0, 100)}`;
+                  } catch (mErr: any) {
+                    lastError = `Fetch error [${model}]: ${mErr.message}`;
                   }
-                } catch (mErr: any) {
-                  lastError = `Fetch error: ${mErr.message}`;
                 }
               }
 

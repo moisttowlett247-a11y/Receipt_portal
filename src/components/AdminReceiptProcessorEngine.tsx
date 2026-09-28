@@ -1581,7 +1581,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                                     ocrError: r.ocrError || 'AI OCR Vision failed due to API limits or network overload. Switched to local heuristic fallback.'
                                   });
                                 }}
-                                className="w-5 h-5 rounded-full bg-rose-600 hover:bg-rose-500 text-stone-100 flex items-center justify-center font-extrabold text-xs shadow-md shadow-rose-950/20 cursor-pointer border border-rose-500/30 focus:outline-none transition-colors"
+                                className="text-rose-500 hover:text-rose-400 font-black text-sm ml-1.5 focus:outline-none transition-colors cursor-pointer select-none"
                                 title="AI OCR Scan Failed! Click to view exact error details."
                               >
                                 !
