@@ -60,6 +60,7 @@ export interface ProcessedReceipt {
   rawText?: string;
   memo?: string;
   processedAt: string;
+  ocrFailed?: boolean;
 }
 
 export interface ParallelWorkerState {
@@ -433,7 +434,7 @@ export function extractReceiptMetadata(
   fileName: string,
   rawTextContent?: string,
   hintCategory?: string,
-  hints?: { vendor?: string; amount?: number; date?: string; memo?: string }
+  hints?: { vendor?: string; amount?: number; date?: string; memo?: string; invoiceNumber?: string }
 ): {
   vendor: string;
   date: string;
@@ -826,6 +827,7 @@ export async function runParallelBatchScan(
         total: number;
         paymentMethod: string;
         cardLast4?: string;
+        invoiceNumber?: string;
         confidence: number;
         memo: string;
       };
@@ -970,7 +972,8 @@ export async function runParallelBatchScan(
         workerNodeId: worker.name,
         processingDurationMs: latency,
         memo: item.memo || extracted.memo,
-        processedAt: new Date().toISOString()
+        processedAt: new Date().toISOString(),
+        ocrFailed: !aiScanSuccess
       };
 
       currentLedger.push(processedRecord);

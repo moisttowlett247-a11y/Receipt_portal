@@ -46,7 +46,9 @@ import {
   syncReceiptsToClientIntakeQueue,
   generateSampleFarmBatch,
   generateSampleCommercialBatch,
-  generateUniqueHighVolumeBatch
+  generateUniqueHighVolumeBatch,
+  classifyExtractedTaxSchedule,
+  normalizeVendorName
 } from '../adminReceiptScanningEngine';
 import { getClientSubmissions, purgeDuplicateSubmissions } from '../clientSubmissionService';
 import { getStoredClientAccounts } from '../clientAccountService';
@@ -108,6 +110,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   // Modal inspection view
   const [inspectingReceipt, setInspectingReceipt] = useState<ProcessedReceipt | null>(null);
   const [isEditingReceipt, setIsEditingReceipt] = useState<boolean>(false);
+  const [isReScanning, setIsReScanning] = useState<boolean>(false);
   const [confirmClearLedger, setConfirmClearLedger] = useState<boolean>(false);
   const [showClientRoster, setShowClientRoster] = useState<boolean>(true);
 
@@ -338,6 +341,86 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     setInspectingReceipt(updated);
     setIsEditingReceipt(false);
     if (onToast) onToast(`Updated details for receipt (${updated.id.slice(0, 10)})`);
+  };
+
+  const handleReScanSingleReceipt = async () => {
+    if (!inspectingReceipt || !inspectingReceipt.dataUrl) return;
+    setIsReScanning(true);
+    if (onToast) onToast('Triggering high-accuracy re-scan...');
+
+    try {
+      const scanResp = await fetch('/api/scan/receipt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: inspectingReceipt.dataUrl,
+          mimeType: inspectingReceipt.fileType || 'image/jpeg',
+          fileName: inspectingReceipt.fileName,
+          clientName: inspectingReceipt.clientName
+        })
+      });
+
+      if (scanResp.ok) {
+        const scanJson = await scanResp.json();
+        if (scanJson.success && scanJson.data) {
+          const d = scanJson.data;
+
+          const taxCls = classifyExtractedTaxSchedule(
+            d.vendor || 'Unknown Vendor',
+            d.category || 'Supplies & Materials',
+            d.memo || '',
+            inspectingReceipt.fileName
+          );
+
+          const updated: ProcessedReceipt = {
+            ...inspectingReceipt,
+            vendor: d.vendor || 'Unknown Vendor',
+            normalizedVendor: normalizeVendorName(d.vendor || 'Unknown Vendor'),
+            date: d.date || new Date().toISOString().split('T')[0],
+            lineItems: (d.items || []).map((itm: any) => ({
+              description: itm.description || 'Item Line',
+              quantity: 1,
+              unitPrice: Number(itm.amount) || 0,
+              total: Number(itm.amount) || 0
+            })),
+            subtotal: Number(d.subtotal) || Number(d.total) || 0,
+            tax: Number(d.tax) || 0,
+            tip: Number(d.tip) || 0,
+            total: Number(d.total) || 0,
+            paymentMethod: d.paymentMethod || 'CARD',
+            cardLast4: d.cardLast4,
+            invoiceNumber: d.invoiceNumber,
+            category: taxCls.categoryName,
+            schedule: taxCls.schedule,
+            irsLineNumber: taxCls.lineNumber,
+            irsLineTitle: taxCls.lineTitle,
+            confidence: 0.99,
+            ocrFailed: false,
+            processedAt: new Date().toISOString()
+          };
+
+          setReceipts(prev => prev.map(item => item.id === updated.id ? updated : item));
+          setInspectingReceipt(updated);
+          if (onToast) onToast('Receipt re-scanned successfully with high-accuracy AI!');
+        } else {
+          throw new Error(scanJson.error || 'Server scan failure');
+        }
+      } else {
+        const text = await scanResp.text();
+        let errMsg = `HTTP ${scanResp.status}`;
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed.error) errMsg = parsed.error;
+          if (parsed.details) errMsg += ` (${parsed.details})`;
+        } catch {}
+        throw new Error(errMsg);
+      }
+    } catch (e: any) {
+      console.error(e);
+      if (onToast) onToast(`Re-scan failed: ${e.message || String(e)}. Fallback remains.`);
+    } finally {
+      setIsReScanning(false);
+    }
   };
 
   const handleScanSpecificClientQueue = (clientName: string) => {
@@ -1485,7 +1568,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       {/* Vendor */}
                       <td className="py-3 px-4 font-semibold text-white">
                         <div className="flex flex-col">
-                          <span>{r.vendor}</span>
+                          <span className="flex items-center gap-1.5">
+                            {r.vendor}
+                            {r.ocrFailed && (
+                              <span className="px-1.5 py-0.5 rounded-md text-[9px] font-mono font-extrabold bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-1" title="AI OCR Vision Failed (Quota Limit / API Overload) - Heuristic Local Extraction Applied">
+                                <AlertCircle className="w-3 h-3 text-rose-400" />
+                                <span>OCR !</span>
+                              </span>
+                            )}
+                          </span>
                           <span className="text-[10px] font-mono text-stone-500">{r.fileName}</span>
                         </div>
                       </td>
@@ -1989,6 +2080,22 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </span>
 
               <div className="flex items-center gap-2">
+                {inspectingReceipt.ocrFailed && !isEditingReceipt && (
+                  <button
+                    onClick={handleReScanSingleReceipt}
+                    disabled={isReScanning}
+                    className={`px-3 py-1.5 rounded-lg font-semibold text-xs transition-all cursor-pointer flex items-center gap-1.5 border border-rose-500/40 ${
+                      isReScanning
+                        ? 'bg-rose-950/50 text-rose-400 cursor-not-allowed'
+                        : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-300'
+                    }`}
+                    title="AI OCR scan initially failed. Click to re-run the high-accuracy AI scan."
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-rose-400 ${isReScanning ? 'animate-spin' : ''}`} />
+                    <span>{isReScanning ? 'Re-Scanning...' : 'Retry AI OCR'}</span>
+                  </button>
+                )}
+
                 {!isEditingReceipt && (
                   <button
                     onClick={() => setIsEditingReceipt(true)}
