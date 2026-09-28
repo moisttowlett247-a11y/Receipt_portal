@@ -111,6 +111,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [inspectingReceipt, setInspectingReceipt] = useState<ProcessedReceipt | null>(null);
   const [isEditingReceipt, setIsEditingReceipt] = useState<boolean>(false);
   const [isReScanning, setIsReScanning] = useState<boolean>(false);
+  const [activeOcrError, setActiveOcrError] = useState<{ fileName: string; ocrError: string } | null>(null);
   const [confirmClearLedger, setConfirmClearLedger] = useState<boolean>(false);
   const [showClientRoster, setShowClientRoster] = useState<boolean>(true);
 
@@ -1571,10 +1572,20 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                           <span className="flex items-center gap-1.5">
                             {r.vendor}
                             {r.ocrFailed && (
-                              <span className="px-1.5 py-0.5 rounded-md text-[9px] font-mono font-extrabold bg-rose-500/20 text-rose-300 border border-rose-500/40 inline-flex items-center gap-1" title="AI OCR Vision Failed (Quota Limit / API Overload) - Heuristic Local Extraction Applied">
-                                <AlertCircle className="w-3 h-3 text-rose-400" />
-                                <span>OCR !</span>
-                              </span>
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setActiveOcrError({
+                                    fileName: r.fileName,
+                                    ocrError: r.ocrError || 'AI OCR Vision failed due to API limits or network overload. Switched to local heuristic fallback.'
+                                  });
+                                }}
+                                className="w-5 h-5 rounded-full bg-rose-600 hover:bg-rose-500 text-stone-100 flex items-center justify-center font-extrabold text-xs shadow-md shadow-rose-950/20 cursor-pointer border border-rose-500/30 focus:outline-none transition-colors"
+                                title="AI OCR Scan Failed! Click to view exact error details."
+                              >
+                                !
+                              </button>
                             )}
                           </span>
                           <span className="text-[10px] font-mono text-stone-500">{r.fileName}</span>
@@ -2129,6 +2140,45 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   Close
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeOcrError && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in font-sans">
+          <div className="w-full max-w-lg rounded-2xl bg-stone-900 border border-stone-800 shadow-2xl p-6 space-y-4">
+            <div className="flex items-center gap-3 border-b border-stone-800 pb-3">
+              <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">AI OCR Extraction Failure Details</h3>
+                <p className="text-[11px] text-stone-400 font-mono truncate max-w-[340px]" title={activeOcrError.fileName}>
+                  File: {activeOcrError.fileName}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 rounded-xl bg-stone-950 border border-stone-800 font-mono text-xs text-rose-300 whitespace-pre-wrap leading-relaxed max-h-60 overflow-y-auto">
+              {activeOcrError.ocrError}
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] leading-relaxed">
+              <span className="font-bold uppercase tracking-wider block mb-1">CPA Safety Fallback Applied:</span>
+              To protect your tax ledger integrity, the system automatically applied local regex heuristic OCR 
+              attribution, and classified the purchase category for IRS Schedule F/C mapping. Review the extracted 
+              details above manually or retry the high-accuracy AI scan if the API keys have recovered.
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setActiveOcrError(null)}
+                className="px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-bold text-xs transition-colors cursor-pointer"
+              >
+                Dismiss
+              </button>
             </div>
           </div>
         </div>

@@ -61,6 +61,7 @@ export interface ProcessedReceipt {
   memo?: string;
   processedAt: string;
   ocrFailed?: boolean;
+  ocrError?: string;
 }
 
 export interface ParallelWorkerState {
@@ -833,6 +834,8 @@ export async function runParallelBatchScan(
       };
 
       let aiScanSuccess = false;
+      let ocrErrorMessage = '';
+
       if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/pdf'))) {
         try {
           const scanResp = await fetch('/api/scan/receipt', {
@@ -871,12 +874,17 @@ export async function runParallelBatchScan(
               };
               aiScanSuccess = true;
             } else {
+              ocrErrorMessage = scanJson.error || 'Server scan logic failed to extract fields';
+              if (scanJson.details) ocrErrorMessage += ` (${scanJson.details})`;
               console.error('Server scan logic failure:', scanJson.error, scanJson.details);
             }
           } else {
+            const errText = await scanResp.text().catch(() => '');
+            ocrErrorMessage = `Server returned HTTP ${scanResp.status}: ${errText.slice(0, 100)}`;
             console.error(`HTTP ${scanResp.status} from scan endpoint`);
           }
-        } catch (e) {
+        } catch (e: any) {
+          ocrErrorMessage = e.message || String(e);
           console.warn('AI OCR scan notice, falling back to local heuristic engine:', e);
         }
       }
@@ -973,7 +981,8 @@ export async function runParallelBatchScan(
         processingDurationMs: latency,
         memo: item.memo || extracted.memo,
         processedAt: new Date().toISOString(),
-        ocrFailed: !aiScanSuccess
+        ocrFailed: !aiScanSuccess,
+        ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined
       };
 
       currentLedger.push(processedRecord);

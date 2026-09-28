@@ -1312,7 +1312,7 @@ class SecureVault:
 # -----------------------------------------------------------------------------
 # Configuration & Constants
 # -----------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.tiff', '.pdf')
 
 RECEIPT_SCHEMA = {
@@ -2880,7 +2880,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest", "gemini-3.1-pro-preview"],
+            values=["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"],
             state="readonly",
             width=22
         )
