@@ -45,6 +45,7 @@ export interface ProcessedReceipt {
   total: number;
   paymentMethod: string;
   cardLast4?: string;
+  invoiceNumber?: string;
   category: string;
   schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
   irsLineNumber: string;
@@ -287,6 +288,19 @@ const KNOWN_VENDORS: KnownVendorProfile[] = [
     ]
   },
   {
+    name: 'Prairie Pines Ag Supply',
+    aliases: ['prairie pines', 'prairie pines ag', 'prairie ag supply'],
+    schedule: 'SCHEDULE_F',
+    lineNumber: 'Line 27',
+    lineTitle: 'Supplies purchased',
+    defaultCategory: 'Farm:Supplies',
+    typicalItems: [
+      { desc: 'Sold Chicken Starter Crumbles', price: 32.50 },
+      { desc: 'Bale Timothy Hay', price: 19.50 },
+      { desc: '1 Gal Animal Wormer (Ivermectin)', price: 48.00 }
+    ]
+  },
+  {
     name: 'Shell Service Station (Fleet)',
     aliases: ['shell fleet', 'exxon', 'chevron', 'bp gas', 'speedway'],
     schedule: 'SCHEDULE_C',
@@ -430,6 +444,7 @@ export function extractReceiptMetadata(
   total: number;
   paymentMethod: string;
   cardLast4?: string;
+  invoiceNumber?: string;
   confidence: number;
   memo: string;
 } {
@@ -496,7 +511,7 @@ export function extractReceiptMetadata(
       }
       date = `${yr}-${mNum}-${day}`;
     } else {
-      date = new Date().toISOString().split('T')[0];
+      date = 'Pending Review'; 
     }
   }
 
@@ -613,6 +628,7 @@ export function extractReceiptMetadata(
     total,
     paymentMethod,
     cardLast4,
+    invoiceNumber: hints?.invoiceNumber || '',
     confidence,
     memo
   };
@@ -673,7 +689,8 @@ export function classifyExtractedTaxSchedule(
     text.includes('feed') || text.includes('farm') || text.includes('tractor') ||
     text.includes('livestock') || text.includes('cattle') || text.includes('dairy') ||
     text.includes('fertilizer') || text.includes('seed') || text.includes('vet') ||
-    text.includes('hay') || text.includes('deere') || text.includes('grain');
+    text.includes('hay') || text.includes('deere') || text.includes('grain') ||
+    text.includes(' ag ') || text.includes('ag supply') || text.includes('agriculture');
 
   if (isFarm) {
     if (text.includes('feed') || text.includes('grain') || text.includes('hay')) {
@@ -846,6 +863,7 @@ export async function runParallelBatchScan(
                 total: Number(d.total) || 0,
                 paymentMethod: d.paymentMethod || 'CARD',
                 cardLast4: d.cardLast4,
+                invoiceNumber: d.invoiceNumber,
                 confidence: 0.99,
                 memo: d.memo || item.memo || `AI-OCR Processed (${item.fileName})`
               };
@@ -939,6 +957,7 @@ export async function runParallelBatchScan(
         total: extracted.total,
         paymentMethod: extracted.paymentMethod,
         cardLast4: extracted.cardLast4,
+        invoiceNumber: extracted.invoiceNumber,
         category: taxCls.categoryName,
         schedule: taxCls.schedule,
         irsLineNumber: taxCls.lineNumber,

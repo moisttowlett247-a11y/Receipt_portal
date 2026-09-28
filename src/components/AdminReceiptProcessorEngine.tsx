@@ -1898,6 +1898,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       {inspectingReceipt.paymentMethod} {inspectingReceipt.cardLast4 ? `(*${inspectingReceipt.cardLast4})` : ''}
                     </div>
                   </div>
+                  <div>
+                    <div className="text-stone-400 text-[10px] uppercase font-semibold">Invoice / Ref #</div>
+                    <div className="font-mono text-stone-200 mt-0.5">
+                      {inspectingReceipt.invoiceNumber || inspectingReceipt.id.split('-')[1] || 'N/A'}
+                    </div>
+                  </div>
                 </div>
 
                 {/* IRS Form 1040 Tax Classification */}

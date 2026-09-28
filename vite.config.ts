@@ -661,13 +661,15 @@ function licenseSyncApiPlugin(): Plugin {
               const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return a list of all detected receipts in the 'receipts' field.";
 
               const systemInstructionText = 
-                `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n` +
+                `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n` +
                 `CRITICAL RULES:\n` +
-                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple physically separate receipts (e.g. side-by-side), process each one as a distinct entry in the array.\n` +
-                `2. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n` +
-                `3. DATE: Extract the printed transaction date. If multiple dates appear (like coupon expiration dates), use the one closest to the transaction ID or vendor header. Format strictly as 'YYYY-MM-DD'.\n` +
-                `4. MATH VALIDATION: You must cross-reference line items, subtotal, and tax. Subtotal + Tax + Tip should = Total. If the printed Total is a 'Balance Due' of $0.00 because it was paid, find the 'Payment Amount' instead.\n` +
-                `5. Return strictly valid JSON conforming to the schema.`;
+                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple separate receipts, process EVERY one of them.\n` +
+                `2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n` +
+                `3. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'.\n` +
+                `4. MATH VALIDATION: Verify that Line Items Sum + Tax + Tip = Total. If they do not match, use the line item sum as the primary source of truth for the subtotal.\n` +
+                `5. VENDOR: Extract the full legal merchant name from the top of the receipt.\n` +
+                `6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
+                `7. Return strictly valid JSON conforming to the schema.`;
 
               const receiptSchema = {
                 type: "OBJECT",
@@ -685,6 +687,7 @@ function licenseSyncApiPlugin(): Plugin {
                         tip: { type: "NUMBER", description: "Tip amount if applicable" },
                         payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
                         card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
+                        invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
                         category: {
                           type: "STRING",
                           enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
@@ -730,7 +733,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
+              const modelsToTry = ["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"];
               let rawResult: any = null;
               let lastError = "";
 
@@ -757,29 +760,31 @@ function licenseSyncApiPlugin(): Plugin {
                       continue;
                     }
 
-                    const text = candidates[0]?.content?.parts?.[0]?.text;
-                    if (text) {
-                      let parsed: any;
-                      try {
-                        parsed = JSON.parse(text.trim());
-                      } catch (e) {
-                        // Fallback: try to find JSON block in text
-                        const jsonMatch = text.match(/(\{.*\})/s);
-                        if (jsonMatch) {
-                          try {
-                            parsed = JSON.parse(jsonMatch[1]);
-                          } catch (e2) {}
-                        }
+                  const text = candidates[0]?.content?.parts?.[0]?.text;
+                  if (text) {
+                    let parsed: any = null;
+                    const cleanText = text.trim();
+                    try {
+                      parsed = JSON.parse(cleanText);
+                    } catch (e) {
+                      const jsonMatch = cleanText.match(/(\{.*\})/s);
+                      if (jsonMatch) {
+                        try {
+                          parsed = JSON.parse(jsonMatch[1]);
+                        } catch (e2) {}
                       }
+                    }
 
-                      if (parsed && parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                    if (parsed) {
+                      if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
                         rawResult = parsed.receipts[0];
                         break;
-                      } else if (parsed && parsed.vendor) {
+                      } else if (parsed.vendor && parsed.total !== undefined) {
                         rawResult = parsed;
                         break;
                       }
-                    } else {
+                    }
+                  } else {
                       lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
                     }
                   } else {
@@ -911,9 +916,19 @@ function licenseSyncApiPlugin(): Plugin {
                 // If it doesn't match standard patterns, check if it's already YYYY-MM-DD but with different separators
                 const fallbackMatch = dateStr.match(/\b(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})\b/);
                 if (fallbackMatch) {
-                   dateStr = `${fallbackMatch[1]}-${fallbackMatch[2].padStart(2, '0')}-${fallbackMatch[3].padStart(2, '0')}`;
-                } else if (!dateStr || dateStr.length < 6) {
-                   dateStr = new Date().toISOString().split('T')[0];
+                  dateStr = `${fallbackMatch[1]}-${fallbackMatch[2].padStart(2, '0')}-${fallbackMatch[3].padStart(2, '0')}`;
+                } else {
+                   dateStr = ''; // Force it to remain empty if we can't find a date
+                }
+              }
+
+              // Fallback to filename or report metadata only if we have NO clue
+              if (!dateStr || dateStr.length < 8) {
+                const fileDateMatch = fileName.match(/\b(20[123][0-9])[-_](0?[1-9]|1[0-2])[-_](0?[1-9]|[12][0-9]|3[01])\b/);
+                if (fileDateMatch) {
+                  dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
+                } else {
+                  dateStr = 'Pending Review'; // Better than today's date which is likely wrong
                 }
               }
 
@@ -940,6 +955,7 @@ function licenseSyncApiPlugin(): Plugin {
                 tip: Number(tip.toFixed(2)),
                 paymentMethod: rawResult.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
                 cardLast4: cardLast4 || undefined,
+                invoiceNumber: rawResult.invoice_number || undefined,
                 category: rawResult.category || 'Supplies & Materials',
                 items: rawResult.items || [],
                 memo: rawResult.memo || `AI-OCR Scanned (${fileName})`,

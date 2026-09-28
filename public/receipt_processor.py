@@ -1312,7 +1312,7 @@ class SecureVault:
 # -----------------------------------------------------------------------------
 # Configuration & Constants
 # -----------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_MODEL = "gemini-3.8-flash"
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.tiff', '.pdf')
 
 RECEIPT_SCHEMA = {
@@ -1332,6 +1332,7 @@ RECEIPT_SCHEMA = {
                     "tip": {"type": "NUMBER", "description": "Tip amount if applicable"},
                     "payment_method": {"type": "STRING", "description": "VISA, MC, AMEX, Cash, Check"},
                     "card_last_4": {"type": "STRING", "description": "Exact 4 digits of card or empty string"},
+                    "invoice_number": {"type": "STRING", "description": "Invoice ID, Ref ID, or Trans ID if present"},
                     "category": {
                         "type": "STRING",
                         "enum": ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
@@ -1356,13 +1357,16 @@ RECEIPT_SCHEMA = {
 }
 
 SYSTEM_INSTRUCTION = (
-    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n\n"
+    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n\n"
     "CRITICAL EXTRACTION RULES:\n"
-    "1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple physically separate receipts (e.g. side-by-side), process each one as a distinct entry in the array.\n"
-    "2. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n"
-    "3. DATE: Extract the printed transaction date. If multiple dates appear (like coupon expiration dates), use the one closest to the transaction ID or vendor header. Format strictly as 'YYYY-MM-DD'.\n"
-    "4. MATH VALIDATION: You must cross-reference line items, subtotal, and tax. Subtotal + Tax + Tip should = Total. If the printed Total is a 'Balance Due' of $0.00 because it was paid, find the 'Payment Amount' instead.\n"
-    "5. Return strictly valid JSON conforming to the schema."
+    "1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple physically separate receipts (e.g. side-by-side), process EVERY one of them.\n"
+    "2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n"
+    "3. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'.\n"
+    "4. MATH VALIDATION: Verify that Line Items Sum + Tax + Tip = Total. If they do not match, use the line item sum as the primary source of truth for the subtotal.\n"
+    "5. VENDOR: Extract the full legal merchant name from the top of the receipt.\n"
+    "6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n"
+    "7. INVOICE NUMBER: Extract any 'Ref ID', 'Trans #', 'Invoice #', or 'ID' associated with the transaction.\n"
+    "8. Return strictly valid JSON conforming to the schema."
 )
 
 def normalize_extracted_date(date_raw: str) -> str:
@@ -1375,12 +1379,12 @@ def normalize_extracted_date(date_raw: str) -> str:
     clean = re.split(r'[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2})', clean, flags=re.IGNORECASE)[0].strip()
     clean = clean.rstrip(',;.')
 
-    # 1. Try ISO YYYY-MM-DD
+    # 1. Try ISO YYYY-MM-DD (with various separators)
     m_iso = re.search(r'\b(20[123][0-9])[-/. ](0?[1-9]|1[0-2])[-/. ](0?[1-9]|[12][0-9]|3[01])\b', clean)
     if m_iso:
         return f"{m_iso.group(1)}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
 
-    # 2. Try US formats MM/DD/YY(YY)
+    # 2. Try US formats MM/DD/YY(YY) (with various separators)
     m_us = re.search(r'\b(0?[1-9]|1[0-2])[-/. ](0?[1-9]|[12][0-9]|3[01])[-/. ](20[123][0-9]|[0-9][0-9])\b', clean)
     if m_us:
         yr = m_us.group(3)
@@ -1427,11 +1431,9 @@ def normalize_extracted_date(date_raw: str) -> str:
     # Final absolute fallback check on year
     fallback_yr = re.search(r'\b(20[123][0-9])\b', clean)
     if fallback_yr:
-        # If we found a year but no standard pattern, it might be a weird format. 
-        # Better return today's date than a broken YYYY-MM-DD
-        pass
+        return f"{fallback_yr.group(1)}-01-01" # Return Jan 1st of found year if pattern fails
 
-    return datetime.now().strftime("%Y-%m-%d")
+    return "Pending Review"
 
 def clean_card_last_4(raw_card: str, payment_method: str = "") -> str:
     """Cleans and validates that card_last_4 is strictly a 4-digit card number and not an auth code."""
@@ -2137,7 +2139,7 @@ def classify_receipt_tax_schedule(category: str, vendor: str = "", memo: str = "
     text = f"{cat_lower} {ven_lower} {mem_lower}"
 
     # Schedule F specific farm rules
-    if any(k in text for k in ["feed", "hay", "grain", "pellet", "mineral", "silage", "forage", "salt lick", "agway", "purina"]):
+    if any(k in text for k in ["feed", "hay", "grain", "pellet", "mineral", "silage", "forage", "salt lick", "agway", "purina", "prairie pines", "ag supply", "agriculture"]):
         return {"schedule": "SCHEDULE_F", "line_number": "Line 15", "line_title": "Feed purchased", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
     if any(k in text for k in ["fertilizer", "lime", "nitrogen", "potash", "manure", "soil amendment"]):
         return {"schedule": "SCHEDULE_F", "line_number": "Line 16", "line_title": "Fertilizers and lime", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
@@ -2151,7 +2153,7 @@ def classify_receipt_tax_schedule(category: str, vendor: str = "", memo: str = "
         return {"schedule": "SCHEDULE_F", "line_number": "Line 18", "line_title": "Gasoline, fuel, and oil", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
     if any(k in text for k in ["tractor repair", "combine", "harvester", "hydraulic", "baler", "implement", "john deere", "case ih", "kubota", "new holland"]):
         return {"schedule": "SCHEDULE_F", "line_number": "Line 24", "line_title": "Repairs and maintenance", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
-    if any(k in text for k in ["fencing", "barbed wire", "t-post", "baling twine", "gate", "tote", "farm:cows", "farm:chickens", "farm:general"]):
+    if any(k in text for k in ["fencing", "barbed wire", "t-post", "baling twine", "gate", "tote", "farm:cows", "farm:chickens", "farm:general", "prairie pines", "ag supply", "agriculture"]):
         return {"schedule": "SCHEDULE_F", "line_number": "Line 27", "line_title": "Supplies purchased", "schedule_name": "IRS Form 1040 Schedule F (Farm)"}
 
     # General / Schedule C business rules
@@ -2878,7 +2880,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3.8-flash"],
+            values=["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-flash-latest"],
             state="readonly",
             width=22
         )
@@ -4165,6 +4167,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                 category = r_data.get("category", "Supplies & Materials")
 
             payment = r_data.get("payment_method", "Cash/Card").strip()
+            invoice_num = r_data.get("invoice_number", "").strip()
             raw_card = str(r_data.get("card_last_4", "")).strip()
             card_last_4 = clean_card_last_4(raw_card, payment)
             items = r_data.get("items", [])
@@ -4181,6 +4184,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                 f"SOURCE:   {os.path.basename(filepath)} [{receipt_tag}]\n"
                 f"DATE:     {date_str}\n"
                 f"VENDOR:   {vendor}\n"
+                f"INVOICE:  {invoice_num}\n"
                 f"REF #:    {ref_num}\n"
                 f"CARD:     {card_display} ({payment})\n"
                 f"TOTAL:    ${total:.2f}\n"
@@ -4211,7 +4215,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(csv_path, "a", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                     if not csv_exists:
-                        writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Tip","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
+                        writer.writerow(["Client","Date","Vendor","Invoice_Number","Category","Subtotal","Tax","Tip","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
                     is_dup, dup_msg = self.dup_detector.check_and_register(vendor, total, date_str, os.path.basename(filepath), active_client)
                     dup_status = "POTENTIAL_DUPLICATE" if is_dup else "UNIQUE"
                     if is_dup:
@@ -4222,6 +4226,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                         sanitize_csv_field(active_client),
                         sanitize_csv_field(date_str),
                         sanitize_csv_field(vendor),
+                        sanitize_csv_field(invoice_num),
                         sanitize_csv_field(category),
                         f"{subtotal:.2f}",
                         f"{tax:.2f}",
@@ -4243,11 +4248,12 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(cl_csv_path, "a", newline="", encoding="utf-8") as f_cl:
                     cl_writer = csv.writer(f_cl, quoting=csv.QUOTE_MINIMAL)
                     if not cl_csv_exists:
-                        cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Tip","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
+                        cl_writer.writerow(["Client","Date","Vendor","Invoice_Number","Category","Subtotal","Tax","Tip","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
                     cl_writer.writerow([
                         sanitize_csv_field(active_client),
                         sanitize_csv_field(date_str),
                         sanitize_csv_field(vendor),
+                        sanitize_csv_field(invoice_num),
                         sanitize_csv_field(category),
                         f"{subtotal:.2f}",
                         f"{tax:.2f}",
@@ -4269,11 +4275,12 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(qb_path, "a", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                     if not qb_exists:
-                        writer.writerow(["Client","BillDate","Vendor","ExpenseAccount","Amount","Memo","RefNumber"])
+                        writer.writerow(["Client","BillDate","Vendor","InvoiceNumber","ExpenseAccount","Amount","Memo","RefNumber"])
                     writer.writerow([
                         sanitize_csv_field(active_client),
                         sanitize_csv_field(date_str),
                         sanitize_csv_field(vendor),
+                        sanitize_csv_field(invoice_num),
                         sanitize_csv_field(category),
                         f"{total:.2f}",
                         sanitize_csv_field(category),
