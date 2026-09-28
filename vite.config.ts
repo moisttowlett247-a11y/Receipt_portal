@@ -732,7 +732,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.1-flash", "gemini-1.5-flash-latest"];
+              const modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.1-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"];
               let rawResult: any = null;
 
               for (const model of modelsToTry) {
@@ -907,6 +907,7 @@ function licenseSyncApiPlugin(): Plugin {
                 total: Number(total.toFixed(2)),
                 subtotal: Number(subtotal.toFixed(2)),
                 tax: Number(tax.toFixed(2)),
+                tip: Number(tip.toFixed(2)),
                 paymentMethod: rawResult.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
                 cardLast4: cardLast4 || undefined,
                 category: rawResult.category || 'Supplies & Materials',

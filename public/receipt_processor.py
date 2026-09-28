@@ -1356,12 +1356,12 @@ RECEIPT_SCHEMA = {
 }
 
 SYSTEM_INSTRUCTION = (
-    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from receipts.\n\n"
+    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n\n"
     "CRITICAL EXTRACTION RULES:\n"
-    "1. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n"
-    "2. DATE: Extract the printed transaction date. If multiple dates appear (like coupon expiration dates), use the one closest to the transaction ID or vendor header. Format strictly as 'YYYY-MM-DD'.\n"
-    "3. MATH VALIDATION: You must cross-reference line items, subtotal, and tax. Subtotal + Tax + Tip should = Total. If the printed Total is a 'Balance Due' of $0.00 because it was paid, find the 'Payment Amount' instead.\n"
-    "4. CARD LAST 4: Extract strictly the 4 digits (e.g. '1234' from '****1234'). Return empty string for Cash/Check.\n"
+    "1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple physically separate receipts (e.g. side-by-side), process each one as a distinct entry in the array.\n"
+    "2. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n"
+    "3. DATE: Extract the printed transaction date. If multiple dates appear (like coupon expiration dates), use the one closest to the transaction ID or vendor header. Format strictly as 'YYYY-MM-DD'.\n"
+    "4. MATH VALIDATION: You must cross-reference line items, subtotal, and tax. Subtotal + Tax + Tip should = Total. If the printed Total is a 'Balance Due' of $0.00 because it was paid, find the 'Payment Amount' instead.\n"
     "5. Return strictly valid JSON conforming to the schema."
 )
 
@@ -2873,7 +2873,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-1.5-flash", "gemini-1.5-pro"],
+            values=["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-flash-image", "gemini-3.1-pro-preview", "gemini-3.8-flash"],
             state="readonly",
             width=22
         )
@@ -4025,7 +4025,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": "Analyze this receipt image/document with forensic accuracy. Extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL. Return ONE receipt entry unless multiple physically distinct receipts are laid side-by-side."},
+                    {"text": "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return a list of all detected receipts in the 'receipts' field."},
                     {"inlineData": {"mimeType": mime_type, "data": b64_content}}
                 ]
             }],
