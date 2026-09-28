@@ -459,10 +459,10 @@ export function extractReceiptMetadata(
   // 2. High-Accuracy Date Extraction (Supports YYYY-MM-DD, MM/DD/YYYY, Mon DD YYYY, DD-Mon-YYYY)
   let date = hints?.date || '';
   if (!date) {
-    const isoMatch = text.match(/\b(202[0-9])[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])\b/);
-    const usMatch = text.match(/\b(0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])[-/.](202[0-9]|2[0-9])\b/);
-    const monthNameMatch = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.-]+(0?[1-9]|[12][0-9]|3[01])[,\s.-]+(202[0-9]|2[0-9])\b/i);
-    const dayMonthMatch = text.match(/\b(0?[1-9]|[12][0-9]|3[01])[\s.-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.-]+(202[0-9]|2[0-9])\b/i);
+    const isoMatch = text.match(/\b(20[123][0-9])[-/. ](0?[1-9]|1[0-2])[-/. ](0?[1-9]|[12][0-9]|3[01])\b/);
+    const usMatch = text.match(/\b(0?[1-9]|1[0-2])[-/. ](0?[1-9]|[12][0-9]|3[01])[-/. ](20[123][0-9]|[0-9][0-9])\b/);
+    const monthNameMatch = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.-]+(0?[1-9]|[12][0-9]|3[01])[,\s.-]+(20[123][0-9]|[0-9][0-9])\b/i);
+    const dayMonthMatch = text.match(/\b(0?[1-9]|[12][0-9]|3[01])[\s.-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.-]+(20[123][0-9]|[0-9][0-9])\b/i);
 
     const monthMap: Record<string, string> = {
       jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
@@ -472,19 +472,28 @@ export function extractReceiptMetadata(
     if (isoMatch) {
       date = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
     } else if (usMatch) {
-      const yr = usMatch[3].length === 2 ? `20${usMatch[3]}` : usMatch[3];
+      let yr = usMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
       date = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
     } else if (monthNameMatch) {
       const mStr = monthNameMatch[1].toLowerCase().slice(0, 3);
       const mNum = monthMap[mStr] || '01';
       const day = monthNameMatch[2].padStart(2, '0');
-      const yr = monthNameMatch[3].length === 2 ? `20${monthNameMatch[3]}` : monthNameMatch[3];
+      let yr = monthNameMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
       date = `${yr}-${mNum}-${day}`;
     } else if (dayMonthMatch) {
       const mStr = dayMonthMatch[2].toLowerCase().slice(0, 3);
       const mNum = monthMap[mStr] || '01';
       const day = dayMonthMatch[1].padStart(2, '0');
-      const yr = dayMonthMatch[3].length === 2 ? `20${dayMonthMatch[3]}` : dayMonthMatch[3];
+      let yr = dayMonthMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
       date = `${yr}-${mNum}-${day}`;
     } else {
       date = new Date().toISOString().split('T')[0];
@@ -835,7 +844,7 @@ export async function runParallelBatchScan(
                 })),
                 subtotal: Number(d.subtotal) || Number(d.total) || 0,
                 tax: Number(d.tax) || 0,
-                tip: 0,
+                tip: Number(d.tip) || 0,
                 total: Number(d.total) || 0,
                 paymentMethod: d.paymentMethod || 'CARD',
                 cardLast4: d.cardLast4,

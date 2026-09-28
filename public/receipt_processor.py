@@ -23,6 +23,7 @@ import time
 import json
 import csv
 import io
+import re
 import queue
 import shutil
 import base64
@@ -1311,7 +1312,7 @@ class SecureVault:
 # -----------------------------------------------------------------------------
 # Configuration & Constants
 # -----------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp', '.heic', '.bmp', '.tiff', '.pdf')
 
 RECEIPT_SCHEMA = {
@@ -1323,13 +1324,14 @@ RECEIPT_SCHEMA = {
             "items": {
                 "type": "OBJECT",
                 "properties": {
-                    "vendor": {"type": "STRING", "description": "Exact merchant / store name printed at the top of the receipt"},
-                    "date": {"type": "STRING", "description": "Exact purchase date printed on receipt in YYYY-MM-DD format (convert from MM/DD/YYYY, DD-Mon-YYYY, etc.)"},
-                    "total": {"type": "NUMBER", "description": "Final Grand Total amount actually charged/paid. Do NOT return subtotal, cash tendered, or change."},
-                    "subtotal": {"type": "NUMBER", "description": "Pre-tax subtotal amount"},
-                    "tax": {"type": "NUMBER", "description": "Total sales tax amount"},
-                    "payment_method": {"type": "STRING", "description": "Payment tender (e.g., VISA, MasterCard, AMEX, Discover, Debit Card, Cash, Check, Store Account)"},
-                    "card_last_4": {"type": "STRING", "description": "Exact last 4 digits of the payment card (e.g. '4821' from '**** **** **** 4821' or 'ACCT: ...4821'). Leave empty string if paid by Cash/Check or no card digits shown."},
+                    "vendor": {"type": "STRING", "description": "Exact merchant / store name"},
+                    "date": {"type": "STRING", "description": "ACTUAL transaction date in YYYY-MM-DD format. Look for keywords like 'DATE', 'SALE DATE', 'TRANS# DATE'."},
+                    "total": {"type": "NUMBER", "description": "FINAL GRAND TOTAL actually charged. Strictly exclude Tendered/Change/Savings."},
+                    "subtotal": {"type": "NUMBER", "description": "Pre-tax subtotal"},
+                    "tax": {"type": "NUMBER", "description": "Total sales tax"},
+                    "tip": {"type": "NUMBER", "description": "Tip amount if applicable"},
+                    "payment_method": {"type": "STRING", "description": "VISA, MC, AMEX, Cash, Check"},
+                    "card_last_4": {"type": "STRING", "description": "Exact 4 digits of card or empty string"},
                     "category": {
                         "type": "STRING",
                         "enum": ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
@@ -1344,7 +1346,7 @@ RECEIPT_SCHEMA = {
                             }
                         }
                     },
-                    "notes": {"type": "STRING"}
+                    "memo": {"type": "STRING", "description": "Brief explanation if math discrepancy found"}
                 },
                 "required": ["vendor", "date", "total", "category"]
             }
@@ -1354,35 +1356,13 @@ RECEIPT_SCHEMA = {
 }
 
 SYSTEM_INSTRUCTION = (
-    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n\n"
+    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from receipts.\n\n"
     "CRITICAL EXTRACTION RULES:\n"
-    "1. TOTAL AMOUNT (CRITICAL ACCURACY):\n"
-    "   - 'total' MUST be the FINAL GRAND TOTAL actually charged to the card or paid in cash.\n"
-    "   - Look specifically for 'TOTAL', 'GRAND TOTAL', 'AMOUNT PAID', 'NET AMOUNT', or 'BALANCE DUE'.\n"
-    "   - NEVER extract 'Cash Tendered' / 'Amount Tendered' (e.g., paying with a $100 bill on a $32.50 order -> Total is 32.50, NOT 100.00).\n"
-    "   - NEVER extract 'Change Due' (e.g., $67.50), 'Subtotal', 'Tax', 'Savings Amount' ('You Saved $5.00'), or 'Previous Balance' as the total.\n"
-    "   - Verify that Subtotal + Tax = Total (unless coupons or bottle deposits apply).\n\n"
-    "2. TRANSACTION DATE (CRITICAL ACCURACY):\n"
-    "   - Extract the exact printed purchase date formatted strictly as 'YYYY-MM-DD'.\n"
-    "   - Standard US receipts use MM/DD/YYYY (e.g., '04/09/2024' -> '2024-04-09', '11/02/25' -> '2025-11-02', 'OCT 14, 2024' -> '2024-10-14').\n"
-    "   - NEVER return the current date if the receipt date is printed on the slip.\n\n"
-    "3. CARD LAST 4 DIGITS & PAYMENT METHOD (CRITICAL ACCURACY):\n"
-    "   - Look at the payment / tender authorization section at the bottom of the receipt.\n"
-    "   - Find the masked card number (e.g., '************4821', 'XXXX-XXXX-XXXX-9102', 'ACCT: ...3045', 'VISA 1234', 'Card # **********7789').\n"
-    "   - 'card_last_4' MUST be ONLY the 4 digits of the card (e.g., '4821', '9102', '3045').\n"
-    "   - DO NOT extract Authorization Codes (AUTH: 039218), Reference Numbers (REF: 849201), Trace IDs, Terminal IDs, or Store Numbers as card numbers.\n"
-    "   - If paid by Cash, Check, or Store Account without a debit/credit card, set 'card_last_4' to empty string '' and 'payment_method' to 'Cash' or 'Check'.\n\n"
-    "4. SINGLE VS MULTI-RECEIPT:\n"
-    "   - By default, treat the image as ONE single receipt.\n"
-    "   - ONLY return multiple items in 'receipts' if there are physically separate receipts lying side-by-side with different headers and grand totals.\n\n"
-    "5. CATEGORIZATION:\n"
-    "   - 'Supplies & Materials': General retail, hardware, cleaning, office supplies, packaging, bins.\n"
-    "   - 'Farm:Cows': Cattle feed, mineral blocks, calf starter, veterinary livestock medicine, fencing.\n"
-    "   - 'Farm:Chickens': Poultry feed, layer pellets, scratch grain, chick starter, coops.\n"
-    "   - 'Repairs & Maintenance': Machinery parts, motor oil, hydraulic fluid, belts, filters, tires.\n"
-    "   - 'Tools': Power tools, hand tools, wrenches, drills, fasteners.\n"
-    "   - 'Fuel': Bulk diesel, gasoline, propane, heating oil.\n"
-    "   - 'Farm:General': Seed, fertilizer, crop chemicals, irrigation, general farm operations."
+    "1. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n"
+    "2. DATE: Extract the printed transaction date. If multiple dates appear (like coupon expiration dates), use the one closest to the transaction ID or vendor header. Format strictly as 'YYYY-MM-DD'.\n"
+    "3. MATH VALIDATION: You must cross-reference line items, subtotal, and tax. Subtotal + Tax + Tip should = Total. If the printed Total is a 'Balance Due' of $0.00 because it was paid, find the 'Payment Amount' instead.\n"
+    "4. CARD LAST 4: Extract strictly the 4 digits (e.g. '1234' from '****1234'). Return empty string for Cash/Check.\n"
+    "5. Return strictly valid JSON conforming to the schema."
 )
 
 def normalize_extracted_date(date_raw: str) -> str:
@@ -1391,24 +1371,25 @@ def normalize_extracted_date(date_raw: str) -> str:
         return datetime.now().strftime("%Y-%m-%d")
     
     clean = str(date_raw).strip()
-    # Strip any trailing time or timezone components (e.g. 2026-09-28 14:30:00 -> 2026-09-28)
+    # Strip any trailing time or timezone components
     clean = re.split(r'[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2})', clean, flags=re.IGNORECASE)[0].strip()
     clean = clean.rstrip(',;.')
 
-    # Try direct strptime formats
-    date_formats = (
-        "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%m.%d.%Y", "%m.%d.%y",
-        "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y",
-        "%d-%B-%Y", "%d %B %Y", "%Y/%m/%d", "%Y.%m.%d", "%d/%m/%Y", "%d.%m.%Y"
-    )
-    for fmt in date_formats:
-        try:
-            dt = datetime.strptime(clean, fmt)
-            if 2010 <= dt.year <= 2040:
-                return dt.strftime("%Y-%m-%d")
-        except Exception:
-            continue
+    # 1. Try ISO YYYY-MM-DD
+    m_iso = re.search(r'\b(20[123][0-9])[-/. ](0?[1-9]|1[0-2])[-/. ](0?[1-9]|[12][0-9]|3[01])\b', clean)
+    if m_iso:
+        return f"{m_iso.group(1)}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
 
+    # 2. Try US formats MM/DD/YY(YY)
+    m_us = re.search(r'\b(0?[1-9]|1[0-2])[-/. ](0?[1-9]|[12][0-9]|3[01])[-/. ](20[123][0-9]|[0-9][0-9])\b', clean)
+    if m_us:
+        yr = m_us.group(3)
+        if len(yr) == 2:
+            num_yr = int(yr)
+            yr = f"19{yr}" if num_yr > 50 else f"20{yr}"
+        return f"{yr}-{int(m_us.group(1)):02d}-{int(m_us.group(2)):02d}"
+
+    # 3. Try month name matches
     month_map = {
         'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
         'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
@@ -1416,37 +1397,34 @@ def normalize_extracted_date(date_raw: str) -> str:
         'july': '07', 'august': '08', 'september': '09', 'october': '10', 'november': '11', 'december': '12'
     }
 
-    # Month name match (e.g. Sep 28, 2026 or Sept 28, 26)
-    m_month_name = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b', clean, re.IGNORECASE)
+    # Month DD, YYYY
+    m_month_name = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9][0-9])\b', clean, re.IGNORECASE)
     if m_month_name:
-        m_str = m_month_name.group(1).lower()
-        m_num = month_map.get(m_str, '01')
+        m_num = month_map.get(m_month_name.group(1).lower(), '01')
         day_num = int(m_month_name.group(2))
         yr = m_month_name.group(3)
-        yr_full = f"20{yr}" if len(yr) == 2 else yr
-        return f"{yr_full}-{m_num}-{day_num:02d}"
+        if len(yr) == 2:
+            num_yr = int(yr)
+            yr = f"19{yr}" if num_yr > 50 else f"20{yr}"
+        return f"{yr}-{m_num}-{day_num:02d}"
 
-    # Day Month name match (e.g. 28 Sep 2026 or 28-Sep-26)
-    m_day_month = re.search(r'\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b', clean, re.IGNORECASE)
+    # DD Month YYYY
+    m_day_month = re.search(r'\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9][0-9])\b', clean, re.IGNORECASE)
     if m_day_month:
         day_num = int(m_day_month.group(1))
-        m_str = m_day_month.group(2).lower()
-        m_num = month_map.get(m_str, '01')
+        m_num = month_map.get(m_day_month.group(2).lower(), '01')
         yr = m_day_month.group(3)
-        yr_full = f"20{yr}" if len(yr) == 2 else yr
-        return f"{yr_full}-{m_num}-{day_num:02d}"
+        if len(yr) == 2:
+            num_yr = int(yr)
+            yr = f"19{yr}" if num_yr > 50 else f"20{yr}"
+        return f"{yr}-{m_num}-{day_num:02d}"
 
-    # ISO regex fallback (2026-09-28 or 2026/09/28)
-    m_iso = re.search(r'\b(20[1-3][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b', clean)
-    if m_iso:
-        return f"{m_iso.group(1)}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
-
-    # US regex fallback (09/28/2026 or 9/28/26)
-    m_us = re.search(r'\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[1-3][0-9]|[1-3][0-9])\b', clean)
-    if m_us:
-        yr = m_us.group(3)
-        yr_full = f"20{yr}" if len(yr) == 2 else yr
-        return f"{yr_full}-{int(m_us.group(1)):02d}-{int(m_us.group(2)):02d}"
+    # Final absolute fallback check on year
+    fallback_yr = re.search(r'\b(20[123][0-9])\b', clean)
+    if fallback_yr:
+        # If we found a year but no standard pattern, it might be a weird format. 
+        # Better return today's date than a broken YYYY-MM-DD
+        pass
 
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -1488,6 +1466,11 @@ def reconcile_extracted_financials(r_data: dict) -> dict:
     except Exception:
         tax = 0.0
 
+    try:
+        tip = float(r_data.get("tip", 0.0))
+    except Exception:
+        tip = 0.0
+
     # Calculate item sum if items exist
     items = r_data.get("items", [])
     item_sum = 0.0
@@ -1503,27 +1486,27 @@ def reconcile_extracted_financials(r_data: dict) -> dict:
         subtotal = item_sum
 
     if subtotal <= 0.0 and total > 0.0:
-        subtotal = round(total - tax, 2) if total > tax else total
+        subtotal = round(total - tax - tip, 2) if total > (tax + tip) else total
 
-    expected_from_subtax = round(subtotal + tax, 2) if subtotal > 0 else 0.0
+    expected_from_parts = round(subtotal + tax + tip, 2) if subtotal > 0 else 0.0
 
-    # If total was 0, compute from subtotal + tax or item sum
-    if total <= 0.0:
-        if expected_from_subtax > 0:
-            total = expected_from_subtax
+    # If total is 0 or very small, use sum of parts
+    if total <= 0.01:
+        if expected_from_parts > 0:
+            total = expected_from_parts
         elif item_sum > 0:
-            total = round(item_sum + tax, 2)
+            total = round(item_sum + tax + tip, 2)
 
-    # If subtotal + tax is explicitly provided and total is radically higher (e.g. model picked Cash Tendered $100 for a $34.20 total)
-    if subtotal > 0 and tax >= 0 and expected_from_subtax > 0:
-        if total > (expected_from_subtax * 1.5) and expected_from_subtax > 1.0:
-            total = expected_from_subtax
-        elif total < (subtotal * 0.9) and expected_from_subtax > 0:
-            total = expected_from_subtax
+    # If discrepency is huge, trust the sum of parts (e.g. model picked Cash Tendered $100 for a $20 order)
+    if subtotal > 0 and expected_from_parts > 0.01:
+        diff_ratio = total / expected_from_parts if expected_from_parts > 0 else 0
+        if diff_ratio > 1.5 or diff_ratio < 0.5:
+            total = expected_from_parts
 
     r_data["total"] = round(total, 2)
     r_data["subtotal"] = round(subtotal, 2)
     r_data["tax"] = round(tax, 2)
+    r_data["tip"] = round(tip, 2)
     return r_data
 
 if requests is not None:
@@ -2890,7 +2873,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+            values=["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-1.5-flash", "gemini-1.5-pro"],
             state="readonly",
             width=22
         )
@@ -4116,6 +4099,7 @@ class FarmReceiptApp(_TK_BASE_TK):
             total = float(r_data.get("total", 0.0))
             subtotal = float(r_data.get("subtotal", total))
             tax = float(r_data.get("tax", 0.0))
+            tip = float(r_data.get("tip", 0.0))
 
             selected_dropdown_cat = self.category_var.get()
             if selected_dropdown_cat and selected_dropdown_cat != "Auto-Detect (AI)":
@@ -4144,7 +4128,9 @@ class FarmReceiptApp(_TK_BASE_TK):
                 f"CARD:     {card_display} ({payment})\n"
                 f"TOTAL:    ${total:.2f}\n"
                 f"CATEGORY: {category}\n"
+                f"SUBTOTAL: ${subtotal:.2f}\n"
                 f"TAX:      ${tax:.2f}\n"
+                f"TIP:      ${tip:.2f}\n"
                 f"PAYMENT:  {payment}\n"
             )
             txt_entry += "ITEMS:\n"
@@ -4168,7 +4154,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(csv_path, "a", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                     if not csv_exists:
-                        writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
+                        writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Tip","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
                     is_dup, dup_msg = self.dup_detector.check_and_register(vendor, total, date_str, os.path.basename(filepath), active_client)
                     dup_status = "POTENTIAL_DUPLICATE" if is_dup else "UNIQUE"
                     if is_dup:
@@ -4182,6 +4168,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                         sanitize_csv_field(category),
                         f"{subtotal:.2f}",
                         f"{tax:.2f}",
+                        f"{tip:.2f}",
                         f"{total:.2f}",
                         sanitize_csv_field(payment),
                         sanitize_csv_field(card_last_4),
@@ -4199,7 +4186,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                 with open(cl_csv_path, "a", newline="", encoding="utf-8") as f_cl:
                     cl_writer = csv.writer(f_cl, quoting=csv.QUOTE_MINIMAL)
                     if not cl_csv_exists:
-                        cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
+                        cl_writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Tip","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
                     cl_writer.writerow([
                         sanitize_csv_field(active_client),
                         sanitize_csv_field(date_str),
@@ -4207,12 +4194,16 @@ class FarmReceiptApp(_TK_BASE_TK):
                         sanitize_csv_field(category),
                         f"{subtotal:.2f}",
                         f"{tax:.2f}",
+                        f"{tip:.2f}",
                         f"{total:.2f}",
                         sanitize_csv_field(payment),
                         sanitize_csv_field(card_last_4),
                         sanitize_csv_field(ref_num),
                         os.path.basename(filepath),
-                        idx
+                        idx,
+                        dup_status,
+                        tax_info.get("schedule", ""),
+                        tax_info.get("line_number", "")
                     ])
 
                 # 4. QuickBooks Import CSV

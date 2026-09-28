@@ -659,43 +659,62 @@ function licenseSyncApiPlugin(): Plugin {
               }
 
               const promptText = `Analyze this receipt image/document for client "${clientName}" with forensic accounting precision. ` +
-                `Extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Payment Method (e.g. VISA, MasterCard, AMEX, Cash, Check), Card Last 4 digits (e.g. 4821 from ****4821, or empty string if cash), and the FINAL GRAND TOTAL charged.`;
+                `Identify all physically distinct purchase receipts in the image. ` +
+                `For each receipt found: ` +
+                `1. Find the Store/Vendor name. ` +
+                `2. Find the ACTUAL Purchase Date (NOT today's date, NOT coupon dates). Format 'YYYY-MM-DD'. ` +
+                `3. Extract all line items with individual amounts. ` +
+                `4. Identify Subtotal, Sales Tax, and any Tip. ` +
+                `5. Find the FINAL GRAND TOTAL actually charged. ` +
+                `6. Identify Payment Method and Card Last 4 digits. ` +
+                `Return a list of all detected receipts. If only one receipt is present, return it in the list.`;
 
               const systemInstructionText = 
                 `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n` +
                 `CRITICAL RULES:\n` +
-                `1. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract Cash Tendered, Change Due, Subtotal, or Savings Amount as total. Ensure Subtotal + Tax = Total.\n` +
-                `2. DATE: Extract the exact printed purchase date formatted strictly as 'YYYY-MM-DD'. Standard US receipts use MM/DD/YYYY.\n` +
-                `3. CARD LAST 4: Extract strictly the 4 digits of the payment card from masked numbers (e.g. ****1234 -> '1234'). DO NOT extract Auth codes, Ref numbers, or Store IDs as card digits. If paid by Cash/Check, return empty string.\n` +
-                `4. Return JSON conforming to the schema.`;
+                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. Most images have one, but some have two side-by-side. Process each one.\n` +
+                `2. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n` +
+                `3. DATE: Extract the printed transaction date. If multiple dates appear, use the one closest to the transaction ID or header. Format as 'YYYY-MM-DD'.\n` +
+                `4. MATH VALIDATION: Subtotal + Tax + Tip should = Total. Cross-reference with line item sum.\n` +
+                `5. Return strictly valid JSON conforming to the schema.`;
 
               const receiptSchema = {
                 type: "OBJECT",
                 properties: {
-                  vendor: { type: "STRING", description: "Store or merchant name" },
-                  date: { type: "STRING", description: "YYYY-MM-DD format" },
-                  total: { type: "NUMBER", description: "Final Grand Total amount actually charged" },
-                  subtotal: { type: "NUMBER", description: "Pre-tax subtotal" },
-                  tax: { type: "NUMBER", description: "Total sales tax" },
-                  payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
-                  card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
-                  category: {
-                    type: "STRING",
-                    enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
-                  },
-                  items: {
+                  receipts: {
                     type: "ARRAY",
                     items: {
                       type: "OBJECT",
                       properties: {
-                        description: { type: "STRING" },
-                        amount: { type: "NUMBER" }
-                      }
+                        vendor: { type: "STRING", description: "Store or merchant name" },
+                        date: { type: "STRING", description: "YYYY-MM-DD format" },
+                        total: { type: "NUMBER", description: "Final Grand Total amount actually charged" },
+                        subtotal: { type: "NUMBER", description: "Pre-tax subtotal" },
+                        tax: { type: "NUMBER", description: "Total sales tax" },
+                        tip: { type: "NUMBER", description: "Tip amount if applicable" },
+                        payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
+                        card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
+                        category: {
+                          type: "STRING",
+                          enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
+                        },
+                        items: {
+                          type: "ARRAY",
+                          items: {
+                            type: "OBJECT",
+                            properties: {
+                              description: { type: "STRING" },
+                              amount: { type: "NUMBER" }
+                            }
+                          }
+                        },
+                        memo: { type: "STRING" }
+                      },
+                      required: ["vendor", "date", "total", "category"]
                     }
-                  },
-                  memo: { type: "STRING" }
+                  }
                 },
-                required: ["vendor", "date", "total", "category"]
+                required: ["receipts"]
               };
 
               const payload = {
@@ -713,7 +732,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"];
+              const modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.1-flash", "gemini-1.5-flash-latest"];
               let rawResult: any = null;
 
               for (const model of modelsToTry) {
@@ -729,8 +748,16 @@ function licenseSyncApiPlugin(): Plugin {
                     const gData = await gResp.json();
                     const text = gData?.candidates?.[0]?.content?.parts?.[0]?.text;
                     if (text) {
-                      rawResult = JSON.parse(text.trim());
-                      break;
+                      const parsed = JSON.parse(text.trim());
+                      // Extract the first receipt from the array according to schema
+                      if (parsed && parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                        rawResult = parsed.receipts[0];
+                        break;
+                      } else if (parsed && parsed.vendor) {
+                        // Fallback if model returned single object instead of array
+                        rawResult = parsed;
+                        break;
+                      }
                     }
                   }
                 } catch (mErr) {
@@ -749,12 +776,13 @@ function licenseSyncApiPlugin(): Plugin {
               let total = Number(rawResult.total) || 0;
               let subtotal = Number(rawResult.subtotal) || 0;
               let tax = Number(rawResult.tax) || 0;
+              const tip = Number(rawResult.tip) || 0;
 
               // Compute sum of line items if provided
               const itemsList = Array.isArray(rawResult.items) ? rawResult.items : [];
               let itemSum = 0;
               for (const itm of itemsList) {
-                if (itm && typeof itm.amount === 'number' && itm.amount > 0) {
+                if (itm && typeof itm.amount === 'number') {
                   itemSum += itm.amount;
                 }
               }
@@ -764,30 +792,49 @@ function licenseSyncApiPlugin(): Plugin {
                 subtotal = itemSum;
               }
 
+              // If subtotal is still 0, try to derive from total/tax
               if (subtotal <= 0 && total > 0) {
-                subtotal = total > tax ? Number((total - tax).toFixed(2)) : total;
+                subtotal = total > (tax + tip) ? Number((total - tax - tip).toFixed(2)) : total;
               }
 
-              const expectedSum = Number((subtotal + tax).toFixed(2));
-              if (total <= 0) {
+              const expectedSum = Number((subtotal + tax + tip).toFixed(2));
+              
+              // If total is 0 or seems to be 'Balance Due' after payment
+              if (total <= 0.01) {
                 if (expectedSum > 0) {
                   total = expectedSum;
                 } else if (itemSum > 0) {
                   total = Number((itemSum + tax).toFixed(2));
                 }
-              } else if (subtotal > 0 && tax >= 0 && expectedSum > 0) {
-                // If model grabbed an outlier tender amount or change due
-                if (total > (expectedSum * 1.5) && expectedSum > 1) {
-                  total = expectedSum;
-                } else if (total < (subtotal * 0.9) && expectedSum > 0) {
-                  total = expectedSum;
+              } else if (subtotal > 0 && expectedSum > 0) {
+                // If model picked an outlier like 'Cash Tendered' or 'Change Due'
+                // We check if the total is wildly different from (Subtotal + Tax)
+                // A common case is paying $100 for a $20 receipt.
+                const diffRatio = total / expectedSum;
+                if (diffRatio > 1.5 || diffRatio < 0.5) {
+                  // If the discrepancy is huge, trust the sum of parts over the single 'total' field
+                  if (expectedSum > 0.01) {
+                    total = expectedSum;
+                  }
                 }
               }
 
+              // Final rounding
+              total = Number(total.toFixed(2));
+              subtotal = Number(subtotal.toFixed(2));
+              tax = Number(tax.toFixed(2));
+
               // Robust date normalization
               let dateStr = String(rawResult.date || '').trim();
-              // Strip trailing timestamps e.g. "2026-09-28 14:30:00"
+              
+              // If date is empty or invalid, try to find it in the rawResult if it was returned in another field
+              if (!dateStr || dateStr.toLowerCase().includes('unknown')) {
+                 // No-op, use today's date as absolute fallback later
+              }
+
+              // Strip trailing timestamps and junk
               dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
+              dateStr = dateStr.replace(/[;,.]$/, '');
 
               const monthMap: Record<string, string> = {
                 jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
@@ -796,30 +843,57 @@ function licenseSyncApiPlugin(): Plugin {
                 july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
               };
 
-              const isoMatch = dateStr.match(/\b(20[1-3][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
-              const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[1-3][0-9]|[1-3][0-9])\b/);
-              const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b/i);
-              const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b/i);
+              const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
+              const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9][0-9])\b/);
+              const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
+              const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
 
               if (isoMatch) {
                 dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
               } else if (usMatch) {
-                const yr = usMatch[3].length === 2 ? `20${usMatch[3]}` : usMatch[3];
+                let yr = usMatch[3];
+                if (yr.length === 2) {
+                  const numYr = parseInt(yr);
+                  yr = numYr > 50 ? `19${yr}` : `20${yr}`;
+                }
                 dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
               } else if (monthNameMatch) {
                 const mStr = monthNameMatch[1].toLowerCase();
                 const mNum = monthMap[mStr] || '01';
                 const day = monthNameMatch[2].padStart(2, '0');
-                const yr = monthNameMatch[3].length === 2 ? `20${monthNameMatch[3]}` : monthNameMatch[3];
+                let yr = monthNameMatch[3];
+                if (yr.length === 2) {
+                  const numYr = parseInt(yr);
+                  yr = numYr > 50 ? `19${yr}` : `20${yr}`;
+                }
                 dateStr = `${yr}-${mNum}-${day}`;
               } else if (dayMonthMatch) {
                 const mStr = dayMonthMatch[2].toLowerCase();
                 const mNum = monthMap[mStr] || '01';
                 const day = dayMonthMatch[1].padStart(2, '0');
-                const yr = dayMonthMatch[3].length === 2 ? `20${dayMonthMatch[3]}` : dayMonthMatch[3];
+                let yr = dayMonthMatch[3];
+                if (yr.length === 2) {
+                  const numYr = parseInt(yr);
+                  yr = numYr > 50 ? `19${yr}` : `20${yr}`;
+                }
                 dateStr = `${yr}-${mNum}-${day}`;
-              } else if (!dateStr || dateStr.length < 8) {
-                dateStr = new Date().toISOString().split('T')[0];
+              } else {
+                // If it doesn't match standard patterns, check if it's already YYYY-MM-DD but with different separators
+                const fallbackMatch = dateStr.match(/\b(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})\b/);
+                if (fallbackMatch) {
+                   dateStr = `${fallbackMatch[1]}-${fallbackMatch[2].padStart(2, '0')}-${fallbackMatch[3].padStart(2, '0')}`;
+                } else if (!dateStr || dateStr.length < 6) {
+                   dateStr = new Date().toISOString().split('T')[0];
+                }
+              }
+
+              // Final sanity check on year
+              const yearCheck = dateStr.match(/^(\d{4})/);
+              if (yearCheck) {
+                const yr = parseInt(yearCheck[1]);
+                if (yr < 2000 || yr > 2040) {
+                  dateStr = new Date().toISOString().split('T')[0];
+                }
               }
 
               // Card sanitization
