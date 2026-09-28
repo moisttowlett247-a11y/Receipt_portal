@@ -20,14 +20,16 @@ import {
   ShieldCheck,
   Check,
   Copy,
-  Sliders
+  Sliders,
+  AlertTriangle
 } from 'lucide-react';
 import JSZip from 'jszip';
 import { 
   getClientSubmissions, 
   updateSubmissionStatus, 
   deleteSubmission, 
-  ClientSubmission 
+  ClientSubmission,
+  purgeDuplicateSubmissions
 } from '../clientSubmissionService';
 import { DesktopPackageCard } from './DesktopPackageCard';
 import { AdminRoutingAndTaxRulesModal } from './AdminRoutingAndTaxRulesModal';
@@ -120,6 +122,18 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
     deleteSubmission(id);
     refreshList();
     if (onToast) onToast('Removed submission record.');
+  };
+
+  const handlePurgeDuplicates = () => {
+    const purged = purgeDuplicateSubmissions();
+    refreshList();
+    if (onToast) {
+      if (purged > 0) {
+        onToast(`Cleaned and purged ${purged} duplicate submission(s) from client intake!`);
+      } else {
+        onToast('No duplicate submissions detected in client intake.');
+      }
+    }
   };
 
   return (
@@ -266,6 +280,16 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
             >
               <Sliders className="w-3.5 h-3.5 text-amber-400" />
               <span>Routing & Tax Overrides</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePurgeDuplicates}
+              className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+              title="Purge duplicate receipt submissions from client records"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+              <span>Clean Client Duplicates</span>
             </button>
 
             <button

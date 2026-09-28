@@ -43,9 +43,10 @@ import {
   exportAuditVaultZip,
   syncReceiptsToClientIntakeQueue,
   generateSampleFarmBatch,
-  generateSampleCommercialBatch
+  generateSampleCommercialBatch,
+  generateUniqueHighVolumeBatch
 } from '../adminReceiptScanningEngine';
-import { getClientSubmissions } from '../clientSubmissionService';
+import { getClientSubmissions, purgeDuplicateSubmissions } from '../clientSubmissionService';
 import { IRS_SCHEDULE_F_LINES, IRS_SCHEDULE_C_LINES } from '../taxScheduleService';
 
 interface AdminReceiptProcessorEngineProps {
@@ -181,21 +182,21 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     });
   }, [receipts, filterClient, filterSchedule, filterDuplicate, filterStatus, searchQuery]);
 
-  // Metrics
+  // Metrics (Strictly excludes all rejected duplicates from deduction totals)
   const metrics = useMemo(() => {
     const totalDeductions = receipts
-      .filter(r => !(r.duplicateStatus === 'DUPLICATE_EXACT' && r.status === 'REJECTED'))
+      .filter(r => r.status !== 'REJECTED')
       .reduce((acc, r) => acc + r.total, 0);
 
     const scheduleFTotal = receipts
-      .filter(r => r.schedule === 'SCHEDULE_F' && !(r.duplicateStatus === 'DUPLICATE_EXACT' && r.status === 'REJECTED'))
+      .filter(r => r.schedule === 'SCHEDULE_F' && r.status !== 'REJECTED')
       .reduce((acc, r) => acc + r.total, 0);
 
     const scheduleCTotal = receipts
-      .filter(r => r.schedule === 'SCHEDULE_C' && !(r.duplicateStatus === 'DUPLICATE_EXACT' && r.status === 'REJECTED'))
+      .filter(r => r.schedule === 'SCHEDULE_C' && r.status !== 'REJECTED')
       .reduce((acc, r) => acc + r.total, 0);
 
-    const duplicateCount = receipts.filter(r => r.duplicateStatus !== 'UNIQUE').length;
+    const duplicateCount = receipts.filter(r => r.duplicateStatus !== 'UNIQUE' || r.status === 'REJECTED').length;
     const verifiedCount = receipts.filter(r => r.status === 'VERIFIED').length;
 
     return {
@@ -252,8 +253,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       }
       map[c].scannedCount++;
       if (r.status === 'VERIFIED') map[c].verifiedCount++;
-      if (r.duplicateStatus !== 'UNIQUE') map[c].duplicateCount++;
-      if (!(r.duplicateStatus === 'DUPLICATE_EXACT' && r.status === 'REJECTED')) {
+      if (r.duplicateStatus !== 'UNIQUE' || r.status === 'REJECTED') map[c].duplicateCount++;
+      if (r.status !== 'REJECTED') {
         map[c].totalDeductions += r.total;
       }
     });
@@ -499,6 +500,26 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     if (onToast) onToast('Audit ledger cleared.');
   };
 
+  const handlePurgeAllDuplicates = () => {
+    const dupCount = receipts.filter(r => r.duplicateStatus !== 'UNIQUE' || r.status === 'REJECTED').length;
+    if (dupCount === 0) {
+      if (onToast) onToast('No duplicate receipts found in audit ledger.');
+      return;
+    }
+    setReceipts(prev => prev.filter(r => r.duplicateStatus === 'UNIQUE' && r.status !== 'REJECTED'));
+    setSelectedIds(new Set());
+
+    // Also purge duplicate submissions that may have been pushed to client intake
+    const clientPurged = purgeDuplicateSubmissions();
+    if (onToast) onToast(`Purged ${dupCount} duplicate receipts from audit ledger (${clientPurged} duplicates cleaned from client roster records)!`);
+  };
+
+  const handleLoadDynamicUniqueBatch = (count: number = 100) => {
+    const batch = generateUniqueHighVolumeBatch(count, selectedClientTarget);
+    setQueuedFiles(prev => [...prev, ...batch]);
+    if (onToast) onToast(`Loaded ${count} dynamically generated UNIQUE receipts for ${selectedClientTarget} (Guaranteed 0 duplicate collisions)`);
+  };
+
   const handleToggleDuplicateStatus = (id: string) => {
     setReceipts(prev =>
       prev.map(r => {
@@ -566,8 +587,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       if (onToast) onToast('No receipts to sync.');
       return;
     }
-    syncReceiptsToClientIntakeQueue(receipts);
-    if (onToast) onToast(`Synced ${receipts.length} verified transactions to Client Intake & Central Queue!`);
+    // Only push valid, non-rejected transactions to avoid polluting client intake
+    const valid = receipts.filter(r => r.status !== 'REJECTED');
+    if (valid.length === 0) {
+      if (onToast) onToast('All scanned receipts are flagged as duplicates. No new records to sync.');
+      return;
+    }
+    syncReceiptsToClientIntakeQueue(valid);
+    if (onToast) onToast(`Synced ${valid.length} valid non-duplicate transactions to Client Intake Hub!`);
     if (onNavigateToIntake) onNavigateToIntake();
   };
 
@@ -647,6 +674,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             >
               <Building2 className="w-3.5 h-3.5 text-sky-400" />
               <span>Load Business Batch (8)</span>
+            </button>
+
+            <button
+              onClick={() => handleLoadDynamicUniqueBatch(100)}
+              className="px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-200 border border-emerald-500/40 font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Generate 100 dynamic unique receipts with non-repeating invoices, vendors, and amounts (guaranteed 0 duplicates)"
+            >
+              <Zap className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Load 100 Unique (No Dups)</span>
             </button>
 
             {receipts.length > 0 && (
@@ -975,7 +1011,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   </div>
 
                   {/* Volume Grid */}
-                  <div className="grid grid-cols-3 gap-1.5 text-center font-mono">
+                  <div className="grid grid-cols-4 gap-1.5 text-center font-mono">
                     <div className="p-1.5 rounded-lg bg-stone-900 border border-stone-800/80">
                       <div className="text-[10px] text-stone-400 uppercase font-sans">Pending</div>
                       <div className={`text-xs font-bold ${cb.pendingIntake > 0 ? 'text-amber-400 font-extrabold' : 'text-stone-400'}`}>
@@ -989,12 +1025,25 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       </div>
                     </div>
                     <div className="p-1.5 rounded-lg bg-stone-900 border border-stone-800/80">
+                      <div className="text-[10px] text-stone-400 uppercase font-sans">Duplicates</div>
+                      <div className={`text-xs font-bold ${cb.duplicateCount > 0 ? 'text-amber-400' : 'text-stone-500'}`}>
+                        {cb.duplicateCount}
+                      </div>
+                    </div>
+                    <div className="p-1.5 rounded-lg bg-stone-900 border border-stone-800/80">
                       <div className="text-[10px] text-stone-400 uppercase font-sans">Deductions</div>
                       <div className="text-xs font-bold text-teal-300">
                         ${cb.totalDeductions.toFixed(0)}
                       </div>
                     </div>
                   </div>
+
+                  {cb.duplicateCount > 0 && (
+                    <div className="px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-300/90 flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span>{cb.duplicateCount} duplicate(s) suppressed &amp; excluded from tax totals</span>
+                    </div>
+                  )}
 
                   {/* Quick Action Buttons */}
                   <div className="flex items-center gap-2 pt-1">
@@ -1107,7 +1156,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         )}
 
         {receipts.length > 0 && (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
+            {metrics.duplicateCount > 0 && (
+              <button
+                onClick={handlePurgeAllDuplicates}
+                className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                title="Remove all duplicate flagged receipts from ledger and client intake records"
+              >
+                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                <span>Purge {metrics.duplicateCount} Duplicates</span>
+              </button>
+            )}
+
             {confirmClearLedger ? (
               <div className="flex items-center gap-2 bg-rose-950/80 border border-rose-500/50 px-2.5 py-1 rounded-lg text-xs">
                 <span className="text-rose-200 font-medium">Clear all records?</span>

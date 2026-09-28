@@ -132,3 +132,28 @@ export function deleteSubmission(id: string): void {
   const updated = submissions.filter(sub => sub.id !== id);
   saveClientSubmissions(updated);
 }
+
+export function purgeDuplicateSubmissions(): number {
+  const submissions = getClientSubmissions();
+  const seenExact = new Set<string>();
+  const seenFuzzy = new Set<string>();
+  const unique: ClientSubmission[] = [];
+  let purgedCount = 0;
+
+  for (const s of submissions) {
+    const exactKey = `${s.clientName}__${s.fileName}__${s.fileSize}`;
+    const fuzzyKey = `${s.clientName}__${s.extractedVendor || ''}__${s.extractedAmount || 0}__${s.extractedDate || ''}`;
+
+    if (seenExact.has(exactKey) || (s.extractedAmount && seenFuzzy.has(fuzzyKey))) {
+      purgedCount++;
+      continue;
+    }
+
+    seenExact.add(exactKey);
+    if (s.extractedAmount) seenFuzzy.add(fuzzyKey);
+    unique.push(s);
+  }
+
+  saveClientSubmissions(unique);
+  return purgedCount;
+}

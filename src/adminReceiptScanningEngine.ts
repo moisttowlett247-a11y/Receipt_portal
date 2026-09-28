@@ -886,8 +886,8 @@ export async function exportMultiSheetExcelXLSX(
   for (const k of Object.keys(IRS_SCHEDULE_C_LINES)) schCMap[k] = 0;
 
   for (const r of receipts) {
-    if (r.duplicateStatus === 'DUPLICATE_EXACT' && r.status === 'REJECTED') {
-      continue; // Exclude rejected duplicates from tax sums
+    if (r.status === 'REJECTED') {
+      continue; // Exclude all rejected duplicates from tax schedule sums
     }
     if (r.schedule === 'SCHEDULE_F') {
       if (schFMap[r.irsLineNumber] !== undefined) {
@@ -1138,12 +1138,15 @@ export function exportQBOJsonBatch(
   receipts: ProcessedReceipt[],
   clientName: string = 'Prairie Wind Agriculture'
 ): void {
+  // Only export approved and valid non-duplicate transactions to QuickBooks Online
+  const exportable = receipts.filter(r => r.status !== 'REJECTED');
+
   const qboPayload = {
     batchId: `batch-qbo-${Date.now()}`,
     clientName,
     exportedAt: new Date().toISOString(),
-    transactionCount: receipts.length,
-    transactions: receipts.map(r => ({
+    transactionCount: exportable.length,
+    transactions: exportable.map(r => ({
       TxnDate: r.date,
       VendorRef: { name: r.vendor },
       TotalAmt: r.total,
@@ -1206,12 +1209,15 @@ export async function exportAuditVaultZip(
     }
   }
 
-  // Add Manifest JSON
+  // Add Manifest JSON (excluding rejected duplicates from deduction sum)
+  const validReceipts = receipts.filter(r => r.status !== 'REJECTED');
   root?.file('manifest.json', JSON.stringify({
     clientName,
     taxYear,
-    totalDeductions: receipts.reduce((acc, r) => acc + r.total, 0),
+    totalDeductions: validReceipts.reduce((acc, r) => acc + r.total, 0),
     receiptsCount: receipts.length,
+    validReceiptsCount: validReceipts.length,
+    duplicatesSuppressed: receipts.length - validReceipts.length,
     generatedAt: new Date().toISOString(),
     receipts
   }, null, 2));
@@ -1235,7 +1241,10 @@ export function syncReceiptsToClientIntakeQueue(receipts: ProcessedReceipt[]): v
   const currentSubmissions = getClientSubmissions();
   const existingIds = new Set(currentSubmissions.map(s => s.id));
 
-  const newSubmissions: ClientSubmission[] = receipts.map(r => ({
+  // Only sync legitimate non-rejected receipts! Skip duplicates so client records are not polluted
+  const validReceipts = receipts.filter(r => r.status !== 'REJECTED');
+
+  const newSubmissions: ClientSubmission[] = validReceipts.map(r => ({
     id: `sub-sync-${r.id}`,
     clientId: `client-${r.clientName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
     clientName: r.clientName,
@@ -1426,3 +1435,63 @@ export function generateSampleCommercialBatch(includeDuplicates: boolean = true)
 
   return batch;
 }
+
+export function generateUniqueHighVolumeBatch(
+  count: number = 100,
+  clientName: string = 'Prairie Wind Agriculture'
+): ReceiptInputItem[] {
+  const vendors = [
+    { name: 'John Deere Sales & Parts', cat: 'Repairs & Maintenance', item: 'Hydraulic Cylinder Seal Kit', base: 340 },
+    { name: 'Tractor Supply Co.', cat: 'Supplies Purchased', item: 'Heavy Duty Greasing Gun & Cartridges', base: 78 },
+    { name: 'Pioneer Hi-Bred Seeds', cat: 'Seeds & Plants', item: 'Optimum AQUAmax Seed Corn Lot', base: 1250 },
+    { name: 'Nutrien Ag Solutions', cat: 'Fertilizers & Lime', item: 'Liquid Nitrogen 28% UAN Delivery', base: 2180 },
+    { name: 'Cenex Bulk Energy', cat: 'Gasoline, Fuel & Oil', item: 'Ultra-Low Sulfur Dyed Field Diesel', base: 840 },
+    { name: 'Agway Farm Supplies', cat: 'Feed Purchased', item: 'High-Energy Dairy Pellets 1-Ton Tote', base: 495 },
+    { name: 'Dr Miller Large Animal Vet', cat: 'Veterinary, Breeding & Medicine', item: 'Spring Calf Herd Health Protocol', base: 620 },
+    { name: 'NAPA Auto Parts', cat: 'Repairs & Maintenance', item: 'Alternator & Heavy Duty V-Belt', base: 185 },
+    { name: 'Fastenal Industrial Supply', cat: 'Supplies Purchased', item: 'Flange Lock Nuts & Grade 8 Bolts', base: 92 },
+    { name: 'Grainger Supply', cat: 'Supplies Purchased', item: 'Submersible Irrigation Sump Pump', base: 410 },
+    { name: 'Airgas Welding & Gas', cat: 'Repairs & Maintenance', item: 'Argon Shielding Gas Tank Exchange', base: 165 },
+    { name: 'Home Depot Pro', cat: 'Repairs & Maintenance', item: 'Galvanized Corrugated Roofing Panels', base: 560 },
+    { name: 'Case IH Equipment', cat: 'Repairs & Maintenance', item: 'Combine Straw Chopper Blades', base: 730 },
+    { name: 'Stihl Outdoor Power', cat: 'Supplies Purchased', item: 'Chainsaw Bar & Safety Helmet Kit', base: 245 }
+  ];
+
+  const extensions = ['jpg', 'pdf', 'png'];
+  const batch: ReceiptInputItem[] = [];
+  const baseTimestamp = Date.now();
+
+  for (let i = 0; i < count; i++) {
+    const v = vendors[i % vendors.length];
+    const invoiceNum = 10000 + i + Math.floor(Math.random() * 50000);
+    const ext = extensions[i % extensions.length];
+    
+    // Vary amounts realistically so each is completely unique
+    const variation = (i * 13.37) % 250;
+    const amount = Number((v.base + variation + ((i * 7) % 99) * 0.01).toFixed(2));
+    
+    // Generate dates spread across recent months
+    const daysAgo = (i * 3) % 180;
+    const dateObj = new Date(baseTimestamp - daysAgo * 24 * 3600 * 1000);
+    const dateStr = dateObj.toISOString().split('T')[0];
+
+    const cleanVendorName = v.name.replace(/[^a-zA-Z0-9]/g, '_');
+    const fileName = `${cleanVendorName}_INV_${invoiceNum}_${dateStr}.${ext}`;
+    const fileSize = 110000 + (i * 1234) % 350000;
+
+    batch.push({
+      fileName,
+      fileSize,
+      fileType: ext === 'pdf' ? 'application/pdf' : `image/${ext === 'png' ? 'png' : 'jpeg'}`,
+      clientName,
+      categoryHint: v.cat,
+      memo: `Invoice #${invoiceNum}: ${v.item} (Dynamic Unique Receipt #${i + 1})`,
+      vendorHint: v.name,
+      amountHint: amount,
+      dateHint: dateStr
+    });
+  }
+
+  return batch;
+}
+
