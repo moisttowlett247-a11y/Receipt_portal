@@ -2046,7 +2046,7 @@ class DuplicateReceiptDetector:
                 pass
         return None
 
-    def check_and_register(self, vendor: str, amount: float, date_str: str, filename: str) -> tuple:
+    def check_and_register(self, vendor: str, amount: float, date_str: str, filename: str, client_name: str = "General") -> tuple:
         try:
             amt = round(float(amount), 2)
         except Exception:
@@ -2054,7 +2054,8 @@ class DuplicateReceiptDetector:
 
         norm_v = self._normalize_vendor(vendor)
         dt = self._parse_date(date_str) or datetime.now().date()
-        key = (norm_v, amt)
+        safe_c = str(client_name or "General").strip().lower()
+        key = (safe_c, norm_v, amt)
 
         with self.lock:
             existing_list = self.seen_transactions.get(key, [])
@@ -2062,7 +2063,7 @@ class DuplicateReceiptDetector:
                 day_diff = abs((dt - ex_dt).days)
                 if day_diff <= 3:
                     self.seen_transactions[key].append((dt, filename))
-                    return True, f"POTENTIAL DUPLICATE: ${amt:.2f} at '{vendor}' matches prior receipt '{ex_fn}' within {day_diff} day(s)!"
+                    return True, f"POTENTIAL DUPLICATE for [{client_name}]: ${amt:.2f} at '{vendor}' matches prior receipt '{ex_fn}' within {day_diff} day(s)!"
 
             if key not in self.seen_transactions:
                 self.seen_transactions[key] = []
@@ -3994,7 +3995,7 @@ class FarmReceiptApp(_TK_BASE_TK):
                     writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
                     if not csv_exists:
                         writer.writerow(["Client","Date","Vendor","Category","Subtotal","Tax","Total","Payment_Method","Card_Last_4","Ref_Number","Source_File","Slip_Number","Duplicate_Status","Tax_Schedule","IRS_Line"])
-                    is_dup, dup_msg = self.dup_detector.check_and_register(vendor, total, date_str, os.path.basename(filepath))
+                    is_dup, dup_msg = self.dup_detector.check_and_register(vendor, total, date_str, os.path.basename(filepath), active_client)
                     dup_status = "POTENTIAL_DUPLICATE" if is_dup else "UNIQUE"
                     if is_dup:
                         self.log(f"⚠️ {dup_msg}", "warning")

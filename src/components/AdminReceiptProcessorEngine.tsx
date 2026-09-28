@@ -682,7 +682,25 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               title="Generate 100 dynamic unique receipts with non-repeating invoices, vendors, and amounts (guaranteed 0 duplicates)"
             >
               <Zap className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Load 100 Unique (No Dups)</span>
+              <span>+100 Unique</span>
+            </button>
+
+            <button
+              onClick={() => handleLoadDynamicUniqueBatch(500)}
+              className="px-3 py-1.5 rounded-lg bg-emerald-950/60 hover:bg-emerald-900/80 text-emerald-200 border border-emerald-500/40 font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Generate 500 dynamic unique receipts with non-repeating invoices, vendors, and amounts (guaranteed 0 duplicates)"
+            >
+              <Zap className="w-3.5 h-3.5 text-emerald-400" />
+              <span>+500 Unique</span>
+            </button>
+
+            <button
+              onClick={() => handleLoadDynamicUniqueBatch(1000)}
+              className="px-3 py-1.5 rounded-lg bg-teal-950/60 hover:bg-teal-900/80 text-teal-200 border border-teal-500/40 font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+              title="Generate 1,000 dynamic unique receipts with non-repeating invoices, vendors, and amounts (guaranteed 0 duplicates)"
+            >
+              <Zap className="w-3.5 h-3.5 text-teal-400" />
+              <span>+1,000 Unique</span>
             </button>
 
             {receipts.length > 0 && (

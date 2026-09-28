@@ -323,30 +323,37 @@ export interface DuplicateDetectionResult {
 }
 
 export function evaluateReceiptDuplicate(
-  candidate: { fileHash: string; vendor: string; total: number; date: string },
+  candidate: { fileHash: string; vendor: string; total: number; date: string; clientName?: string },
   existingLedger: ProcessedReceipt[]
 ): DuplicateDetectionResult {
+  const candClient = candidate.clientName?.trim().toLowerCase();
   const normCandVendor = normalizeVendorName(candidate.vendor).toLowerCase();
   const candDateMs = new Date(candidate.date).getTime();
 
   for (const existing of existingLedger) {
-    // 1. Exact SHA-256 Hash Match
+    const existClient = existing.clientName?.trim().toLowerCase();
+
+    // 1. Client Isolation: A duplicate check must only compare receipts belonging to the same client entity
+    if (candClient && existClient && candClient !== existClient) {
+      continue;
+    }
+
+    // 2. Exact SHA-256 Hash Match (Exact file upload)
     if (candidate.fileHash && existing.fileHash && candidate.fileHash.toLowerCase() === existing.fileHash.toLowerCase()) {
       return {
         isDuplicate: true,
         status: 'DUPLICATE_EXACT',
-        reason: `Exact identical file SHA-256 hash matched existing transaction (${existing.id.slice(0, 10)})`,
+        reason: `Exact identical file SHA-256 hash matched existing transaction (${existing.id.slice(0, 10)}) for client '${existing.clientName}'`,
         matchedId: existing.id
       };
     }
 
-    // 2. Fuzzy Match: Same Normalized Vendor + Amount matches within 5 cents + Date within 3 days
+    // 3. Fuzzy Match: Same client + Same Normalized Vendor + Amount matches within 2 cents + Date within 2 days
     const normExistVendor = normalizeVendorName(existing.vendor).toLowerCase();
     const vendorMatches = normCandVendor === normExistVendor || 
-      normCandVendor.includes(normExistVendor) || 
-      normExistVendor.includes(normCandVendor);
+      (normCandVendor.length > 4 && normExistVendor.length > 4 && (normCandVendor.includes(normExistVendor) || normExistVendor.includes(normCandVendor)));
 
-    const amountMatches = Math.abs(candidate.total - existing.total) < 0.05;
+    const amountMatches = Math.abs(candidate.total - existing.total) < 0.02;
 
     if (vendorMatches && amountMatches) {
       const existDateMs = new Date(existing.date).getTime();
@@ -355,7 +362,7 @@ export function evaluateReceiptDuplicate(
 
       if (!isNaN(candDateMs) && !isNaN(existDateMs)) {
         diffDays = Math.abs(candDateMs - existDateMs) / (1000 * 60 * 60 * 24);
-        dateWithinWindow = diffDays <= 3.0;
+        dateWithinWindow = diffDays <= 2.0;
       } else {
         dateWithinWindow = candidate.date === existing.date;
       }
@@ -364,7 +371,7 @@ export function evaluateReceiptDuplicate(
         return {
           isDuplicate: true,
           status: 'DUPLICATE_FUZZY',
-          reason: `Potential duplicate: Same vendor '${existing.vendor}' and exact amount ($${candidate.total.toFixed(2)}) detected within ${diffDays.toFixed(1)} days (matches ${existing.id.slice(0, 10)})`,
+          reason: `Potential duplicate for '${existing.clientName}': Same vendor '${existing.vendor}' and exact amount ($${candidate.total.toFixed(2)}) detected within ${diffDays.toFixed(1)} days (matches ${existing.id.slice(0, 10)})`,
           matchedId: existing.id
         };
       }
@@ -756,17 +763,25 @@ export async function runParallelBatchScan(
       worker.progressPercent = 95;
       options.onWorkerUpdate([...workers]);
 
+      const clientName = item.clientName || options.defaultClientName || 'Prairie Wind Agriculture';
+
       const dupCheck = evaluateReceiptDuplicate(
         {
           fileHash,
           vendor: extracted.vendor,
           total: extracted.total,
-          date: extracted.date
+          date: extracted.date,
+          clientName
         },
         currentLedger
       );
 
       const latency = Math.round(performance.now() - startTime);
+
+      // Only exact identical file duplicates are automatically REJECTED;
+      // Fuzzy matches are kept as PROCESSED with a warning status so legitimate repeat purchases are not lost.
+      const initialStatus: ProcessedReceipt['status'] = 
+        dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
 
       const processedRecord: ProcessedReceipt = {
         id: `rec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -775,7 +790,7 @@ export async function runParallelBatchScan(
         fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
         dataUrl: dataUrl || item.dataUrl,
         fileHash,
-        clientName: item.clientName || options.defaultClientName || 'Prairie Wind Agriculture',
+        clientName,
         clientEmail: item.clientEmail,
         vendor: extracted.vendor,
         normalizedVendor: normalizeVendorName(extracted.vendor),
@@ -795,7 +810,7 @@ export async function runParallelBatchScan(
         duplicateStatus: dupCheck.status,
         duplicateReason: dupCheck.reason,
         duplicateMatchId: dupCheck.matchedId,
-        status: dupCheck.isDuplicate ? 'REJECTED' : 'PROCESSED',
+        status: initialStatus,
         workerNodeId: worker.name,
         processingDurationMs: latency,
         memo: item.memo || extracted.memo,
@@ -1436,6 +1451,8 @@ export function generateSampleCommercialBatch(includeDuplicates: boolean = true)
   return batch;
 }
 
+let globalUniqueSequenceCounter = Math.floor(Date.now() % 1000000);
+
 export function generateUniqueHighVolumeBatch(
   count: number = 100,
   clientName: string = 'Prairie Wind Agriculture'
@@ -1454,7 +1471,11 @@ export function generateUniqueHighVolumeBatch(
     { name: 'Airgas Welding & Gas', cat: 'Repairs & Maintenance', item: 'Argon Shielding Gas Tank Exchange', base: 165 },
     { name: 'Home Depot Pro', cat: 'Repairs & Maintenance', item: 'Galvanized Corrugated Roofing Panels', base: 560 },
     { name: 'Case IH Equipment', cat: 'Repairs & Maintenance', item: 'Combine Straw Chopper Blades', base: 730 },
-    { name: 'Stihl Outdoor Power', cat: 'Supplies Purchased', item: 'Chainsaw Bar & Safety Helmet Kit', base: 245 }
+    { name: 'Stihl Outdoor Power', cat: 'Supplies Purchased', item: 'Chainsaw Bar & Safety Helmet Kit', base: 245 },
+    { name: 'Kubota Tractor Corp', cat: 'Repairs & Maintenance', item: 'Front Loader Bushing & Pin Set', base: 315 },
+    { name: 'CHS Agronomy Bulk', cat: 'Fertilizers & Lime', item: 'Potash 0-0-60 Soil Treatment', base: 1420 },
+    { name: 'Zimmatic Irrigation Systems', cat: 'Repairs & Maintenance', item: 'Center Pivot Gearbox & Coupler', base: 890 },
+    { name: 'Zoetis Animal Health', cat: 'Veterinary, Breeding & Medicine', item: 'Livestock Antibiotic & Syringe Totes', base: 540 }
   ];
 
   const extensions = ['jpg', 'pdf', 'png'];
@@ -1462,22 +1483,25 @@ export function generateUniqueHighVolumeBatch(
   const baseTimestamp = Date.now();
 
   for (let i = 0; i < count; i++) {
-    const v = vendors[i % vendors.length];
-    const invoiceNum = 10000 + i + Math.floor(Math.random() * 50000);
-    const ext = extensions[i % extensions.length];
+    globalUniqueSequenceCounter++;
+    const seq = globalUniqueSequenceCounter;
+    const v = vendors[seq % vendors.length];
+    const invoiceNum = 100000 + seq;
+    const ext = extensions[seq % extensions.length];
     
-    // Vary amounts realistically so each is completely unique
-    const variation = (i * 13.37) % 250;
-    const amount = Number((v.base + variation + ((i * 7) % 99) * 0.01).toFixed(2));
+    // Non-repeating realistic purchase amount with penny differentiation
+    const variation = (seq * 19.41) % 450;
+    const pennies = ((seq * 17) % 99) * 0.01;
+    const amount = Number((v.base + variation + pennies + 0.15).toFixed(2));
     
-    // Generate dates spread across recent months
-    const daysAgo = (i * 3) % 180;
+    // Spread dates across the tax year (past 300 days)
+    const daysAgo = (seq * 11) % 300;
     const dateObj = new Date(baseTimestamp - daysAgo * 24 * 3600 * 1000);
     const dateStr = dateObj.toISOString().split('T')[0];
 
     const cleanVendorName = v.name.replace(/[^a-zA-Z0-9]/g, '_');
     const fileName = `${cleanVendorName}_INV_${invoiceNum}_${dateStr}.${ext}`;
-    const fileSize = 110000 + (i * 1234) % 350000;
+    const fileSize = 115000 + (seq * 1739) % 380000;
 
     batch.push({
       fileName,
@@ -1485,7 +1509,7 @@ export function generateUniqueHighVolumeBatch(
       fileType: ext === 'pdf' ? 'application/pdf' : `image/${ext === 'png' ? 'png' : 'jpeg'}`,
       clientName,
       categoryHint: v.cat,
-      memo: `Invoice #${invoiceNum}: ${v.item} (Dynamic Unique Receipt #${i + 1})`,
+      memo: `Invoice #${invoiceNum}: ${v.item} (Unique Batch Item #${seq})`,
       vendorHint: v.name,
       amountHint: amount,
       dateHint: dateStr
