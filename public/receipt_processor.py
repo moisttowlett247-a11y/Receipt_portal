@@ -1324,7 +1324,7 @@ RECEIPT_SCHEMA = {
                 "type": "OBJECT",
                 "properties": {
                     "vendor": {"type": "STRING", "description": "Exact merchant / store name printed at the top of the receipt"},
-                    "date": {"type": "STRING", "description": "Exact purchase date in YYYY-MM-DD format (convert from MM/DD/YYYY or DD-Mon-YYYY)"},
+                    "date": {"type": "STRING", "description": "Exact purchase date printed on receipt in YYYY-MM-DD format (convert from MM/DD/YYYY, DD-Mon-YYYY, etc.)"},
                     "total": {"type": "NUMBER", "description": "Final Grand Total amount actually charged/paid. Do NOT return subtotal, cash tendered, or change."},
                     "subtotal": {"type": "NUMBER", "description": "Pre-tax subtotal amount"},
                     "tax": {"type": "NUMBER", "description": "Total sales tax amount"},
@@ -1358,13 +1358,14 @@ SYSTEM_INSTRUCTION = (
     "CRITICAL EXTRACTION RULES:\n"
     "1. TOTAL AMOUNT (CRITICAL ACCURACY):\n"
     "   - 'total' MUST be the FINAL GRAND TOTAL actually charged to the card or paid in cash.\n"
+    "   - Look specifically for 'TOTAL', 'GRAND TOTAL', 'AMOUNT PAID', 'NET AMOUNT', or 'BALANCE DUE'.\n"
     "   - NEVER extract 'Cash Tendered' / 'Amount Tendered' (e.g., paying with a $100 bill on a $32.50 order -> Total is 32.50, NOT 100.00).\n"
     "   - NEVER extract 'Change Due' (e.g., $67.50), 'Subtotal', 'Tax', 'Savings Amount' ('You Saved $5.00'), or 'Previous Balance' as the total.\n"
     "   - Verify that Subtotal + Tax = Total (unless coupons or bottle deposits apply).\n\n"
     "2. TRANSACTION DATE (CRITICAL ACCURACY):\n"
     "   - Extract the exact printed purchase date formatted strictly as 'YYYY-MM-DD'.\n"
     "   - Standard US receipts use MM/DD/YYYY (e.g., '04/09/2024' -> '2024-04-09', '11/02/25' -> '2025-11-02', 'OCT 14, 2024' -> '2024-10-14').\n"
-    "   - NEVER use the current date or hallucinate if the receipt date is clearly printed on the slip.\n\n"
+    "   - NEVER return the current date if the receipt date is printed on the slip.\n\n"
     "3. CARD LAST 4 DIGITS & PAYMENT METHOD (CRITICAL ACCURACY):\n"
     "   - Look at the payment / tender authorization section at the bottom of the receipt.\n"
     "   - Find the masked card number (e.g., '************4821', 'XXXX-XXXX-XXXX-9102', 'ACCT: ...3045', 'VISA 1234', 'Card # **********7789').\n"
@@ -1385,31 +1386,68 @@ SYSTEM_INSTRUCTION = (
 )
 
 def normalize_extracted_date(date_raw: str) -> str:
-    """Normalizes any extracted date string into ISO YYYY-MM-DD."""
+    """Normalizes any extracted date string into ISO YYYY-MM-DD with thorough pattern matching."""
     if not date_raw:
         return datetime.now().strftime("%Y-%m-%d")
-    clean = date_raw.strip()
     
-    # Try direct parse
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y"):
+    clean = str(date_raw).strip()
+    # Strip any trailing time or timezone components (e.g. 2026-09-28 14:30:00 -> 2026-09-28)
+    clean = re.split(r'[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2})', clean, flags=re.IGNORECASE)[0].strip()
+    clean = clean.rstrip(',;.')
+
+    # Try direct strptime formats
+    date_formats = (
+        "%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%m.%d.%Y", "%m.%d.%y",
+        "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y",
+        "%d-%B-%Y", "%d %B %Y", "%Y/%m/%d", "%Y.%m.%d", "%d/%m/%Y", "%d.%m.%Y"
+    )
+    for fmt in date_formats:
         try:
             dt = datetime.strptime(clean, fmt)
-            if 2015 <= dt.year <= 2035:
+            if 2010 <= dt.year <= 2040:
                 return dt.strftime("%Y-%m-%d")
         except Exception:
             continue
-            
-    # Regex fallback for embedded dates
-    m_iso = re.search(r'\b(202[0-9])[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])\b', clean)
+
+    month_map = {
+        'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+        'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12',
+        'january': '01', 'february': '02', 'march': '03', 'april': '04', 'june': '06',
+        'july': '07', 'august': '08', 'september': '09', 'october': '10', 'november': '11', 'december': '12'
+    }
+
+    # Month name match (e.g. Sep 28, 2026 or Sept 28, 26)
+    m_month_name = re.search(r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b', clean, re.IGNORECASE)
+    if m_month_name:
+        m_str = m_month_name.group(1).lower()
+        m_num = month_map.get(m_str, '01')
+        day_num = int(m_month_name.group(2))
+        yr = m_month_name.group(3)
+        yr_full = f"20{yr}" if len(yr) == 2 else yr
+        return f"{yr_full}-{m_num}-{day_num:02d}"
+
+    # Day Month name match (e.g. 28 Sep 2026 or 28-Sep-26)
+    m_day_month = re.search(r'\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b', clean, re.IGNORECASE)
+    if m_day_month:
+        day_num = int(m_day_month.group(1))
+        m_str = m_day_month.group(2).lower()
+        m_num = month_map.get(m_str, '01')
+        yr = m_day_month.group(3)
+        yr_full = f"20{yr}" if len(yr) == 2 else yr
+        return f"{yr_full}-{m_num}-{day_num:02d}"
+
+    # ISO regex fallback (2026-09-28 or 2026/09/28)
+    m_iso = re.search(r'\b(20[1-3][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b', clean)
     if m_iso:
         return f"{m_iso.group(1)}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
-        
-    m_us = re.search(r'\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](202[0-9]|2[0-9])\b', clean)
+
+    # US regex fallback (09/28/2026 or 9/28/26)
+    m_us = re.search(r'\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[1-3][0-9]|[1-3][0-9])\b', clean)
     if m_us:
         yr = m_us.group(3)
         yr_full = f"20{yr}" if len(yr) == 2 else yr
         return f"{yr_full}-{int(m_us.group(1)):02d}-{int(m_us.group(2)):02d}"
-        
+
     return datetime.now().strftime("%Y-%m-%d")
 
 def clean_card_last_4(raw_card: str, payment_method: str = "") -> str:
@@ -1441,29 +1479,47 @@ def reconcile_extracted_financials(r_data: dict) -> dict:
         total = 0.0
 
     try:
-        subtotal = float(r_data.get("subtotal", total))
+        subtotal = float(r_data.get("subtotal", 0.0))
     except Exception:
-        subtotal = total
+        subtotal = 0.0
 
     try:
         tax = float(r_data.get("tax", 0.0))
     except Exception:
         tax = 0.0
 
+    # Calculate item sum if items exist
+    items = r_data.get("items", [])
+    item_sum = 0.0
+    if isinstance(items, list) and len(items) > 0:
+        for itm in items:
+            try:
+                item_sum += float(itm.get("amount", 0.0))
+            except Exception:
+                pass
+        item_sum = round(item_sum, 2)
+
+    if subtotal <= 0.0 and item_sum > 0.0:
+        subtotal = item_sum
+
+    if subtotal <= 0.0 and total > 0.0:
+        subtotal = round(total - tax, 2) if total > tax else total
+
     expected_from_subtax = round(subtotal + tax, 2) if subtotal > 0 else 0.0
 
-    # If total was 0, compute from subtotal + tax
-    if total <= 0.0 and expected_from_subtax > 0:
-        total = expected_from_subtax
+    # If total was 0, compute from subtotal + tax or item sum
+    if total <= 0.0:
+        if expected_from_subtax > 0:
+            total = expected_from_subtax
+        elif item_sum > 0:
+            total = round(item_sum + tax, 2)
 
     # If subtotal + tax is explicitly provided and total is radically higher (e.g. model picked Cash Tendered $100 for a $34.20 total)
     if subtotal > 0 and tax >= 0 and expected_from_subtax > 0:
         if total > (expected_from_subtax * 1.5) and expected_from_subtax > 1.0:
             total = expected_from_subtax
-
-    # If subtotal is 0 or missing but total and tax are known
-    if subtotal <= 0.0 and total > 0.0:
-        subtotal = round(total - tax, 2) if total > tax else total
+        elif total < (subtotal * 0.9) and expected_from_subtax > 0:
+            total = expected_from_subtax
 
     r_data["total"] = round(total, 2)
     r_data["subtotal"] = round(subtotal, 2)
@@ -2834,7 +2890,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-3.5-flash-lite", "gemini-3.8-flash"],
+            values=["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
             state="readonly",
             width=22
         )

@@ -182,64 +182,130 @@ export function quickbooksApiPlugin(): Plugin {
               }
             }
 
-            const response = await ai.models.generateContent({
-              model: 'gemini-3.8-flash',
-              contents: [
-                {
-                  inlineData: {
-                    data: cleanBase64,
-                    mimeType: cleanMime
+            const promptText = `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.
+
+CRITICAL ACCURACY RULES:
+1. TOTAL AMOUNT (CRITICAL ACCURACY):
+   - 'total' MUST be the FINAL GRAND TOTAL actually charged to the card or paid in cash (e.g. 34.20, 142.50).
+   - NEVER extract 'Cash Tendered' / 'Amount Tendered' (e.g., customer handing a $100 bill on a $32.50 order -> Total is 32.50, NOT 100.00).
+   - NEVER extract 'Change Due', 'Subtotal', 'Tax', 'Savings Amount' ('You Saved $5.00'), or 'Previous Balance' as the total.
+   - Verify that Subtotal + Tax = Total.
+
+2. TRANSACTION DATE (CRITICAL ACCURACY):
+   - Extract the exact printed purchase date formatted strictly as 'YYYY-MM-DD'.
+   - Standard US receipts use MM/DD/YYYY (e.g., '04/09/2024' -> '2024-04-09', '11/02/25' -> '2025-11-02', 'OCT 14, 2024' -> '2024-10-14').
+   - NEVER use the current date if the receipt date is printed on the slip.
+
+3. VENDOR / PAYEE:
+   - Store, merchant, supplier, or business name at top of receipt (e.g. "The Home Depot", "Walmart", "Agway", "Nutrien Ag", "Tractor Supply Co.", "John Deere", "Shell").
+
+4. CARD LAST 4 DIGITS & PAYMENT METHOD:
+   - Look at payment/tender authorization section at bottom of receipt.
+   - Find masked card number (e.g. '************4821', 'XXXX-9102', 'ACCT: ...3045', 'VISA 1234').
+   - 'cardLast4' MUST be ONLY the 4 digits (e.g. '4821').
+   - If paid by Cash or Check, return empty string "".`;
+
+            const schemaConfig = {
+              responseMimeType: 'application/json',
+              responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                  vendor: { type: Type.STRING, description: 'Store/merchant name' },
+                  date: { type: Type.STRING, description: 'Exact printed transaction date in YYYY-MM-DD format' },
+                  total: { type: Type.NUMBER, description: 'Final grand total paid/charged' },
+                  subtotal: { type: Type.NUMBER, description: 'Subtotal before sales tax' },
+                  tax: { type: Type.NUMBER, description: 'Sales tax amount' },
+                  paymentMethod: { type: Type.STRING, description: 'Tender type (VISA, MASTERCARD, AMEX, DEBIT, CASH, CHECK)' },
+                  cardLast4: { type: Type.STRING, description: '4 digits of masked card or empty' },
+                  memo: { type: Type.STRING, description: 'Summary description of purchase' },
+                  categoryHint: { type: Type.STRING, description: 'IRS tax expense category' },
+                  items: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        description: { type: Type.STRING },
+                        amount: { type: Type.NUMBER },
+                        quantity: { type: Type.NUMBER },
+                        unitPrice: { type: Type.NUMBER }
+                      },
+                      required: ['description', 'amount']
+                    }
                   }
                 },
-                `You are a high-precision IRS tax accounting and commercial receipt OCR specialist. Carefully examine this receipt image / PDF document and extract all financial entities with 100% exact precision.
+                required: ['vendor', 'date', 'total', 'paymentMethod']
+              }
+            };
 
-CRITICAL EXTRACTION DIRECTIVES:
-1. VENDOR / PAYEE: The business, merchant, store, or supplier name printed at the top of the receipt (e.g. "The Home Depot", "Walmart", "John Deere", "Agway", "Nutrien Ag", "Tractor Supply Co.", "Shell").
-2. TRANSACTION DATE: The exact transaction or purchase date printed on the receipt. Return strictly in YYYY-MM-DD format (e.g. "2025-03-14", "2024-11-20"). Look for "Date", "Trans Date", "Date/Time", or receipt header/footer timestamps. DO NOT return today's date if a printed transaction date is visible on the document!
-3. GRAND TOTAL: The exact final dollar amount paid/charged (e.g. 142.50, 48.99). Look for "TOTAL", "GRAND TOTAL", "BALANCE DUE", "AMOUNT PAID", "TOTAL USD", "NET TOTAL", or "CHARGE". Never return subtotal or tax as total!
-4. SUBTOTAL: The pre-tax subtotal amount before sales tax is added.
-5. SALES TAX: The exact tax amount printed on the receipt.
-6. PAYMENT METHOD: The payment tender: "VISA", "MASTERCARD", "AMEX", "DISCOVER", "DEBIT", "CASH", or "CHECK".
-7. CARD LAST 4 DIGITS: The 4 digits of the masked payment card (e.g. "4821" from ************4821 or ACCT: ...9102). If paid in cash or check, return empty string "".
-8. LINE ITEMS: Array of itemized lines with item description, amount, quantity, and unit price.
-9. MEMO / SUMMARY: Brief 3-8 word summary of items purchased.
-10. CATEGORY: IRS Schedule F or Schedule C tax line category (e.g. "Supplies", "Repairs & Maintenance", "Fertilizers & Lime", "Feed Purchased", "Fuel, Oil & Gas", "Utilities", "Office Expense").`
-              ],
-              config: {
-                responseMimeType: 'application/json',
-                responseSchema: {
-                  type: Type.OBJECT,
-                  properties: {
-                    vendor: { type: Type.STRING, description: 'Store/merchant name' },
-                    date: { type: Type.STRING, description: 'Exact printed transaction date in YYYY-MM-DD format' },
-                    total: { type: Type.NUMBER, description: 'Exact final grand total paid/charged' },
-                    subtotal: { type: Type.NUMBER, description: 'Subtotal before sales tax' },
-                    tax: { type: Type.NUMBER, description: 'Sales tax amount' },
-                    paymentMethod: { type: Type.STRING, description: 'Tender type' },
-                    cardLast4: { type: Type.STRING, description: '4 digits of masked card or empty' },
-                    memo: { type: Type.STRING, description: 'Summary description of purchase' },
-                    categoryHint: { type: Type.STRING, description: 'IRS tax expense category' },
-                    items: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          description: { type: Type.STRING },
-                          amount: { type: Type.NUMBER },
-                          quantity: { type: Type.NUMBER },
-                          unitPrice: { type: Type.NUMBER }
-                        },
-                        required: ['description', 'amount']
-                      }
+            let response;
+            try {
+              // Primary model: gemini-flash-latest (high throughput and generous rate limits)
+              response = await ai.models.generateContent({
+                model: 'gemini-flash-latest',
+                contents: [
+                  {
+                    inlineData: {
+                      data: cleanBase64,
+                      mimeType: cleanMime
                     }
                   },
-                  required: ['vendor', 'date', 'total', 'paymentMethod']
-                }
-              }
-            });
+                  promptText
+                ],
+                config: schemaConfig
+              });
+            } catch (modelErr) {
+              console.warn('Primary gemini-flash-latest failed, attempting fallback to gemini-2.5-flash:', modelErr);
+              response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash',
+                contents: [
+                  {
+                    inlineData: {
+                      data: cleanBase64,
+                      mimeType: cleanMime
+                    }
+                  },
+                  promptText
+                ],
+                config: schemaConfig
+              });
+            }
 
             const rawText = response.text ? response.text.trim() : '{}';
             const parsed = JSON.parse(rawText);
+
+            // Forensic post-processing for 100% accurate dates & totals
+            // 1. Normalize Date
+            let finalDate = String(parsed.date || '').trim();
+            const dateIsoMatch = finalDate.match(/\b(202[0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
+            const dateUsMatch = finalDate.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](202[0-9]|2[0-9])\b/);
+            if (dateIsoMatch) {
+              finalDate = `${dateIsoMatch[1]}-${dateIsoMatch[2].padStart(2, '0')}-${dateIsoMatch[3].padStart(2, '0')}`;
+            } else if (dateUsMatch) {
+              const yr = dateUsMatch[3].length === 2 ? `20${dateUsMatch[3]}` : dateUsMatch[3];
+              finalDate = `${yr}-${dateUsMatch[1].padStart(2, '0')}-${dateUsMatch[2].padStart(2, '0')}`;
+            }
+
+            // 2. Reconcile Totals (detect if model accidentally captured Cash Tendered e.g. $100 for a $34 order)
+            let total = Number(parsed.total) || 0;
+            let subtotal = Number(parsed.subtotal) || 0;
+            let tax = Number(parsed.tax) || 0;
+
+            if (subtotal > 0 && tax >= 0) {
+              const expectedTotal = Number((subtotal + tax).toFixed(2));
+              if (total > (expectedTotal * 1.4) && expectedTotal > 1.0) {
+                // Model captured cash tendered or large bill
+                total = expectedTotal;
+              } else if (total <= 0) {
+                total = expectedTotal;
+              }
+            } else if (total > 0 && subtotal <= 0) {
+              subtotal = tax > 0 ? Number((total - tax).toFixed(2)) : total;
+            }
+
+            parsed.date = finalDate;
+            parsed.total = Number(total.toFixed(2));
+            parsed.subtotal = Number(subtotal.toFixed(2));
+            parsed.tax = Number(tax.toFixed(2));
 
             sendJson(200, {
               success: true,

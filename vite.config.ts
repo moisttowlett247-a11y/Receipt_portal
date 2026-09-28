@@ -713,7 +713,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+              const modelsToTry = ["gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash"];
               let rawResult: any = null;
 
               for (const model of modelsToTry) {
@@ -747,26 +747,77 @@ function licenseSyncApiPlugin(): Plugin {
 
               // Mathematical reconciliation
               let total = Number(rawResult.total) || 0;
-              let subtotal = Number(rawResult.subtotal) || total;
+              let subtotal = Number(rawResult.subtotal) || 0;
               let tax = Number(rawResult.tax) || 0;
 
-              const expectedSum = Number((subtotal + tax).toFixed(2));
-              if (total <= 0 && expectedSum > 0) {
-                total = expectedSum;
+              // Compute sum of line items if provided
+              const itemsList = Array.isArray(rawResult.items) ? rawResult.items : [];
+              let itemSum = 0;
+              for (const itm of itemsList) {
+                if (itm && typeof itm.amount === 'number' && itm.amount > 0) {
+                  itemSum += itm.amount;
+                }
               }
-              if (subtotal > 0 && tax >= 0 && total > (expectedSum * 1.5) && expectedSum > 1) {
-                total = expectedSum;
+              itemSum = Number(itemSum.toFixed(2));
+
+              if (subtotal <= 0 && itemSum > 0) {
+                subtotal = itemSum;
               }
 
-              // Date normalization
+              if (subtotal <= 0 && total > 0) {
+                subtotal = total > tax ? Number((total - tax).toFixed(2)) : total;
+              }
+
+              const expectedSum = Number((subtotal + tax).toFixed(2));
+              if (total <= 0) {
+                if (expectedSum > 0) {
+                  total = expectedSum;
+                } else if (itemSum > 0) {
+                  total = Number((itemSum + tax).toFixed(2));
+                }
+              } else if (subtotal > 0 && tax >= 0 && expectedSum > 0) {
+                // If model grabbed an outlier tender amount or change due
+                if (total > (expectedSum * 1.5) && expectedSum > 1) {
+                  total = expectedSum;
+                } else if (total < (subtotal * 0.9) && expectedSum > 0) {
+                  total = expectedSum;
+                }
+              }
+
+              // Robust date normalization
               let dateStr = String(rawResult.date || '').trim();
-              const isoMatch = dateStr.match(/\b(202[0-9])[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])\b/);
-              const usMatch = dateStr.match(/\b(0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])[-/.](202[0-9]|2[0-9])\b/);
+              // Strip trailing timestamps e.g. "2026-09-28 14:30:00"
+              dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
+
+              const monthMap: Record<string, string> = {
+                jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+                jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+                january: '01', february: '02', march: '03', april: '04', june: '06',
+                july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+              };
+
+              const isoMatch = dateStr.match(/\b(20[1-3][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
+              const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[1-3][0-9]|[1-3][0-9])\b/);
+              const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b/i);
+              const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[1-3][0-9]|[1-3][0-9])\b/i);
+
               if (isoMatch) {
                 dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
               } else if (usMatch) {
                 const yr = usMatch[3].length === 2 ? `20${usMatch[3]}` : usMatch[3];
                 dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
+              } else if (monthNameMatch) {
+                const mStr = monthNameMatch[1].toLowerCase();
+                const mNum = monthMap[mStr] || '01';
+                const day = monthNameMatch[2].padStart(2, '0');
+                const yr = monthNameMatch[3].length === 2 ? `20${monthNameMatch[3]}` : monthNameMatch[3];
+                dateStr = `${yr}-${mNum}-${day}`;
+              } else if (dayMonthMatch) {
+                const mStr = dayMonthMatch[2].toLowerCase();
+                const mNum = monthMap[mStr] || '01';
+                const day = dayMonthMatch[1].padStart(2, '0');
+                const yr = dayMonthMatch[3].length === 2 ? `20${dayMonthMatch[3]}` : dayMonthMatch[3];
+                dateStr = `${yr}-${mNum}-${day}`;
               } else if (!dateStr || dateStr.length < 8) {
                 dateStr = new Date().toISOString().split('T')[0];
               }
