@@ -556,18 +556,16 @@ export function extractReceiptMetadata(
       total: subtotal
     }];
   } else {
-    // Deterministic fallback
-    let hashVal = 0;
-    for (let i = 0; i < fileName.length; i++) hashVal = (hashVal << 5) - hashVal + fileName.charCodeAt(i);
-    const generatedAmt = 85.00 + (Math.abs(hashVal) % 45000) / 100;
-    total = Number(generatedAmt.toFixed(2));
-    tax = Number((total * 0.08).toFixed(2));
-    subtotal = Number((total - tax).toFixed(2));
+    // Deterministic fallback (REMOVED: Randomizing dollar amounts is misleading for accounting)
+    // If we have absolutely no clues, we must return 0.00 so the user knows it failed.
+    total = 0.00;
+    tax = 0.00;
+    subtotal = 0.00;
     lineItems = [{
-      description: 'Standard Operating Supplies',
+      description: 'Pending Review (OCR Failed)',
       quantity: 1,
-      unitPrice: subtotal,
-      total: subtotal
+      unitPrice: 0,
+      total: 0
     }];
   }
 
@@ -852,7 +850,11 @@ export async function runParallelBatchScan(
                 memo: d.memo || item.memo || `AI-OCR Processed (${item.fileName})`
               };
               aiScanSuccess = true;
+            } else {
+              console.error('Server scan logic failure:', scanJson.error, scanJson.details);
             }
+          } else {
+            console.error(`HTTP ${scanResp.status} from scan endpoint`);
           }
         } catch (e) {
           console.warn('AI OCR scan notice, falling back to local heuristic engine:', e);

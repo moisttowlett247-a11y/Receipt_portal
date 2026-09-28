@@ -732,8 +732,9 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.1-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"];
+              const modelsToTry = ["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"];
               let rawResult: any = null;
+              let lastError = "";
 
               for (const model of modelsToTry) {
                 try {
@@ -746,29 +747,48 @@ function licenseSyncApiPlugin(): Plugin {
 
                   if (gResp.ok) {
                     const gData = await gResp.json();
-                    const text = gData?.candidates?.[0]?.content?.parts?.[0]?.text;
+                    
+                    if (gData.error) {
+                      lastError = `API Error: ${gData.error.message}`;
+                      continue;
+                    }
+
+                    const candidates = gData?.candidates || [];
+                    if (candidates.length === 0) {
+                      lastError = "No candidates returned (Safety or blocking)";
+                      continue;
+                    }
+
+                    const text = candidates[0]?.content?.parts?.[0]?.text;
                     if (text) {
                       const parsed = JSON.parse(text.trim());
-                      // Extract the first receipt from the array according to schema
                       if (parsed && parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
                         rawResult = parsed.receipts[0];
                         break;
                       } else if (parsed && parsed.vendor) {
-                        // Fallback if model returned single object instead of array
                         rawResult = parsed;
                         break;
                       }
+                    } else {
+                      lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
                     }
+                  } else {
+                    const errText = await gResp.text();
+                    lastError = `HTTP ${gResp.status}: ${errText.slice(0, 100)}`;
                   }
-                } catch (mErr) {
-                  console.warn(`Attempt with ${model} failed:`, mErr);
+                } catch (mErr: any) {
+                  lastError = `Fetch error: ${mErr.message}`;
                 }
               }
 
               if (!rawResult) {
                 res.statusCode = 502;
                 res.setHeader('Content-Type', 'application/json');
-                res.end(JSON.stringify({ success: false, error: 'OCR model extraction returned empty response' }));
+                res.end(JSON.stringify({ 
+                  success: false, 
+                  error: 'OCR model extraction failed after multiple attempts',
+                  details: lastError 
+                }));
                 return;
               }
 
