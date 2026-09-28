@@ -792,7 +792,7 @@ function licenseSyncApiPlugin(): Plugin {
                       }
                     } else {
                       const errText = await gResp.text();
-                      lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 100)}`;
+                      lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
                     }
                   } catch (mErr: any) {
                     lastError = `Fetch error [${model}]: ${mErr.message}`;
@@ -1049,6 +1049,11 @@ function aistudioMediaPlugin(): Plugin {
 export default defineConfig(() => {
   return {
     base: './',
+    define: {
+      'process.env.GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || ''),
+      'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || ''),
+      'import.meta.env.GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || '')
+    },
     plugins: [react(), tailwindcss(), aistudioMediaPlugin(), licenseSyncApiPlugin(), quickbooksApiPlugin()],
     resolve: {
       alias: {

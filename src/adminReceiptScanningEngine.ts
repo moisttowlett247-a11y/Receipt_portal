@@ -880,7 +880,7 @@ export async function runParallelBatchScan(
             }
           } else {
             const errText = await scanResp.text().catch(() => '');
-            ocrErrorMessage = `Server returned HTTP ${scanResp.status}: ${errText.slice(0, 100)}`;
+            ocrErrorMessage = `Server returned HTTP ${scanResp.status}: ${errText.slice(0, 4000)}`;
             console.error(`HTTP ${scanResp.status} from scan endpoint`);
           }
         } catch (e: any) {
@@ -1041,7 +1041,7 @@ export async function runParallelBatchScan(
                       }
                     } else {
                       const errText = await gResp.text().catch(() => '');
-                      clientLastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 100)}`;
+                      clientLastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
                     }
                   } catch (mErr: any) {
                     clientLastError = `Fetch error [${model}]: ${mErr.message}`;

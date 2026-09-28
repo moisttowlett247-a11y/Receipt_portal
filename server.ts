@@ -375,7 +375,7 @@ router.post('/api/scan/receipt', async (req, res) => {
           }
         } else {
           const errText = await gResp.text();
-          lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 100)}`;
+          lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
         }
       } catch (mErr: any) {
         lastError = `Fetch error [${model}]: ${mErr.message}`;
