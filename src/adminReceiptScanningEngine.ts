@@ -29,8 +29,12 @@ export interface ProcessedReceipt {
   fileType: string;
   dataUrl?: string;
   fileHash: string;
+  clientId?: string;
   clientName: string;
   clientEmail?: string;
+  submittedBy?: string;
+  submittedByRole?: 'ADMIN' | 'CLIENT';
+  uploadedAt?: string;
   vendor: string;
   normalizedVendor: string;
   date: string;
@@ -89,8 +93,12 @@ export interface ReceiptInputItem {
   fileSize?: number;
   fileType?: string;
   dataUrl?: string;
+  clientId?: string;
   clientName?: string;
   clientEmail?: string;
+  submittedBy?: string;
+  submittedByRole?: 'ADMIN' | 'CLIENT';
+  uploadedAt?: string;
   memo?: string;
   categoryHint?: string;
   vendorHint?: string;
@@ -778,24 +786,85 @@ export async function runParallelBatchScan(
       }
 
       // 2. Preprocess & Extract text & line items
-      worker.currentStep = 'Executing OCR & Entity Extraction...';
+      worker.currentStep = 'Executing AI Vision OCR & Entity Extraction...';
       worker.progressPercent = 55;
       options.onWorkerUpdate([...workers]);
 
-      // Small async yield to allow UI rendering and simulate parallel CPU throughput
-      await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
+      const clientName = item.clientName || options.defaultClientName || 'General';
 
-      const extracted = extractReceiptMetadata(
-        item.fileName,
-        undefined,
-        item.categoryHint,
-        {
-          vendor: item.vendorHint,
-          amount: item.amountHint,
-          date: item.dateHint,
-          memo: item.memo
+      let extracted: {
+        vendor: string;
+        date: string;
+        lineItems: ExtractedLineItem[];
+        subtotal: number;
+        tax: number;
+        tip: number;
+        total: number;
+        paymentMethod: string;
+        cardLast4?: string;
+        confidence: number;
+        memo: string;
+      };
+
+      let aiScanSuccess = false;
+      if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/pdf'))) {
+        try {
+          const scanResp = await fetch('/api/scan/receipt', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              imageBase64: dataUrl,
+              mimeType: item.fileType || (dataUrl.startsWith('data:application/pdf') ? 'application/pdf' : 'image/jpeg'),
+              fileName: item.fileName,
+              clientName
+            })
+          });
+
+          if (scanResp.ok) {
+            const scanJson = await scanResp.json();
+            if (scanJson.success && scanJson.data) {
+              const d = scanJson.data;
+              extracted = {
+                vendor: d.vendor || item.vendorHint || 'Unknown Vendor',
+                date: d.date || item.dateHint || new Date().toISOString().split('T')[0],
+                lineItems: (d.items || []).map((itm: any) => ({
+                  description: itm.description || 'Item Line',
+                  quantity: 1,
+                  unitPrice: Number(itm.amount) || 0,
+                  total: Number(itm.amount) || 0
+                })),
+                subtotal: Number(d.subtotal) || Number(d.total) || 0,
+                tax: Number(d.tax) || 0,
+                tip: 0,
+                total: Number(d.total) || 0,
+                paymentMethod: d.paymentMethod || 'CARD',
+                cardLast4: d.cardLast4,
+                confidence: 0.99,
+                memo: d.memo || item.memo || `AI-OCR Processed (${item.fileName})`
+              };
+              aiScanSuccess = true;
+            }
+          }
+        } catch (e) {
+          console.warn('AI OCR scan notice, falling back to local heuristic engine:', e);
         }
-      );
+      }
+
+      if (!aiScanSuccess) {
+        // Small async yield to allow UI rendering
+        await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
+        extracted = extractReceiptMetadata(
+          item.fileName,
+          undefined,
+          item.categoryHint,
+          {
+            vendor: item.vendorHint,
+            amount: item.amountHint,
+            date: item.dateHint,
+            memo: item.memo
+          }
+        );
+      }
 
       // 3. Tax Classification
       worker.currentStep = 'Classifying IRS Form 1040 Schedule...';
@@ -813,8 +882,6 @@ export async function runParallelBatchScan(
       worker.currentStep = 'Running Duplicate Receipt Detector...';
       worker.progressPercent = 95;
       options.onWorkerUpdate([...workers]);
-
-      const clientName = item.clientName || options.defaultClientName || 'Prairie Wind Agriculture';
 
       const dupCheck = evaluateReceiptDuplicate(
         {
@@ -834,6 +901,10 @@ export async function runParallelBatchScan(
       const initialStatus: ProcessedReceipt['status'] = 
         dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
 
+      const submitterName = item.submittedBy || (item.clientEmail ? `${clientName} (${item.clientEmail})` : (clientName.toLowerCase().includes('admin') ? 'Administrator (moisttowlett247@gmail.com)' : clientName));
+      const submitterRole = item.submittedByRole || (clientName.toLowerCase().includes('admin') ? 'ADMIN' : 'CLIENT');
+      const uploadTimestamp = item.uploadedAt || new Date().toISOString();
+
       const processedRecord: ProcessedReceipt = {
         id: `rec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         fileName: item.fileName,
@@ -841,8 +912,12 @@ export async function runParallelBatchScan(
         fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
         dataUrl: dataUrl || item.dataUrl,
         fileHash,
+        clientId: item.clientId || (clientName.toLowerCase().includes('admin') ? 'admin' : undefined),
         clientName,
         clientEmail: item.clientEmail,
+        submittedBy: submitterName,
+        submittedByRole: submitterRole,
+        uploadedAt: uploadTimestamp,
         vendor: extracted.vendor,
         normalizedVendor: normalizeVendorName(extracted.vendor),
         date: extracted.date,

@@ -30,7 +30,9 @@ import {
   Copy,
   Inbox,
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  User,
+  Plus
 } from 'lucide-react';
 import {
   ProcessedReceipt,
@@ -47,6 +49,7 @@ import {
   generateUniqueHighVolumeBatch
 } from '../adminReceiptScanningEngine';
 import { getClientSubmissions, purgeDuplicateSubmissions } from '../clientSubmissionService';
+import { getStoredClientAccounts } from '../clientAccountService';
 import { IRS_SCHEDULE_F_LINES, IRS_SCHEDULE_C_LINES } from '../taxScheduleService';
 
 interface AdminReceiptProcessorEngineProps {
@@ -86,9 +89,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [scanStartTime, setScanStartTime] = useState<number>(0);
   const [elapsedSec, setElapsedSec] = useState<number>(0);
 
-  // File queue to process
+  // File queue to process & Target Client / Submitter Profile
   const [queuedFiles, setQueuedFiles] = useState<ReceiptInputItem[]>([]);
-  const [selectedClientTarget, setSelectedClientTarget] = useState<string>('Prairie Wind Agriculture');
+  const [selectedClientTarget, setSelectedClientTarget] = useState<string>('Administrator (Internal Operations)');
+  const [customClientInput, setCustomClientInput] = useState<string>('');
+  const [isAddingCustomClient, setIsAddingCustomClient] = useState<boolean>(false);
 
   // Search & Filter controls
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -109,18 +114,26 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   // Edit form state
   const [editFormData, setEditFormData] = useState<{
     vendor: string;
+    clientName: string;
+    submittedBy: string;
     date: string;
     total: number;
     tax: number;
+    paymentMethod: string;
+    cardLast4: string;
     schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
     irsLineNumber: string;
     irsLineTitle: string;
     status: ProcessedReceipt['status'];
   }>({
     vendor: '',
+    clientName: '',
+    submittedBy: '',
     date: '',
     total: 0,
     tax: 0,
+    paymentMethod: 'CASH',
+    cardLast4: '',
     schedule: 'SCHEDULE_F',
     irsLineNumber: 'Line 27',
     irsLineTitle: 'Supplies purchased',
@@ -138,14 +151,37 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     return () => clearInterval(timer);
   }, [isScanning, scanStartTime]);
 
-  // Derived Client lists
+  // Derived Client lists - pulls real registered client accounts, admin identity, submissions, and scanned receipts
   const availableClients = useMemo(() => {
     const set = new Set<string>();
-    set.add('Prairie Wind Agriculture');
-    set.add('Green Acres Dairy Farm');
+    set.add('Administrator (Internal Operations)');
+
+    // Pull registered client accounts
+    try {
+      const stored = getStoredClientAccounts();
+      if (Array.isArray(stored)) {
+        stored.forEach(a => {
+          const name = a.companyName?.trim() || a.displayName?.trim() || a.email?.trim();
+          if (name) set.add(name);
+        });
+      }
+    } catch {}
+
+    // Pull client intake submissions
+    try {
+      const subs = getClientSubmissions();
+      if (Array.isArray(subs)) {
+        subs.forEach(s => {
+          if (s.clientName?.trim()) set.add(s.clientName.trim());
+        });
+      }
+    } catch {}
+
+    // Pull any clients in the current receipt ledger
     for (const r of receipts) {
-      if (r.clientName) set.add(r.clientName);
+      if (r.clientName?.trim()) set.add(r.clientName.trim());
     }
+
     return Array.from(set);
   }, [receipts]);
 
@@ -267,9 +303,13 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     setIsEditingReceipt(false);
     setEditFormData({
       vendor: r.vendor,
+      clientName: r.clientName || 'Administrator (Internal Operations)',
+      submittedBy: r.submittedBy || 'Administrator (moisttowlett247@gmail.com)',
       date: r.date,
       total: r.total,
       tax: r.tax,
+      paymentMethod: r.paymentMethod || 'CASH',
+      cardLast4: r.cardLast4 || '',
       schedule: r.schedule,
       irsLineNumber: r.irsLineNumber,
       irsLineTitle: r.irsLineTitle,
@@ -282,9 +322,13 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const updated: ProcessedReceipt = {
       ...inspectingReceipt,
       vendor: editFormData.vendor.trim() || inspectingReceipt.vendor,
+      clientName: editFormData.clientName.trim() || inspectingReceipt.clientName,
+      submittedBy: editFormData.submittedBy.trim() || inspectingReceipt.submittedBy,
       date: editFormData.date || inspectingReceipt.date,
       total: Number(editFormData.total) || 0,
       tax: Number(editFormData.tax) || 0,
+      paymentMethod: editFormData.paymentMethod.trim() || inspectingReceipt.paymentMethod,
+      cardLast4: editFormData.cardLast4.trim() || undefined,
       schedule: editFormData.schedule,
       irsLineNumber: editFormData.irsLineNumber,
       irsLineTitle: editFormData.irsLineTitle,
@@ -307,12 +351,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       const inputItems: ReceiptInputItem[] = queued.map(s => ({
         id: s.id,
+        clientId: s.clientId,
         fileName: s.fileName,
         fileSize: s.fileSize,
         fileType: s.fileType,
         dataUrl: s.dataUrl,
         clientName: s.clientName,
         clientEmail: s.clientEmail,
+        submittedBy: s.clientEmail ? `${s.clientName} (${s.clientEmail})` : s.clientName,
+        submittedByRole: 'CLIENT' as const,
+        uploadedAt: s.uploadedAt,
         memo: s.memo,
         categoryHint: s.categoryHint,
         vendorHint: s.extractedVendor,
@@ -336,30 +384,48 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files) return;
     const files = Array.from(e.target.files) as File[];
+    const target = selectedClientTarget || 'Administrator (Internal Operations)';
+    const isAdm = target.toLowerCase().includes('admin');
+    const submitter = isAdm ? 'Administrator (moisttowlett247@gmail.com)' : target;
+    const role = isAdm ? 'ADMIN' as const : 'CLIENT' as const;
+    const now = new Date().toISOString();
+
     const newItems: ReceiptInputItem[] = files.map(f => ({
       file: f,
       fileName: f.name,
       fileSize: f.size,
       fileType: f.type,
-      clientName: selectedClientTarget
+      clientName: target,
+      submittedBy: submitter,
+      submittedByRole: role,
+      uploadedAt: now
     }));
     setQueuedFiles(prev => [...prev, ...newItems]);
-    if (onToast) onToast(`Added ${files.length} receipt file(s) to processing queue.`);
+    if (onToast) onToast(`Added ${files.length} receipt file(s) assigned to ${target}`);
   };
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     if (!e.dataTransfer.files) return;
     const files = Array.from(e.dataTransfer.files) as File[];
+    const target = selectedClientTarget || 'Administrator (Internal Operations)';
+    const isAdm = target.toLowerCase().includes('admin');
+    const submitter = isAdm ? 'Administrator (moisttowlett247@gmail.com)' : target;
+    const role = isAdm ? 'ADMIN' as const : 'CLIENT' as const;
+    const now = new Date().toISOString();
+
     const newItems: ReceiptInputItem[] = files.map(f => ({
       file: f,
       fileName: f.name,
       fileSize: f.size,
       fileType: f.type,
-      clientName: selectedClientTarget
+      clientName: target,
+      submittedBy: submitter,
+      submittedByRole: role,
+      uploadedAt: now
     }));
     setQueuedFiles(prev => [...prev, ...newItems]);
-    if (onToast) onToast(`Queued ${files.length} dropped file(s) for ${selectedClientTarget}`);
+    if (onToast) onToast(`Queued ${files.length} dropped file(s) for ${target}`);
   };
 
   const handleLoadSampleFarmBatch = () => {
@@ -385,12 +451,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       const inputItems: ReceiptInputItem[] = queued.map(s => ({
         id: s.id,
+        clientId: s.clientId,
         fileName: s.fileName,
         fileSize: s.fileSize,
         fileType: s.fileType,
         dataUrl: s.dataUrl,
         clientName: s.clientName,
         clientEmail: s.clientEmail,
+        submittedBy: s.clientEmail ? `${s.clientName} (${s.clientEmail})` : s.clientName,
+        submittedByRole: 'CLIENT' as const,
+        uploadedAt: s.uploadedAt,
         memo: s.memo,
         categoryHint: s.categoryHint,
         vendorHint: s.extractedVendor,
@@ -773,18 +843,103 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </div>
 
               {/* Target Client Profile Selector */}
-              <div className="flex items-center gap-2 text-xs">
-                <span className="text-stone-400">Target Client Profile:</span>
-                <select
-                  value={selectedClientTarget}
-                  onChange={e => setSelectedClientTarget(e.target.value)}
-                  className="px-2.5 py-1 rounded-lg bg-stone-950 border border-stone-700 text-stone-200 text-xs focus:outline-none focus:border-emerald-500"
-                >
-                  {availableClients.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                  <option value="New Client Entity">+ Custom Entity...</option>
-                </select>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-stone-400 font-medium flex items-center gap-1">
+                  <Building2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Assign to Account / Client:</span>
+                </span>
+                
+                {!isAddingCustomClient ? (
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      value={selectedClientTarget}
+                      onChange={e => {
+                        if (e.target.value === '__NEW_CUSTOM__') {
+                          setIsAddingCustomClient(true);
+                        } else {
+                          setSelectedClientTarget(e.target.value);
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-stone-950 border border-stone-700 text-stone-200 text-xs focus:outline-none focus:border-emerald-500 font-medium"
+                    >
+                      {availableClients.map(c => (
+                        <option key={c} value={c}>
+                          {c.toLowerCase().includes('admin') ? `👑 ${c}` : `🏢 ${c}`}
+                        </option>
+                      ))}
+                      <option value="__NEW_CUSTOM__">+ Add Custom Account / Company...</option>
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsAddingCustomClient(true)}
+                      className="p-1 rounded bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-white border border-stone-700 text-xs"
+                      title="Add a new custom company or client entity"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5 bg-stone-950 p-1 rounded-lg border border-emerald-500/50">
+                    <input
+                      type="text"
+                      placeholder="Enter company / client name..."
+                      value={customClientInput}
+                      onChange={e => setCustomClientInput(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && customClientInput.trim()) {
+                          setSelectedClientTarget(customClientInput.trim());
+                          setIsAddingCustomClient(false);
+                          setCustomClientInput('');
+                        }
+                      }}
+                      autoFocus
+                      className="px-2 py-0.5 rounded bg-stone-900 border border-stone-700 text-white text-xs w-48 focus:outline-none focus:border-emerald-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (customClientInput.trim()) {
+                          setSelectedClientTarget(customClientInput.trim());
+                        }
+                        setIsAddingCustomClient(false);
+                        setCustomClientInput('');
+                      }}
+                      className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold"
+                    >
+                      Set
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingCustomClient(false);
+                        setCustomClientInput('');
+                      }}
+                      className="px-1.5 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-stone-400 text-[11px]"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Submitter & Attribution Status Pill */}
+            <div className="px-3.5 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <div className="flex items-center gap-2">
+                <span className="text-stone-400">Target Entity:</span>
+                <span className="font-bold text-emerald-300 flex items-center gap-1">
+                  {selectedClientTarget.toLowerCase().includes('admin') ? '👑 ' : '🏢 '}
+                  {selectedClientTarget}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-stone-400 font-mono">
+                <span>Submitter Tag:</span>
+                <span className="px-2 py-0.2 rounded bg-stone-900 border border-stone-800 text-stone-200">
+                  {selectedClientTarget.toLowerCase().includes('admin')
+                    ? 'Administrator (moisttowlett247@gmail.com)'
+                    : `${selectedClientTarget} (Client Submission)`}
+                </span>
               </div>
             </div>
 
@@ -1261,7 +1416,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                     />
                   </th>
                   <th className="py-3 px-4">Date</th>
-                  <th className="py-3 px-4">Client</th>
+                  <th className="py-3 px-4">Account / Submitter</th>
                   <th className="py-3 px-4">Vendor / Payee</th>
                   <th className="py-3 px-4">IRS Tax Schedule &amp; Line</th>
                   <th className="py-3 px-4 text-right">Deductible Total</th>
@@ -1297,9 +1452,34 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                         {r.date}
                       </td>
 
-                      {/* Client */}
-                      <td className="py-3 px-4 font-medium text-stone-200 whitespace-nowrap">
-                        {r.clientName}
+                      {/* Account & Submitter */}
+                      <td className="py-3 px-4">
+                        <div className="flex flex-col gap-0.5">
+                          <div className="font-semibold text-stone-200 whitespace-nowrap flex items-center gap-1.5">
+                            {r.clientName.toLowerCase().includes('admin') ? (
+                              <span className="text-amber-400 font-bold flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 inline-block" />
+                                {r.clientName}
+                              </span>
+                            ) : (
+                              <span className="text-emerald-300 font-medium flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                                {r.clientName}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-stone-400 flex items-center gap-1">
+                            <span className="text-stone-500">By:</span>
+                            <span className="truncate max-w-[130px] text-stone-300" title={r.submittedBy || 'Administrator'}>
+                              {r.submittedBy || (r.clientEmail ? `${r.clientName} (${r.clientEmail})` : 'Administrator')}
+                            </span>
+                            {r.submittedByRole === 'ADMIN' && (
+                              <span className="px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-mono font-bold">
+                                ADMIN
+                              </span>
+                            )}
+                          </div>
+                        </div>
                       </td>
 
                       {/* Vendor */}
@@ -1462,6 +1642,28 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Target Account / Client</label>
+                    <input
+                      type="text"
+                      value={editFormData.clientName}
+                      onChange={e => setEditFormData({ ...editFormData, clientName: e.target.value })}
+                      placeholder="e.g. Administrator or Client Company"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-emerald-300 font-medium focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Submitted By (User / Submitter)</label>
+                    <input
+                      type="text"
+                      value={editFormData.submittedBy}
+                      onChange={e => setEditFormData({ ...editFormData, submittedBy: e.target.value })}
+                      placeholder="e.g. Administrator (moisttowlett247@gmail.com)"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Vendor / Payee</label>
                     <input
                       type="text"
@@ -1499,6 +1701,29 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       step="0.01"
                       value={editFormData.tax}
                       onChange={e => setEditFormData({ ...editFormData, tax: parseFloat(e.target.value) || 0 })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Payment Method</label>
+                    <input
+                      type="text"
+                      value={editFormData.paymentMethod}
+                      onChange={e => setEditFormData({ ...editFormData, paymentMethod: e.target.value })}
+                      placeholder="VISA, MASTERCARD, DEBIT, CASH, CHECK"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Card Last 4 Digits</label>
+                    <input
+                      type="text"
+                      maxLength={4}
+                      value={editFormData.cardLast4}
+                      onChange={e => setEditFormData({ ...editFormData, cardLast4: e.target.value.replace(/\D/g, '') })}
+                      placeholder="e.g. 4821 (optional)"
                       className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 font-mono focus:outline-none focus:border-emerald-500"
                     />
                   </div>
@@ -1607,6 +1832,49 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                     </div>
                   </div>
                 )}
+
+                {/* Account Attribution & Submitter Tracking Card */}
+                <div className="p-3.5 rounded-xl bg-stone-950 border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                      <Building2 className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-stone-400 uppercase font-semibold block">Assigned Account / Client</span>
+                      <span className="font-bold text-white text-sm">
+                        {inspectingReceipt.clientName}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3 text-xs">
+                    <div>
+                      <span className="text-[10px] text-stone-400 uppercase font-semibold block">Submitted By</span>
+                      <span className="font-medium text-stone-200 flex items-center gap-1">
+                        <User className="w-3 h-3 text-amber-400" />
+                        {inspectingReceipt.submittedBy || (inspectingReceipt.clientEmail ? `${inspectingReceipt.clientName} (${inspectingReceipt.clientEmail})` : 'Administrator')}
+                      </span>
+                    </div>
+
+                    <div className="border-l border-stone-800 pl-3">
+                      <span className="text-[10px] text-stone-400 uppercase font-semibold block">Submitter Role</span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold inline-block ${
+                        inspectingReceipt.submittedByRole === 'ADMIN'
+                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      }`}>
+                        {inspectingReceipt.submittedByRole || (inspectingReceipt.clientName.toLowerCase().includes('admin') ? 'ADMIN' : 'CLIENT')}
+                      </span>
+                    </div>
+
+                    <div className="border-l border-stone-800 pl-3">
+                      <span className="text-[10px] text-stone-400 uppercase font-semibold block">Submission Timestamp</span>
+                      <span className="font-mono text-stone-400 text-[11px]">
+                        {new Date(inspectingReceipt.uploadedAt || inspectingReceipt.processedAt).toLocaleDateString()} {new Date(inspectingReceipt.uploadedAt || inspectingReceipt.processedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                  </div>
+                </div>
 
                 {/* Core Metadata Grid */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-stone-950 p-4 rounded-xl border border-stone-800">
