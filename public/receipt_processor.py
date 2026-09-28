@@ -4029,12 +4029,19 @@ class FarmReceiptApp(_TK_BASE_TK):
 
         payload = {
             "contents": [{
+                "role": "user",
                 "parts": [
                     {"text": "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return a list of all detected receipts in the 'receipts' field."},
                     {"inlineData": {"mimeType": mime_type, "data": b64_content}}
                 ]
             }],
             "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            ],
             "generationConfig": {
                 "temperature": 0.0,
                 "responseMimeType": "application/json",
@@ -4050,36 +4057,64 @@ class FarmReceiptApp(_TK_BASE_TK):
         for key_idx, key in enumerate(keys_to_try):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
             try:
-                resp = GLOBAL_SESSION.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=35)
-                if resp.status_code == 200:
-                    res_json = resp.json()
-                    # Robust path traversal for Gemini API response
-                    candidates = res_json.get('candidates', [])
-                    if candidates:
-                        content = candidates[0].get('content', {})
-                        parts = content.get('parts', [])
-                        if parts:
-                            text_part = parts[0].get('text', '')
-                            if text_part:
-                                try:
-                                    data = json.loads(text_part.strip())
-                                    break
-                                except json.JSONDecodeError:
-                                    # Try to find JSON block if model returned conversational text
-                                    m_json = re.search(r'(\{.*\})', text_part.strip(), re.DOTALL)
-                                    if m_json:
-                                        try:
-                                            data = json.loads(m_json.group(1))
-                                            break
-                                        except:
-                                            pass
-                elif resp.status_code == 429:
-                    self.log(f"⚠️ Rate limit (429) hit. Instantly switching to next API key in pool...", "warning")
-                    continue
-                else:
-                    self.log(f"⚠️ API HTTP {resp.status_code}: {resp.text[:120]}", "warning")
+                # Try with requests if available
+                if requests is not None:
+                    try:
+                        resp = GLOBAL_SESSION.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=35)
+                        if resp.status_code == 200:
+                            res_json = resp.json()
+                            candidates = res_json.get('candidates', [])
+                            if candidates:
+                                text_part = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                                if text_part:
+                                    try:
+                                        data = json.loads(text_part.strip())
+                                        break
+                                    except json.JSONDecodeError:
+                                        m_json = re.search(r'(\{.*\})', text_part.strip(), re.DOTALL)
+                                        if m_json:
+                                            try:
+                                                data = json.loads(m_json.group(1))
+                                                break
+                                            except: pass
+                        elif resp.status_code == 429:
+                            self.log(f"⚠️ Rate limit (429) hit for model {model_name}. Switching key...", "warning")
+                            continue
+                        else:
+                            self.log(f"⚠️ API HTTP {resp.status_code}: {resp.text[:120]}", "warning")
+                    except Exception as req_err:
+                        self.log(f"⚠️ Requests attempt failed: {req_err}", "warning")
+                
+                # Fallback to urllib if requests failed or not available
+                if not data:
+                    try:
+                        req_data = json.dumps(payload).encode("utf-8")
+                        req = urllib.request.Request(url, data=req_data, headers={"Content-Type": "application/json"})
+                        with urllib.request.urlopen(req, timeout=35) as resp:
+                            res_json = json.loads(resp.read().decode("utf-8"))
+                            candidates = res_json.get('candidates', [])
+                            if candidates:
+                                text_part = candidates[0].get('content', {}).get('parts', [{}])[0].get('text', '')
+                                if text_part:
+                                    try:
+                                        data = json.loads(text_part.strip())
+                                        break
+                                    except json.JSONDecodeError:
+                                        m_json = re.search(r'(\{.*\})', text_part.strip(), re.DOTALL)
+                                        if m_json:
+                                            try:
+                                                data = json.loads(m_json.group(1))
+                                                break
+                                            except: pass
+                    except urllib.error.HTTPError as u_err:
+                        if u_err.code == 429:
+                            continue
+                        self.log(f"⚠️ urllib HTTP {u_err.code} Error", "warning")
+                    except Exception as u_err:
+                        self.log(f"⚠️ urllib attempt failed: {u_err}", "warning")
+
             except Exception as e:
-                self.log(f"⚠️ Request failed with key #{key_idx+1}: {e}", "warning")
+                self.log(f"⚠️ Unexpected error with key #{key_idx+1}: {e}", "warning")
 
         if not data:
             self.log(f"❌ Extraction failed for {os.path.basename(filepath)}", "error")

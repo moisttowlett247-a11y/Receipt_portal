@@ -658,24 +658,15 @@ function licenseSyncApiPlugin(): Plugin {
                 return;
               }
 
-              const promptText = `Analyze this receipt image/document for client "${clientName}" with forensic accounting precision. ` +
-                `Identify all physically distinct purchase receipts in the image. ` +
-                `For each receipt found: ` +
-                `1. Find the Store/Vendor name. ` +
-                `2. Find the ACTUAL Purchase Date (NOT today's date, NOT coupon dates). Format 'YYYY-MM-DD'. ` +
-                `3. Extract all line items with individual amounts. ` +
-                `4. Identify Subtotal, Sales Tax, and any Tip. ` +
-                `5. Find the FINAL GRAND TOTAL actually charged. ` +
-                `6. Identify Payment Method and Card Last 4 digits. ` +
-                `Return a list of all detected receipts. If only one receipt is present, return it in the list.`;
+              const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return a list of all detected receipts in the 'receipts' field.";
 
               const systemInstructionText = 
                 `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n` +
                 `CRITICAL RULES:\n` +
-                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. Most images have one, but some have two side-by-side. Process each one.\n` +
+                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple physically separate receipts (e.g. side-by-side), process each one as a distinct entry in the array.\n` +
                 `2. TOTAL AMOUNT: 'total' MUST be the FINAL GRAND TOTAL actually charged. NEVER extract 'Cash Tendered', 'Amount Tendered', 'Change Due', or 'Loyalty Savings' as the total.\n` +
-                `3. DATE: Extract the printed transaction date. If multiple dates appear, use the one closest to the transaction ID or header. Format as 'YYYY-MM-DD'.\n` +
-                `4. MATH VALIDATION: Subtotal + Tax + Tip should = Total. Cross-reference with line item sum.\n` +
+                `3. DATE: Extract the printed transaction date. If multiple dates appear (like coupon expiration dates), use the one closest to the transaction ID or vendor header. Format strictly as 'YYYY-MM-DD'.\n` +
+                `4. MATH VALIDATION: You must cross-reference line items, subtotal, and tax. Subtotal + Tax + Tip should = Total. If the printed Total is a 'Balance Due' of $0.00 because it was paid, find the 'Payment Amount' instead.\n` +
                 `5. Return strictly valid JSON conforming to the schema.`;
 
               const receiptSchema = {
@@ -719,12 +710,19 @@ function licenseSyncApiPlugin(): Plugin {
 
               const payload = {
                 contents: [{
+                  role: "user",
                   parts: [
                     { text: promptText },
                     { inlineData: { mimeType, data: cleanBase64 } }
                   ]
                 }],
                 systemInstruction: { parts: [{ text: systemInstructionText }] },
+                safetySettings: [
+                  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                ],
                 generationConfig: {
                   temperature: 0.0,
                   responseMimeType: "application/json",
@@ -732,7 +730,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"];
+              const modelsToTry = ["gemini-flash-latest", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
               let rawResult: any = null;
               let lastError = "";
 
@@ -761,7 +759,19 @@ function licenseSyncApiPlugin(): Plugin {
 
                     const text = candidates[0]?.content?.parts?.[0]?.text;
                     if (text) {
-                      const parsed = JSON.parse(text.trim());
+                      let parsed: any;
+                      try {
+                        parsed = JSON.parse(text.trim());
+                      } catch (e) {
+                        // Fallback: try to find JSON block in text
+                        const jsonMatch = text.match(/(\{.*\})/s);
+                        if (jsonMatch) {
+                          try {
+                            parsed = JSON.parse(jsonMatch[1]);
+                          } catch (e2) {}
+                        }
+                      }
+
                       if (parsed && parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
                         rawResult = parsed.receipts[0];
                         break;
