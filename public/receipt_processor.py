@@ -1319,17 +1319,17 @@ RECEIPT_SCHEMA = {
     "properties": {
         "receipts": {
             "type": "ARRAY",
-            "description": "List of all distinct receipts found.",
+            "description": "List of all distinct receipts found in the image.",
             "items": {
                 "type": "OBJECT",
                 "properties": {
-                    "vendor": {"type": "STRING", "description": "Store or vendor name"},
-                    "date": {"type": "STRING", "description": "YYYY-MM-DD format, 2025 or later"},
-                    "total": {"type": "NUMBER", "description": "Total purchase amount as float"},
-                    "subtotal": {"type": "NUMBER"},
-                    "tax": {"type": "NUMBER"},
-                    "payment_method": {"type": "STRING"},
-                    "card_last_4": {"type": "STRING"},
+                    "vendor": {"type": "STRING", "description": "Exact merchant / store name printed at the top of the receipt"},
+                    "date": {"type": "STRING", "description": "Exact purchase date in YYYY-MM-DD format (convert from MM/DD/YYYY or DD-Mon-YYYY)"},
+                    "total": {"type": "NUMBER", "description": "Final Grand Total amount actually charged/paid. Do NOT return subtotal, cash tendered, or change."},
+                    "subtotal": {"type": "NUMBER", "description": "Pre-tax subtotal amount"},
+                    "tax": {"type": "NUMBER", "description": "Total sales tax amount"},
+                    "payment_method": {"type": "STRING", "description": "Payment tender (e.g., VISA, MasterCard, AMEX, Discover, Debit Card, Cash, Check, Store Account)"},
+                    "card_last_4": {"type": "STRING", "description": "Exact last 4 digits of the payment card (e.g. '4821' from '**** **** **** 4821' or 'ACCT: ...4821'). Leave empty string if paid by Cash/Check or no card digits shown."},
                     "category": {
                         "type": "STRING",
                         "enum": ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
@@ -1354,24 +1354,81 @@ RECEIPT_SCHEMA = {
 }
 
 SYSTEM_INSTRUCTION = (
-    "You are an expert tax and accounting vision engine specialized in high-accuracy OCR "
-    "for store, hardware, and farm receipts.\n\n"
-    "CRITICAL SINGLE-RECEIPT RULE:\n"
-    "- By default, treat the image as ONE single receipt.\n"
-    "- Retail receipts contain multiple sections: itemized list, summary, auth slip. "
-    "These are all parts of the SAME single receipt.\n"
-    "- ONLY return multiple items in 'receipts' if there are physically separate receipts "
-    "lying side-by-side with different headers and grand totals.\n\n"
-    "CATEGORIZATION RULES:\n"
-    "- 'Supplies & Materials': General retail, cleaning, paper products, pens, batteries, buckets, bins.\n"
-    "- 'Farm:Cows': Cattle feed, mineral blocks, calf starter, veterinary cow supplies, fencing.\n"
-    "- 'Farm:Chickens': Layer pellets, scratch grain, chick starter, egg cartons, waterers.\n"
-    "- 'Repairs & Maintenance': Spark plugs, motor oil, hydraulic fluid, belts, filters.\n"
-    "- 'Tools': Wrenches, drill bits, hammers, nails, screws, hardware.\n"
-    "- 'Fuel': Diesel, gasoline, propane.\n"
-    "- 'Farm:General': General farm operating items.\n"
-    "Output strictly conforming JSON according to the schema."
+    "You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts.\n\n"
+    "CRITICAL EXTRACTION RULES:\n"
+    "1. TOTAL AMOUNT (CRITICAL ACCURACY):\n"
+    "   - 'total' MUST be the FINAL GRAND TOTAL actually charged to the card or paid in cash.\n"
+    "   - NEVER extract 'Cash Tendered' / 'Amount Tendered' (e.g., paying with a $100 bill on a $32.50 order -> Total is 32.50, NOT 100.00).\n"
+    "   - NEVER extract 'Change Due' (e.g., $67.50), 'Subtotal', 'Tax', 'Savings Amount' ('You Saved $5.00'), or 'Previous Balance' as the total.\n"
+    "   - Verify that Subtotal + Tax = Total (unless coupons or bottle deposits apply).\n\n"
+    "2. TRANSACTION DATE (CRITICAL ACCURACY):\n"
+    "   - Extract the exact printed purchase date formatted strictly as 'YYYY-MM-DD'.\n"
+    "   - Standard US receipts use MM/DD/YYYY (e.g., '04/09/2024' -> '2024-04-09', '11/02/25' -> '2025-11-02', 'OCT 14, 2024' -> '2024-10-14').\n"
+    "   - NEVER use the current date or hallucinate if the receipt date is clearly printed on the slip.\n\n"
+    "3. CARD LAST 4 DIGITS & PAYMENT METHOD (CRITICAL ACCURACY):\n"
+    "   - Look at the payment / tender authorization section at the bottom of the receipt.\n"
+    "   - Find the masked card number (e.g., '************4821', 'XXXX-XXXX-XXXX-9102', 'ACCT: ...3045', 'VISA 1234', 'Card # **********7789').\n"
+    "   - 'card_last_4' MUST be ONLY the 4 digits of the card (e.g., '4821', '9102', '3045').\n"
+    "   - DO NOT extract Authorization Codes (AUTH: 039218), Reference Numbers (REF: 849201), Trace IDs, Terminal IDs, or Store Numbers as card numbers.\n"
+    "   - If paid by Cash, Check, or Store Account without a debit/credit card, set 'card_last_4' to empty string '' and 'payment_method' to 'Cash' or 'Check'.\n\n"
+    "4. SINGLE VS MULTI-RECEIPT:\n"
+    "   - By default, treat the image as ONE single receipt.\n"
+    "   - ONLY return multiple items in 'receipts' if there are physically separate receipts lying side-by-side with different headers and grand totals.\n\n"
+    "5. CATEGORIZATION:\n"
+    "   - 'Supplies & Materials': General retail, hardware, cleaning, office supplies, packaging, bins.\n"
+    "   - 'Farm:Cows': Cattle feed, mineral blocks, calf starter, veterinary livestock medicine, fencing.\n"
+    "   - 'Farm:Chickens': Poultry feed, layer pellets, scratch grain, chick starter, coops.\n"
+    "   - 'Repairs & Maintenance': Machinery parts, motor oil, hydraulic fluid, belts, filters, tires.\n"
+    "   - 'Tools': Power tools, hand tools, wrenches, drills, fasteners.\n"
+    "   - 'Fuel': Bulk diesel, gasoline, propane, heating oil.\n"
+    "   - 'Farm:General': Seed, fertilizer, crop chemicals, irrigation, general farm operations."
 )
+
+def normalize_extracted_date(date_raw: str) -> str:
+    """Normalizes any extracted date string into ISO YYYY-MM-DD."""
+    if not date_raw:
+        return datetime.now().strftime("%Y-%m-%d")
+    clean = date_raw.strip()
+    
+    # Try direct parse
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m-%d-%Y", "%m/%d/%y", "%m-%d-%y", "%d-%b-%Y", "%d %b %Y", "%b %d, %Y", "%B %d, %Y"):
+        try:
+            dt = datetime.strptime(clean, fmt)
+            if 2015 <= dt.year <= 2035:
+                return dt.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+            
+    # Regex fallback for embedded dates
+    m_iso = re.search(r'\b(202[0-9])[-/.](0[1-9]|1[0-2])[-/.](0[1-9]|[12][0-9]|3[01])\b', clean)
+    if m_iso:
+        return f"{m_iso.group(1)}-{int(m_iso.group(2)):02d}-{int(m_iso.group(3)):02d}"
+        
+    m_us = re.search(r'\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](202[0-9]|2[0-9])\b', clean)
+    if m_us:
+        yr = m_us.group(3)
+        yr_full = f"20{yr}" if len(yr) == 2 else yr
+        return f"{yr_full}-{int(m_us.group(1)):02d}-{int(m_us.group(2)):02d}"
+        
+    return datetime.now().strftime("%Y-%m-%d")
+
+def clean_card_last_4(raw_card: str, payment_method: str = "") -> str:
+    """Cleans and validates that card_last_4 is strictly a 4-digit card number and not an auth code."""
+    if not raw_card:
+        return ""
+    s = str(raw_card).strip()
+    # If it contains auth, ref, or terminal labels, ignore it
+    if any(k in s.lower() for k in ("auth", "ref", "term", "seq", "mid", "tid")):
+        m = re.search(r'(?:card|acct|visa|mc|amex|discover|ending)[^\d]{0,10}(\d{4})\b', s, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        return ""
+    digits = "".join([c for c in s if c.isdigit()])
+    if len(digits) == 4:
+        return digits
+    elif len(digits) > 4:
+        return digits[-4:]
+    return ""
 
 if requests is not None:
     GLOBAL_SESSION = requests.Session()
@@ -3938,8 +3995,29 @@ class FarmReceiptApp(_TK_BASE_TK):
         # Process each detected receipt
         for idx, r_data in enumerate(receipt_list, start=1):
             vendor = r_data.get("vendor", "Unknown Vendor").strip()
-            date_str = r_data.get("date", datetime.now().strftime("%Y-%m-%d")).strip()
-            total = float(r_data.get("total", 0.0))
+            raw_date = str(r_data.get("date", "")).strip()
+            date_str = normalize_extracted_date(raw_date)
+
+            try:
+                total = float(r_data.get("total", 0.0))
+            except Exception:
+                total = 0.0
+
+            try:
+                subtotal = float(r_data.get("subtotal", total))
+            except Exception:
+                subtotal = total
+
+            try:
+                tax = float(r_data.get("tax", 0.0))
+            except Exception:
+                tax = 0.0
+
+            # Guard against flipped total/subtotal or 0 total
+            if total <= 0.0 and subtotal > 0.0:
+                total = round(subtotal + tax, 2)
+            if subtotal <= 0.0 and total > 0.0:
+                subtotal = round(total - tax, 2) if total > tax else total
 
             selected_dropdown_cat = self.category_var.get()
             if selected_dropdown_cat and selected_dropdown_cat != "Auto-Detect (AI)":
@@ -3947,15 +4025,13 @@ class FarmReceiptApp(_TK_BASE_TK):
             else:
                 category = r_data.get("category", "Supplies & Materials")
 
-            subtotal = float(r_data.get("subtotal", total))
-            tax = float(r_data.get("tax", 0.0))
-            payment = r_data.get("payment_method", "Cash/Card")
+            payment = r_data.get("payment_method", "Cash/Card").strip()
             raw_card = str(r_data.get("card_last_4", "")).strip()
-            card_last_4 = "".join([c for c in raw_card if c.isdigit()])[-4:]
+            card_last_4 = clean_card_last_4(raw_card, payment)
             items = r_data.get("items", [])
 
-            is_cc = bool(card_last_4) or ("card" in payment.lower()) or ("visa" in payment.lower()) or ("mastercard" in payment.lower())
-            ref_num = "CC" if is_cc else "Cash"
+            is_cc = bool(card_last_4) or ("card" in payment.lower()) or ("visa" in payment.lower()) or ("mastercard" in payment.lower()) or ("amex" in payment.lower())
+            ref_num = f"CC*{card_last_4}" if card_last_4 else ("CC" if is_cc else "Cash")
 
             receipt_tag = f"Slip #{idx} of {num_found}" if num_found > 1 else "Slip #1"
 
@@ -4649,16 +4725,36 @@ class HeadlessWorkerEngine:
 
             for idx, r_data in enumerate(receipt_list, start=1):
                 vendor = r_data.get("vendor", "Unknown Vendor").strip()
-                date_str = r_data.get("date", datetime.now().strftime("%Y-%m-%d")).strip()
-                total = float(r_data.get("total", 0.0))
+                raw_date = str(r_data.get("date", "")).strip()
+                date_str = normalize_extracted_date(raw_date)
+
+                try:
+                    total = float(r_data.get("total", 0.0))
+                except Exception:
+                    total = 0.0
+
+                try:
+                    subtotal = float(r_data.get("subtotal", total))
+                except Exception:
+                    subtotal = total
+
+                try:
+                    tax = float(r_data.get("tax", 0.0))
+                except Exception:
+                    tax = 0.0
+
+                # Guard against flipped total/subtotal or 0 total
+                if total <= 0.0 and subtotal > 0.0:
+                    total = round(subtotal + tax, 2)
+                if subtotal <= 0.0 and total > 0.0:
+                    subtotal = round(total - tax, 2) if total > tax else total
+
                 category = r_data.get("category", "Supplies & Materials")
-                subtotal = float(r_data.get("subtotal", total))
-                tax = float(r_data.get("tax", 0.0))
-                payment = r_data.get("payment_method", "Cash/Card")
+                payment = r_data.get("payment_method", "Cash/Card").strip()
                 raw_card = str(r_data.get("card_last_4", "")).strip()
-                card_last_4 = "".join([c for c in raw_card if c.isdigit()])[-4:]
-                is_cc = bool(card_last_4) or ("card" in payment.lower()) or ("visa" in payment.lower()) or ("mastercard" in payment.lower())
-                ref_num = "CC" if is_cc else "Cash"
+                card_last_4 = clean_card_last_4(raw_card, payment)
+                is_cc = bool(card_last_4) or ("card" in payment.lower()) or ("visa" in payment.lower()) or ("mastercard" in payment.lower()) or ("amex" in payment.lower())
+                ref_num = f"CC*{card_last_4}" if card_last_4 else ("CC" if is_cc else "Cash")
 
                 # Thread-safe logging
                 with self.file_write_lock:
