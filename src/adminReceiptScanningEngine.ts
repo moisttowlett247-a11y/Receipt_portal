@@ -885,7 +885,317 @@ export async function runParallelBatchScan(
           }
         } catch (e: any) {
           ocrErrorMessage = e.message || String(e);
-          console.warn('AI OCR scan notice, falling back to local heuristic engine:', e);
+          console.warn('AI OCR server scan notice, will attempt client-side fallback:', e);
+        }
+
+        // Direct Client-side Gemini API scan fallback if server scan failed (e.g. Nginx HTTP 405/404 or offline)
+        if (!aiScanSuccess) {
+          try {
+            const rawApiKey = ((import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY || '').toString();
+            const apiKeys = rawApiKey.split(/[,;\s]+/).map((k: string) => k.trim()).filter(Boolean);
+
+            if (apiKeys.length > 0) {
+              worker.currentStep = 'Executing Client-Side Direct AI Vision Fallback...';
+              console.log('[Direct Client OCR] Server-side route failed or returned 405. Trying direct client-side Gemini scan with rotating keys:', apiKeys.length);
+
+              let cleanBase64 = dataUrl;
+              let cleanMime = item.fileType || (dataUrl.startsWith('data:application/pdf') ? 'application/pdf' : 'image/jpeg');
+              if (typeof dataUrl === 'string' && dataUrl.includes('base64,')) {
+                const parts = dataUrl.split('base64,');
+                cleanBase64 = parts[1];
+                const header = parts[0];
+                if (header.includes('data:')) {
+                  cleanMime = header.replace('data:', '').replace(';', '').trim();
+                }
+              }
+
+              const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+
+              const systemInstructionText = 
+                `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n` +
+                `CRITICAL RULES:\n` +
+                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple separate receipts, process EVERY one of them.\n` +
+                `2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n` +
+                `3. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'.\n` +
+                `4. MATH VALIDATION: Verify that Line Items Sum + Tax + Tip = Total. If they do not match, use the line item sum as the primary source of truth for the subtotal.\n` +
+                `5. VENDOR: Extract the full legal merchant name from the top of the receipt.\n` +
+                `6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
+                `7. Return strictly valid JSON conforming to the schema.`;
+
+              const receiptSchema = {
+                type: "OBJECT",
+                properties: {
+                  receipts: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        vendor: { type: "STRING", description: "Store or merchant name" },
+                        date: { type: "STRING", description: "YYYY-MM-DD format" },
+                        total: { type: "NUMBER", description: "Final Grand Total amount actually charged" },
+                        subtotal: { type: "NUMBER", description: "Pre-tax subtotal" },
+                        tax: { type: "NUMBER", description: "Total sales tax" },
+                        tip: { type: "NUMBER", description: "Tip amount if applicable" },
+                        payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
+                        card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
+                        invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
+                        category: {
+                          type: "STRING",
+                          enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
+                        },
+                        items: {
+                          type: "ARRAY",
+                          items: {
+                            type: "OBJECT",
+                            properties: {
+                              description: { type: "STRING" },
+                              amount: { type: "NUMBER" }
+                            }
+                          }
+                        },
+                        memo: { type: "STRING" }
+                      },
+                      required: ["vendor", "date", "total", "category"]
+                    }
+                  }
+                },
+                required: ["receipts"]
+              };
+
+              const payload = {
+                contents: [{
+                  role: "user",
+                  parts: [
+                    { text: promptText },
+                    { inlineData: { mimeType: cleanMime, data: cleanBase64 } }
+                  ]
+                }],
+                systemInstruction: { parts: [{ text: systemInstructionText }] },
+                safetySettings: [
+                  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+                  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+                  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+                  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+                ],
+                generationConfig: {
+                  temperature: 0.0,
+                  responseMimeType: "application/json",
+                  responseSchema: receiptSchema
+                }
+              };
+
+              const modelsToTry = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
+              let rawResult: any = null;
+              let clientLastError = "";
+
+              outerLoop:
+              for (const model of modelsToTry) {
+                for (const currentKey of apiKeys) {
+                  try {
+                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+                    const gResp = await fetch(geminiUrl, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify(payload)
+                    });
+
+                    if (gResp.ok) {
+                      const gData = await gResp.json();
+                      if (gData.error) {
+                        clientLastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
+                        continue;
+                      }
+
+                      const candidates = gData?.candidates || [];
+                      if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
+                        clientLastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
+                        continue;
+                      }
+
+                      const text = candidates[0]?.content?.parts?.[0]?.text;
+                      if (text) {
+                        let parsed: any = null;
+                        const cleanText = text.trim();
+                        try {
+                          parsed = JSON.parse(cleanText);
+                        } catch (e) {
+                          const jsonMatch = cleanText.match(/(\{.*\})/s);
+                          if (jsonMatch) {
+                            try {
+                              parsed = JSON.parse(jsonMatch[1]);
+                            } catch (e2) {}
+                          }
+                        }
+
+                        if (parsed) {
+                          if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                            rawResult = parsed.receipts[0];
+                            break outerLoop;
+                          } else if (parsed.vendor && parsed.total !== undefined) {
+                            rawResult = parsed;
+                            break outerLoop;
+                          }
+                        }
+                      } else {
+                        clientLastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
+                      }
+                    } else {
+                      const errText = await gResp.text().catch(() => '');
+                      clientLastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 100)}`;
+                    }
+                  } catch (mErr: any) {
+                    clientLastError = `Fetch error [${model}]: ${mErr.message}`;
+                  }
+                }
+              }
+
+              if (rawResult) {
+                // Mathematical reconciliation
+                let total = Number(rawResult.total) || 0;
+                let subtotal = Number(rawResult.subtotal) || 0;
+                let tax = Number(rawResult.tax) || 0;
+                const tip = Number(rawResult.tip) || 0;
+
+                const itemsList = Array.isArray(rawResult.items) ? rawResult.items : [];
+                let itemSum = 0;
+                for (const itm of itemsList) {
+                  if (itm && typeof itm.amount === 'number') {
+                    itemSum += itm.amount;
+                  }
+                }
+                itemSum = Number(itemSum.toFixed(2));
+
+                if (subtotal <= 0 && itemSum > 0) {
+                  subtotal = itemSum;
+                }
+
+                if (subtotal <= 0 && total > 0) {
+                  subtotal = total > (tax + tip) ? Number((total - tax - tip).toFixed(2)) : total;
+                }
+
+                const expectedSum = Number((subtotal + tax + tip).toFixed(2));
+                
+                if (total <= 0.01) {
+                  if (expectedSum > 0) {
+                    total = expectedSum;
+                  } else if (itemSum > 0) {
+                    total = Number((itemSum + tax).toFixed(2));
+                  }
+                } else if (subtotal > 0 && expectedSum > 0) {
+                  const diffRatio = total / expectedSum;
+                  if (diffRatio > 1.5 || diffRatio < 0.5) {
+                    if (expectedSum > 0.01) {
+                      total = expectedSum;
+                    }
+                  }
+                }
+
+                total = Number(total.toFixed(2));
+                subtotal = Number(subtotal.toFixed(2));
+                tax = Number(tax.toFixed(2));
+
+                // Date parsing
+                let dateStr = String(rawResult.date || '').trim();
+                dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
+                dateStr = dateStr.replace(/[;,.]$/, '');
+
+                const monthMap: Record<string, string> = {
+                  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+                  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+                  january: '01', february: '02', march: '03', april: '04', june: '06',
+                  july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+                };
+
+                const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
+                const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9][0-9])\b/);
+                const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
+                const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
+
+                if (isoMatch) {
+                  dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+                } else if (usMatch) {
+                  let yr = usMatch[3];
+                  if (yr.length === 2) {
+                    yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+                  }
+                  dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
+                } else if (monthNameMatch) {
+                  const mStr = monthNameMatch[1].toLowerCase();
+                  const mNum = monthMap[mStr] || '01';
+                  const day = monthNameMatch[2].padStart(2, '0');
+                  let yr = monthNameMatch[3];
+                  if (yr.length === 2) {
+                    yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+                  }
+                  dateStr = `${yr}-${mNum}-${day}`;
+                } else if (dayMonthMatch) {
+                  const mStr = dayMonthMatch[2].toLowerCase();
+                  const mNum = monthMap[mStr] || '01';
+                  const day = dayMonthMatch[1].padStart(2, '0');
+                  let yr = dayMonthMatch[3];
+                  if (yr.length === 2) {
+                    yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+                  }
+                  dateStr = `${yr}-${mNum}-${day}`;
+                } else {
+                  const fallbackMatch = dateStr.match(/\b(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})\b/);
+                  if (fallbackMatch) {
+                    dateStr = `${fallbackMatch[1]}-${fallbackMatch[2].padStart(2, '0')}-${fallbackMatch[3].padStart(2, '0')}`;
+                  } else {
+                    dateStr = '';
+                  }
+                }
+
+                if (!dateStr || dateStr.length < 8) {
+                  const fileDateMatch = item.fileName.match(/\b(20[123][0-9])[-_](0?[1-9]|1[0-2])[-_](0?[1-9]|[12][0-9]|3[01])\b/);
+                  if (fileDateMatch) {
+                    dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
+                  } else {
+                    dateStr = 'Pending Review';
+                  }
+                }
+
+                const yearCheck = dateStr.match(/^(\d{4})/);
+                if (yearCheck) {
+                  const yr = parseInt(yearCheck[1]);
+                  if (yr < 2000 || yr > 2040) {
+                    dateStr = new Date().toISOString().split('T')[0];
+                  }
+                }
+
+                let cardLast4 = String(rawResult.card_last_4 || '').replace(/\D/g, '');
+                if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
+                if (cardLast4.length < 4) cardLast4 = '';
+
+                extracted = {
+                  vendor: rawResult.vendor || item.vendorHint || 'Unknown Vendor',
+                  date: dateStr,
+                  lineItems: (rawResult.items || []).map((itm: any) => ({
+                    description: itm.description || 'Item Line',
+                    quantity: 1,
+                    unitPrice: Number(itm.amount) || 0,
+                    total: Number(itm.amount) || 0
+                  })),
+                  subtotal,
+                  tax,
+                  tip,
+                  total,
+                  paymentMethod: rawResult.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
+                  cardLast4: cardLast4 || undefined,
+                  invoiceNumber: rawResult.invoice_number || undefined,
+                  confidence: 0.99,
+                  memo: rawResult.memo || item.memo || `Direct Client-Side AI-OCR Scanned (${item.fileName})`
+                };
+                aiScanSuccess = true;
+              } else {
+                ocrErrorMessage = `[Server error: ${ocrErrorMessage}] AND [Direct client scan error: ${clientLastError}]`;
+              }
+            } else {
+              ocrErrorMessage += ' | Client fallback skipped: No local keys configured.';
+            }
+          } catch (clErr: any) {
+            ocrErrorMessage += ` | Direct client error: ${clErr.message || clErr}`;
+          }
         }
       }
 
