@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { Plugin } from 'vite';
+import { GoogleGenAI, Type } from '@google/genai';
 
 interface QboConfig {
   clientId: string;
@@ -120,8 +121,8 @@ export function quickbooksApiPlugin(): Plugin {
         const urlObj = new URL(req.url || '', 'http://localhost');
         const pathname = urlObj.pathname;
 
-        // Only intercept /api/qbo/* routes
-        if (!pathname.startsWith('/api/qbo')) {
+        // Intercept /api/qbo/* and /api/scan/receipt routes
+        if (!pathname.startsWith('/api/qbo') && pathname !== '/api/scan/receipt') {
           return next();
         }
 
@@ -156,6 +157,104 @@ export function quickbooksApiPlugin(): Plugin {
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify(data));
         };
+
+        // 0. POST /api/scan/receipt (High-Precision Multimodal Vision OCR)
+        if (pathname === '/api/scan/receipt' && req.method === 'POST') {
+          const body = await readJsonBody();
+          const { imageBase64, mimeType, fileName } = body;
+
+          if (!imageBase64) {
+            sendJson(400, { success: false, error: 'No receipt document data provided' });
+            return;
+          }
+
+          try {
+            const ai = new GoogleGenAI({});
+            let cleanBase64 = imageBase64;
+            let cleanMime = mimeType || 'image/jpeg';
+
+            if (typeof imageBase64 === 'string' && imageBase64.includes('base64,')) {
+              const parts = imageBase64.split('base64,');
+              cleanBase64 = parts[1];
+              const header = parts[0];
+              if (header.includes('data:')) {
+                cleanMime = header.replace('data:', '').replace(';', '').trim();
+              }
+            }
+
+            const response = await ai.models.generateContent({
+              model: 'gemini-3.8-flash',
+              contents: [
+                {
+                  inlineData: {
+                    data: cleanBase64,
+                    mimeType: cleanMime
+                  }
+                },
+                `You are a high-precision IRS tax accounting and commercial receipt OCR specialist. Carefully examine this receipt image / PDF document and extract all financial entities with 100% exact precision.
+
+CRITICAL EXTRACTION DIRECTIVES:
+1. VENDOR / PAYEE: The business, merchant, store, or supplier name printed at the top of the receipt (e.g. "The Home Depot", "Walmart", "John Deere", "Agway", "Nutrien Ag", "Tractor Supply Co.", "Shell").
+2. TRANSACTION DATE: The exact transaction or purchase date printed on the receipt. Return strictly in YYYY-MM-DD format (e.g. "2025-03-14", "2024-11-20"). Look for "Date", "Trans Date", "Date/Time", or receipt header/footer timestamps. DO NOT return today's date if a printed transaction date is visible on the document!
+3. GRAND TOTAL: The exact final dollar amount paid/charged (e.g. 142.50, 48.99). Look for "TOTAL", "GRAND TOTAL", "BALANCE DUE", "AMOUNT PAID", "TOTAL USD", "NET TOTAL", or "CHARGE". Never return subtotal or tax as total!
+4. SUBTOTAL: The pre-tax subtotal amount before sales tax is added.
+5. SALES TAX: The exact tax amount printed on the receipt.
+6. PAYMENT METHOD: The payment tender: "VISA", "MASTERCARD", "AMEX", "DISCOVER", "DEBIT", "CASH", or "CHECK".
+7. CARD LAST 4 DIGITS: The 4 digits of the masked payment card (e.g. "4821" from ************4821 or ACCT: ...9102). If paid in cash or check, return empty string "".
+8. LINE ITEMS: Array of itemized lines with item description, amount, quantity, and unit price.
+9. MEMO / SUMMARY: Brief 3-8 word summary of items purchased.
+10. CATEGORY: IRS Schedule F or Schedule C tax line category (e.g. "Supplies", "Repairs & Maintenance", "Fertilizers & Lime", "Feed Purchased", "Fuel, Oil & Gas", "Utilities", "Office Expense").`
+              ],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    vendor: { type: Type.STRING, description: 'Store/merchant name' },
+                    date: { type: Type.STRING, description: 'Exact printed transaction date in YYYY-MM-DD format' },
+                    total: { type: Type.NUMBER, description: 'Exact final grand total paid/charged' },
+                    subtotal: { type: Type.NUMBER, description: 'Subtotal before sales tax' },
+                    tax: { type: Type.NUMBER, description: 'Sales tax amount' },
+                    paymentMethod: { type: Type.STRING, description: 'Tender type' },
+                    cardLast4: { type: Type.STRING, description: '4 digits of masked card or empty' },
+                    memo: { type: Type.STRING, description: 'Summary description of purchase' },
+                    categoryHint: { type: Type.STRING, description: 'IRS tax expense category' },
+                    items: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          description: { type: Type.STRING },
+                          amount: { type: Type.NUMBER },
+                          quantity: { type: Type.NUMBER },
+                          unitPrice: { type: Type.NUMBER }
+                        },
+                        required: ['description', 'amount']
+                      }
+                    }
+                  },
+                  required: ['vendor', 'date', 'total', 'paymentMethod']
+                }
+              }
+            });
+
+            const rawText = response.text ? response.text.trim() : '{}';
+            const parsed = JSON.parse(rawText);
+
+            sendJson(200, {
+              success: true,
+              data: parsed
+            });
+            return;
+          } catch (err: any) {
+            console.error('Gemini Vision OCR extraction failed:', err);
+            sendJson(500, {
+              success: false,
+              error: err.message || 'Vision OCR processing failed'
+            });
+            return;
+          }
+        }
 
         // 1. GET /api/qbo/config (Publicly safe configuration status)
         if (pathname === '/api/qbo/config' && req.method === 'GET') {
