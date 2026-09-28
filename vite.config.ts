@@ -733,7 +733,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"];
+              const modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-3.1-flash-image"];
               let rawResult: any = null;
               let lastError = "";
 
@@ -750,41 +750,41 @@ function licenseSyncApiPlugin(): Plugin {
                     const gData = await gResp.json();
                     
                     if (gData.error) {
-                      lastError = `API Error: ${gData.error.message}`;
+                      lastError = `API Error [${model}]: ${gData.error.message}`;
                       continue;
                     }
 
                     const candidates = gData?.candidates || [];
-                    if (candidates.length === 0) {
-                      lastError = "No candidates returned (Safety or blocking)";
+                    if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
+                      lastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
                       continue;
                     }
 
-                  const text = candidates[0]?.content?.parts?.[0]?.text;
-                  if (text) {
-                    let parsed: any = null;
-                    const cleanText = text.trim();
-                    try {
-                      parsed = JSON.parse(cleanText);
-                    } catch (e) {
-                      const jsonMatch = cleanText.match(/(\{.*\})/s);
-                      if (jsonMatch) {
-                        try {
-                          parsed = JSON.parse(jsonMatch[1]);
-                        } catch (e2) {}
+                    const text = candidates[0]?.content?.parts?.[0]?.text;
+                    if (text) {
+                      let parsed: any = null;
+                      const cleanText = text.trim();
+                      try {
+                        parsed = JSON.parse(cleanText);
+                      } catch (e) {
+                        const jsonMatch = cleanText.match(/(\{.*\})/s);
+                        if (jsonMatch) {
+                          try {
+                            parsed = JSON.parse(jsonMatch[1]);
+                          } catch (e2) {}
+                        }
                       }
-                    }
 
-                    if (parsed) {
-                      if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
-                        rawResult = parsed.receipts[0];
-                        break;
-                      } else if (parsed.vendor && parsed.total !== undefined) {
-                        rawResult = parsed;
-                        break;
+                      if (parsed) {
+                        if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                          rawResult = parsed.receipts[0];
+                          break;
+                        } else if (parsed.vendor && parsed.total !== undefined) {
+                          rawResult = parsed;
+                          break;
+                        }
                       }
-                    }
-                  } else {
+                    } else {
                       lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
                     }
                   } else {
