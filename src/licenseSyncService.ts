@@ -1,6 +1,7 @@
 import { LicenseKeyRecord } from './types';
 import { computeSha256Hex } from './hashUtils';
 import { getEffectiveStatus } from './githubSyncService';
+import { getBackendApiUrl } from './urlUtils';
 
 export const CLOUDFLARE_WORKER_URL = 'https://receipt-license-api.moisttowlett247.workers.dev';
 
@@ -238,7 +239,7 @@ export async function fetchAllInquiries(): Promise<InquiryRecord[]> {
 
   // 2. Fetch from local backend server
   try {
-    const resp = await fetch('/api/inquiries');
+    const resp = await fetch(getBackendApiUrl() + '/api/inquiries');
     if (resp.ok) {
       const data = await resp.json();
       if (data.success && Array.isArray(data.inquiries)) {
@@ -301,7 +302,7 @@ export async function deleteInquiry(id: string): Promise<{ success: boolean; mes
 
   // 3. Delete from local server if applicable
   try {
-    await fetch(`/api/inquiries/${encodeURIComponent(id)}`, {
+    await fetch(getBackendApiUrl() + `/api/inquiries/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
@@ -450,7 +451,7 @@ export async function syncKeyToServer(
       } : undefined
     };
 
-    const resp = await fetch('/api/licenses/sync', {
+    const resp = await fetch(getBackendApiUrl() + '/api/licenses/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
@@ -471,7 +472,7 @@ export async function syncKeyToServer(
  */
 export async function fetchAllServerLicenses(): Promise<ServerLicenseItem[]> {
   try {
-    const resp = await fetch('/api/licenses/all');
+    const resp = await fetch(getBackendApiUrl() + '/api/licenses/all');
     if (resp.ok) {
       const data = await resp.json();
       if (data.success && Array.isArray(data.licenses)) {

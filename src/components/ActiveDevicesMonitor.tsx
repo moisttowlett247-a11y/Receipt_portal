@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { ActiveDeviceSession, LicenseKeyRecord, AdminRole } from '../types';
 import { getStoredGitHubConfig } from '../githubSyncService';
+import { getBackendApiUrl } from '../urlUtils';
 import {
   fetchCloudflareLicenses,
   fetchCloudflareHealth,
@@ -129,7 +130,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
 
     // 2. Try server endpoint (local sessions)
     try {
-      const res = await fetch(`/api/licenses/sessions?_t=${now}`, {
+      const res = await fetch(getBackendApiUrl() + `/api/licenses/sessions?_t=${now}`, {
         headers: { 'Cache-Control': 'no-cache, no-store' }
       });
       if (res.ok) {

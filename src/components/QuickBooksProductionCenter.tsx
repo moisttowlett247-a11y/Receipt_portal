@@ -20,6 +20,7 @@ import {
   Radio,
   X
 } from 'lucide-react';
+import { getBackendApiUrl } from '../urlUtils';
 
 interface CompanyRecord {
   realmId: string;
@@ -60,7 +61,8 @@ const DEFAULT_WEBHOOK_VERIFIER = '10dcc427-1e8b-4358-b8f7-8d1e30150fa6';
 
 async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
   try {
-    const res = await fetch(url, options);
+    const finalUrl = url.startsWith('/') ? getBackendApiUrl() + url : url;
+    const res = await fetch(finalUrl, options);
     if (!res.ok) return { ok: false, data: null };
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {

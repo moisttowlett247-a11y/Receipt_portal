@@ -10,6 +10,7 @@ import {
   saveClientSubmissions, 
   ClientSubmission 
 } from './clientSubmissionService';
+import { getBackendApiUrl } from './urlUtils';
 
 export interface ExtractedLineItem {
   description: string;
@@ -838,7 +839,7 @@ export async function runParallelBatchScan(
 
       if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/pdf'))) {
         try {
-          const scanResp = await fetch('/api/scan/receipt', {
+          const scanResp = await fetch(getBackendApiUrl() + '/api/scan/receipt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({

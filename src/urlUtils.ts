@@ -100,3 +100,25 @@ export function isCurrentRouteAdmin(): boolean {
     search.includes('qbo=true')
   );
 }
+
+/**
+ * Returns the correct backend API base URL.
+ * If running on GitHub Pages, routes to the active Cloud Run backend.
+ */
+export function getBackendApiUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const hostname = window.location.hostname.toLowerCase();
+  
+  // Use saved override if present in localStorage
+  try {
+    const saved = localStorage.getItem('receipt_processor_backend_url');
+    if (saved) return saved.trim().replace(/\/+$/, '');
+  } catch {}
+
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.includes('run.app')) {
+    return '';
+  }
+
+  // Authoritative default Cloud Run backend URL for moisttowlett247-a11y.github.io
+  return 'https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app';
+}
