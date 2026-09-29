@@ -57,8 +57,107 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   // Navigation tabs: 'users' or 'credentials'
   const [activeTab, setActiveTab] = useState<'users' | 'credentials'>('users');
 
+  const loadAllSystemAccounts = (): ClientUserAccount[] => {
+    const map = new Map<string, ClientUserAccount>();
+
+    // 1. Client accounts
+    try {
+      const clients = getStoredClientAccounts();
+      clients.forEach(c => {
+        if (c && c.id) map.set(c.id, c);
+      });
+    } catch {}
+
+    // 2. License keys / Subscribers
+    try {
+      const keysRaw = localStorage.getItem('receipt_processor_keys_v4') || (availableKeys.length ? JSON.stringify(availableKeys) : null);
+      if (keysRaw) {
+        const keys = JSON.parse(keysRaw);
+        if (Array.isArray(keys)) {
+          keys.forEach((k: any) => {
+            const kId = k.id || `key-${k.key}`;
+            if (!map.has(kId)) {
+              map.set(kId, {
+                id: kId,
+                username: (k.clientName || 'subscriber').toLowerCase().replace(/[^a-z0-9]/g, ''),
+                displayName: k.clientName || 'Subscriber',
+                email: k.clientEmail || 'client@farmtax.com',
+                companyName: k.clientName || 'License Holder',
+                passwordHash: 'licensed_user',
+                salt: 'salt',
+                licenseKey: k.key,
+                plan: k.plan || 'Standard Plan',
+                planTier: k.plan || 'MONTHLY',
+                planStatus: k.status === 'ACTIVE' ? 'ACTIVE' : 'NONE',
+                planPurchasedAt: k.issuedDate || new Date().toISOString(),
+                planExpiresAt: k.expiresDate || '',
+                receiptQuota: -1,
+                receiptsSubmittedCount: 0,
+                createdAt: k.issuedDate || new Date().toISOString()
+              });
+            }
+          });
+        }
+      }
+    } catch {}
+
+    // 3. Access inquiries / requests
+    try {
+      const inqRaw = localStorage.getItem('receipt_processor_inquiries');
+      if (inqRaw) {
+        const inqs = JSON.parse(inqRaw);
+        if (Array.isArray(inqs)) {
+          inqs.forEach((i: any) => {
+            const iId = i.id || `inq-${i.email}`;
+            if (!map.has(iId)) {
+              map.set(iId, {
+                id: iId,
+                username: (i.name || 'inquiry').toLowerCase().replace(/[^a-z0-9]/g, ''),
+                displayName: i.name || 'Access Requester',
+                email: i.email || 'requester@example.com',
+                companyName: i.company || i.receiptVolume || 'Portal Inquiry',
+                passwordHash: 'inquiry_user',
+                salt: 'salt',
+                plan: i.interestedPlan || 'Access Request',
+                planStatus: 'NONE',
+                receiptQuota: 0,
+                receiptsSubmittedCount: 0,
+                createdAt: i.submittedAt || new Date().toISOString()
+              });
+            }
+          });
+        }
+      }
+    } catch {}
+
+    // 4. Admin Account
+    try {
+      const adminUsr = savedUsername || localStorage.getItem('receipt_processor_admin_user') || 'admin';
+      const adminId = `admin-${adminUsr}`;
+      if (!map.has(adminId)) {
+        map.set(adminId, {
+          id: adminId,
+          username: adminUsr,
+          displayName: 'Platform Admin',
+          email: 'moisttowlett247@gmail.com',
+          companyName: 'System Administration',
+          passwordHash: 'admin_master',
+          salt: 'admin_salt',
+          plan: 'Master Administrator',
+          planTier: 'ADMIN' as any,
+          planStatus: 'ACTIVE',
+          receiptQuota: -1,
+          receiptsSubmittedCount: 0,
+          createdAt: new Date().toISOString()
+        });
+      }
+    } catch {}
+
+    return Array.from(map.values());
+  };
+
   // Client accounts list state
-  const [accounts, setAccounts] = useState<ClientUserAccount[]>(() => getStoredClientAccounts());
+  const [accounts, setAccounts] = useState<ClientUserAccount[]>(() => loadAllSystemAccounts());
   const [searchQuery, setSearchQuery] = useState('');
   const [planFilter, setPlanFilter] = useState<string>('ALL');
 
@@ -78,20 +177,21 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   const [shake, setShake] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  // Subscribe to real-time client account updates
+  // Subscribe to real-time client account updates and reload all
   useEffect(() => {
     if (isOpen) {
-      const unsubscribe = subscribeToClientAccounts((updated) => {
-        setAccounts(updated);
-        // Keep selectedUser in sync if open
+      setAccounts(loadAllSystemAccounts());
+      const unsubscribe = subscribeToClientAccounts(() => {
+        const freshList = loadAllSystemAccounts();
+        setAccounts(freshList);
         if (selectedUser) {
-          const fresh = updated.find(a => a.id === selectedUser.id);
+          const fresh = freshList.find(a => a.id === selectedUser.id);
           if (fresh) setSelectedUser(fresh);
         }
       });
       return () => unsubscribe();
     }
-  }, [isOpen, selectedUser]);
+  }, [isOpen, selectedUser, availableKeys, savedUsername]);
 
   useEffect(() => {
     if (isOpen) {
@@ -183,13 +283,38 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   };
 
   const handleDeleteUser = (user: ClientUserAccount) => {
-    const success = deleteClientAccount(user.id);
-    if (success) {
-      setAccounts(prev => prev.filter(a => a.id !== user.id));
-      setConfirmDeleteUser(null);
-      setSelectedUser(null);
-      if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
+    // 1. Delete client account if present
+    deleteClientAccount(user.id);
+    deleteClientAccount(user.username);
+    deleteClientAccount(user.email);
+
+    // 2. Delete license key if present
+    if (user.licenseKey) {
+      try {
+        const raw = localStorage.getItem('receipt_processor_keys_v4');
+        if (raw) {
+          const keys = JSON.parse(raw);
+          const filteredKeys = keys.filter((k: any) => k.key !== user.licenseKey && k.id !== user.id);
+          localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(filteredKeys));
+        }
+      } catch {}
     }
+
+    // 3. Delete access inquiry if present
+    try {
+      const rawInq = localStorage.getItem('receipt_processor_inquiries');
+      if (rawInq) {
+        const inqs = JSON.parse(rawInq);
+        const filteredInq = inqs.filter((i: any) => i.id !== user.id && i.email !== user.email);
+        localStorage.setItem('receipt_processor_inquiries', JSON.stringify(filteredInq));
+      }
+    } catch {}
+
+    const freshList = loadAllSystemAccounts();
+    setAccounts(freshList);
+    setConfirmDeleteUser(null);
+    setSelectedUser(null);
+    if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
   };
 
   const handleGrantPlan = (user: ClientUserAccount, tier: PlanTier, planName: string) => {
