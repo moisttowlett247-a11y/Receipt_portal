@@ -83,8 +83,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [submissions, setSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
   const [selectedCategoryHint, setSelectedCategoryHint] = useState('Auto-Detect (AI)');
   const [submissionMemo, setSubmissionMemo] = useState('');
-  const [clientEntityName, setClientEntityName] = useState(() => clientSession?.displayName || 'Prairie Wind Agriculture');
-  const [clientEntityEmail, setClientEntityEmail] = useState(() => clientSession?.email || 'billing@prairiewind.example.com');
+  const [clientEntityName, setClientEntityName] = useState(() => clientSession?.displayName || '');
+  const [clientEntityEmail, setClientEntityEmail] = useState(() => clientSession?.email || '');
 
   // File upload state
   const fileInputRef = useRef<HTMLInputElement | null>(null);

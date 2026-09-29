@@ -130,8 +130,99 @@ export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
   try {
     localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
     notifyAccountsChanged(accounts);
+    
+    // Auto-sync with server in background
+    syncClientAccountsWithServer().catch(() => {});
   } catch (err) {
     console.warn('Error saving client accounts:', err);
+  }
+}
+
+/**
+ * Synchronizes local client accounts with the centralized Cloudflare KV database.
+ */
+export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[]> {
+  try {
+    const localAccounts = getStoredClientAccounts();
+    
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accounts: localAccounts })
+    });
+    
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.accounts)) {
+        // Only update local storage if server has more or different accounts
+        const serverAccounts = data.accounts as ClientUserAccount[];
+        if (serverAccounts.length !== localAccounts.length) {
+          localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(serverAccounts));
+          notifyAccountsChanged(serverAccounts);
+        }
+        return serverAccounts;
+      }
+    }
+  } catch (err) {
+    console.warn('Notice: Background account sync failed:', err);
+  }
+  return getStoredClientAccounts();
+}
+
+/**
+ * Specifically for Admin: Fetches all accounts from server without pushing local.
+ */
+export async function fetchAllAccountsFromServer(adminToken?: string): Promise<ClientUserAccount[]> {
+  try {
+    const headers: Record<string, string> = { 'Accept': 'application/json' };
+    if (adminToken) {
+      headers['Authorization'] = `Bearer ${adminToken}`;
+    }
+
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts`, {
+      method: 'GET',
+      headers
+    });
+
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.success && Array.isArray(data.accounts)) {
+        const accounts = data.accounts as ClientUserAccount[];
+        // Update local storage to match server reality for Admin
+        localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
+        notifyAccountsChanged(accounts);
+        return accounts;
+      }
+    }
+  } catch (err) {
+    console.warn('Error fetching all accounts from server:', err);
+  }
+  return getStoredClientAccounts();
+}
+
+/**
+ * Specifically for Admin: Deletes an account from the server.
+ */
+export async function deleteAccountFromServer(userId: string, adminToken?: string): Promise<boolean> {
+  try {
+    // 1. Local delete
+    deleteClientAccount(userId);
+
+    // 2. Server delete
+    const headers: Record<string, string> = {};
+    if (adminToken) {
+      headers['Authorization'] = `Bearer ${adminToken}`;
+    }
+
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+      headers
+    });
+    
+    return resp.ok;
+  } catch (err) {
+    console.error('Error deleting account from server:', err);
+    return false;
   }
 }
 

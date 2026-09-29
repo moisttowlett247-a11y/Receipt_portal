@@ -944,6 +944,74 @@ export default {
     }
 
     // -------------------------------------------------------------------------
+    // 7.2. Client Account Management (Centralized Database)
+    // -------------------------------------------------------------------------
+    if (pathname === "/api/admin/accounts" && request.method === "GET") {
+      const isAuth = await verifyAdminAuth(request, env);
+      if (!isAuth) {
+        return jsonResponse({ success: false, error: "Unauthorized. Admin session required." }, 401);
+      }
+      const raw = await env.LICENSES.get("SYS:CLIENT_ACCOUNTS");
+      const accounts = raw ? JSON.parse(raw) : [];
+      return jsonResponse({ success: true, count: accounts.length, accounts });
+    }
+
+    if (pathname === "/api/admin/accounts/sync" && request.method === "POST") {
+      // Both admin and clients can sync, but for security, usually you'd want per-user storage.
+      // However, given the current app structure, we'll sync to a central list.
+      try {
+        const body = await request.json();
+        const clientAccounts = Array.isArray(body.accounts) ? body.accounts : [];
+        const raw = await env.LICENSES.get("SYS:CLIENT_ACCOUNTS");
+        const serverAccounts = raw ? JSON.parse(raw) : [];
+        
+        const map = new Map();
+        for (const a of serverAccounts) {
+          if (a && a.id) map.set(a.id, a);
+        }
+        for (const c of clientAccounts) {
+          if (c && c.id) {
+            const existing = map.get(c.id);
+            if (!existing) {
+              map.set(c.id, c);
+            } else {
+              // Merge, taking newer status or just merging fields
+              map.set(c.id, { ...existing, ...c });
+            }
+          }
+        }
+        
+        const merged = Array.from(map.values()).sort((a, b) => {
+          const ta = new Date(a.createdAt || 0).getTime();
+          const tb = new Date(b.createdAt || 0).getTime();
+          return tb - ta;
+        });
+        
+        await env.LICENSES.put("SYS:CLIENT_ACCOUNTS", JSON.stringify(merged));
+        return jsonResponse({ success: true, count: merged.length, accounts: merged });
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 400);
+      }
+    }
+
+    if (pathname.startsWith("/api/admin/accounts/") && request.method === "DELETE") {
+      const isAuth = await verifyAdminAuth(request, env);
+      if (!isAuth) {
+        return jsonResponse({ success: false, error: "Unauthorized. Admin session required." }, 401);
+      }
+      try {
+        const accountId = decodeURIComponent(pathname.replace("/api/admin/accounts/", ""));
+        const raw = await env.LICENSES.get("SYS:CLIENT_ACCOUNTS");
+        const accounts = raw ? JSON.parse(raw) : [];
+        const updated = accounts.filter(a => a.id !== accountId && a.username !== accountId && a.email !== accountId);
+        await env.LICENSES.put("SYS:CLIENT_ACCOUNTS", JSON.stringify(updated));
+        return jsonResponse({ success: true, message: `Account ${accountId} deleted from server.` });
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 400);
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // 7.5. Client Submissions & Intake Queue Synchronizer
     // -------------------------------------------------------------------------
     if (pathname === "/api/client/submissions") {

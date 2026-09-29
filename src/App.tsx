@@ -200,7 +200,7 @@ export default function App() {
                     id: `server-${s.hash.slice(0, 10)}`,
                     key: effectiveKey,
                     clientName: s.clientName || (effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`),
-                    clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : 'client@example.com'),
+                    clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : ''),
                     plan: (s.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
                     status,
                     inUse: s.inUse ?? true,

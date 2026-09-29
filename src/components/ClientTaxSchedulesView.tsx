@@ -115,8 +115,8 @@ export const ClientTaxSchedulesView: React.FC<ClientTaxSchedulesViewProps> = ({
     }
   };
 
-  const clientDisplayName = clientSession?.displayName || 'Prairie Wind Agriculture';
-  const clientEmail = clientSession?.email || 'billing@prairiewind.example.com';
+  const clientDisplayName = clientSession?.displayName || 'Client Entity';
+  const clientEmail = clientSession?.email || 'billing@client-entity.com';
   const companyName = clientSession?.companyName || clientDisplayName;
 
   return (

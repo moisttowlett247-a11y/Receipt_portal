@@ -30,7 +30,9 @@ import {
   subscribeToClientAccounts, 
   deleteClientAccount, 
   updateClientAccount, 
-  grantPlanByAdmin 
+  grantPlanByAdmin,
+  fetchAllAccountsFromServer,
+  deleteAccountFromServer
 } from '../clientAccountService';
 import { ClientUserAccount, LicenseKeyRecord, PlanTier } from '../types';
 
@@ -76,12 +78,13 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         if (Array.isArray(keys)) {
           keys.forEach((k: any) => {
             const kId = k.id || `key-${k.key}`;
-            if (!map.has(kId)) {
+            // ONLY show if it has a real email and doesn't collide with existing account
+            if (!map.has(kId) && k.clientEmail && k.clientEmail.includes('@')) {
               map.set(kId, {
                 id: kId,
                 username: (k.clientName || 'subscriber').toLowerCase().replace(/[^a-z0-9]/g, ''),
                 displayName: k.clientName || 'Subscriber',
-                email: k.clientEmail || 'client@farmtax.com',
+                email: k.clientEmail,
                 companyName: k.clientName || 'License Holder',
                 passwordHash: 'licensed_user',
                 salt: 'salt',
@@ -109,12 +112,13 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         if (Array.isArray(inqs)) {
           inqs.forEach((i: any) => {
             const iId = i.id || `inq-${i.email}`;
-            if (!map.has(iId)) {
+            // ONLY show if it has a real email and doesn't collide
+            if (!map.has(iId) && i.email && i.email.includes('@')) {
               map.set(iId, {
                 id: iId,
                 username: (i.name || 'inquiry').toLowerCase().replace(/[^a-z0-9]/g, ''),
                 displayName: i.name || 'Access Requester',
-                email: i.email || 'requester@example.com',
+                email: i.email,
                 companyName: i.company || i.receiptVolume || 'Portal Inquiry',
                 passwordHash: 'inquiry_user',
                 salt: 'salt',
@@ -180,7 +184,13 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   // Subscribe to real-time client account updates and reload all
   useEffect(() => {
     if (isOpen) {
-      setAccounts(loadAllSystemAccounts());
+      // 1. Initial fetch from server for Admin
+      const token = localStorage.getItem('receipt_processor_admin_token') || undefined;
+      fetchAllAccountsFromServer(token).then(list => {
+        setAccounts(list);
+      });
+
+      // 2. Local subscription for UI updates
       const unsubscribe = subscribeToClientAccounts(() => {
         const freshList = loadAllSystemAccounts();
         setAccounts(freshList);
@@ -282,13 +292,18 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     }
   };
 
-  const handleDeleteUser = (user: ClientUserAccount) => {
-    // 1. Delete client account if present
-    deleteClientAccount(user.id);
-    deleteClientAccount(user.username);
-    deleteClientAccount(user.email);
+  const handleDeleteUser = async (user: ClientUserAccount) => {
+    const token = localStorage.getItem('receipt_processor_admin_token') || undefined;
+    setLoading(true);
 
-    // 2. Delete license key if present
+    // 1. Delete from server and local
+    await deleteAccountFromServer(user.id, token);
+    
+    // 2. Also try delete by username and email to be thorough
+    await deleteAccountFromServer(user.username, token);
+    await deleteAccountFromServer(user.email, token);
+
+    // 3. Delete license key if present locally
     if (user.licenseKey) {
       try {
         const raw = localStorage.getItem('receipt_processor_keys_v4');
@@ -314,6 +329,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     setAccounts(freshList);
     setConfirmDeleteUser(null);
     setSelectedUser(null);
+    setLoading(false);
     if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
   };
 

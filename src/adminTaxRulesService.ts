@@ -30,41 +30,7 @@ export interface TaxLineOverrideRule {
 const ROUTING_RULES_KEY = 'receipt_processor_routing_rules_v1';
 const TAX_OVERRIDES_KEY = 'receipt_processor_tax_overrides_v1';
 
-const INITIAL_ROUTING_RULES: IngestionRoutingRule[] = [
-  {
-    id: 'route-1',
-    matchPattern: '@prairiewind.example.com',
-    matchType: 'DOMAIN',
-    assignToClientId: 'client-prairie-wind',
-    assignToClientName: 'Prairie Wind Agriculture',
-    defaultCategoryHint: 'Farm:General',
-    autoApprove: true,
-    enabled: true,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'route-2',
-    matchPattern: 'finance@greenacresdairy.example.com',
-    matchType: 'EXACT_EMAIL',
-    assignToClientId: 'client-green-acres',
-    assignToClientName: 'Green Acres Dairy Farm',
-    defaultCategoryHint: 'Farm:Cows',
-    autoApprove: true,
-    enabled: true,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'route-3',
-    matchPattern: 'Silver Spur',
-    matchType: 'SUBJECT_KEYWORD',
-    assignToClientId: 'client-silver-spur',
-    assignToClientName: 'Silver Spur Ranch',
-    defaultCategoryHint: 'Farm:Cows',
-    autoApprove: false,
-    enabled: true,
-    createdAt: new Date().toISOString()
-  }
-];
+const INITIAL_ROUTING_RULES: IngestionRoutingRule[] = [];
 
 const INITIAL_TAX_OVERRIDES: TaxLineOverrideRule[] = [
   {

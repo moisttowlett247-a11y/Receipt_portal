@@ -68,7 +68,7 @@ export const ClientTaxAdditionsHub: React.FC<ClientTaxAdditionsHubProps> = ({
   const [newCertType, setNewCertType] = useState<TaxExemptionCertificate['exemptionType']>('AGRICULTURAL_FARM');
   const [newCertState, setNewCertState] = useState('IA');
   const [newCertNumber, setNewCertNumber] = useState('');
-  const [newCertIssuedTo, setNewCertIssuedTo] = useState(clientSession?.displayName || 'Prairie Wind Agriculture');
+  const [newCertIssuedTo, setNewCertIssuedTo] = useState(clientSession?.displayName || 'Client Entity');
   const [newCertExp, setNewCertExp] = useState('2027-12-31');
   const [newCertNotes, setNewCertNotes] = useState('');
 

@@ -1595,7 +1595,7 @@ function rowsToSheetXml(rows: (string | number)[][], allowFormulas: boolean = tr
 
 export async function exportMultiSheetExcelXLSX(
   receipts: ProcessedReceipt[],
-  clientName: string = 'Prairie Wind Agriculture',
+  clientName: string = 'Client Entity',
   taxYear: string = '2026'
 ): Promise<void> {
   const zip = new JSZip();
@@ -1793,7 +1793,7 @@ function sanitizeCsv(val: any): string {
 
 export function exportAuditLedgerCSV(
   receipts: ProcessedReceipt[],
-  clientName: string = 'Prairie Wind Agriculture',
+  clientName: string = 'Client Entity',
   taxYear: string = '2026'
 ): void {
   const headers = [
@@ -1869,7 +1869,7 @@ export function exportAuditLedgerCSV(
 
 export function exportQBOJsonBatch(
   receipts: ProcessedReceipt[],
-  clientName: string = 'Prairie Wind Agriculture'
+  clientName: string = 'Client Entity'
 ): void {
   // Only export approved and valid non-duplicate transactions to QuickBooks Online
   const exportable = receipts.filter(r => r.status !== 'REJECTED');
@@ -1921,7 +1921,7 @@ export function exportQBOJsonBatch(
 
 export async function exportAuditVaultZip(
   receipts: ProcessedReceipt[],
-  clientName: string = 'Prairie Wind Agriculture',
+  clientName: string = 'Client Entity',
   taxYear: string = '2026'
 ): Promise<void> {
   const zip = new JSZip();
@@ -1982,7 +1982,7 @@ export function syncReceiptsToClientIntakeQueue(receipts: ProcessedReceipt[]): v
     id: `sub-sync-${r.id}`,
     clientId: `client-${r.clientName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
     clientName: r.clientName,
-    clientEmail: r.clientEmail || 'billing@farmentity.example.com',
+    clientEmail: r.clientEmail || '',
     fileName: r.fileName,
     fileSize: r.fileSize,
     fileType: r.fileType,
@@ -2015,70 +2015,70 @@ export function generateSampleFarmBatch(includeDuplicates: boolean = true): Rece
       fileName: 'Agway_Bulk_Dairy_Feed_March.jpg',
       fileSize: 185420,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: '50lb Alfalfa Pellets & Mineral salt blocks'
     },
     {
       fileName: 'Tractor_Supply_Hydraulic_Fluid_JDM20D.jpg',
       fileSize: 220410,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Universal tractor fluid 5 Gal bucket for John Deere'
     },
     {
       fileName: 'John_Deere_Parts_Filter_RE504836.pdf',
       fileSize: 142900,
       fileType: 'application/pdf',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Combine harvester hydraulic filters'
     },
     {
       fileName: 'Nutrien_Ag_Urea_46-0-0_Spring_Fertilizer.png',
       fileSize: 310500,
       fileType: 'image/png',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Bulk granular dry urea delivery'
     },
     {
       fileName: 'Shell_Bulk_Dyed_Diesel_Tractor_Fuel.jpg',
       fileSize: 198200,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: '150 Gal off-road field diesel'
     },
     {
       fileName: 'Pioneer_Seed_Corn_P0574AM_80K.pdf',
       fileSize: 165800,
       fileType: 'application/pdf',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Spring planting seed corn units'
     },
     {
       fileName: 'Dr_Miller_Vet_Herd_Vaccinations.jpg',
       fileSize: 204100,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Bovi-Shield Gold herd vaccination and health tags'
     },
     {
       fileName: 'Cenex_Grain_Dryer_Commercial_Propane.png',
       fileSize: 280400,
       fileType: 'image/png',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Propane delivery for grain bin dryer'
     },
     {
       fileName: 'Tractor_Supply_Heavy_Duty_Fencing_Wire.jpg',
       fileSize: 175200,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Pasture perimeter barbed wire and T-posts'
     },
     {
       fileName: 'Agway_Calf_Milk_Replacer_Totes.jpg',
       fileSize: 190200,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'High-protein calf milk replacer formula'
     }
   ];
@@ -2089,7 +2089,7 @@ export function generateSampleFarmBatch(includeDuplicates: boolean = true): Rece
       fileName: 'Agway_Bulk_Dairy_Feed_March_DUPLICATE_COPY.jpg',
       fileSize: 185420,
       fileType: 'image/jpeg',
-      clientName: 'Prairie Wind Agriculture',
+      clientName: 'Client Entity',
       memo: 'Accidental duplicate upload of Agway feed receipt'
     });
   }
@@ -2174,7 +2174,7 @@ let globalUniqueSequenceCounter = Math.floor(Date.now() % 1000000);
 
 export function generateUniqueHighVolumeBatch(
   count: number = 100,
-  clientName: string = 'Prairie Wind Agriculture'
+  clientName: string = 'Client Entity'
 ): ReceiptInputItem[] {
   const vendors = [
     { name: 'John Deere Sales & Parts', cat: 'Repairs & Maintenance', item: 'Hydraulic Cylinder Seal Kit', base: 340 },

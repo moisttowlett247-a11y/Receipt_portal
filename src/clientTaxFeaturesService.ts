@@ -52,82 +52,9 @@ const EXEMPTION_STORAGE_KEY = 'receipt_processor_exemption_certs_v1';
 // 2026 IRS standard business & agricultural mileage rate
 export const IRS_2026_MILEAGE_RATE = 0.67;
 
-const INITIAL_DEMO_MILEAGE: MileageTrip[] = [
-  {
-    id: 'trip-101',
-    clientId: 'client-prairie-wind',
-    date: new Date(Date.now() - 86400000 * 3).toISOString().split('T')[0],
-    purpose: 'Round-trip to regional feed mill for 4 bulk cattle mineral totes',
-    schedule: 'SCHEDULE_F',
-    startOdometer: 14210,
-    endOdometer: 14285,
-    miles: 75,
-    ratePerMile: IRS_2026_MILEAGE_RATE,
-    calculatedDeduction: 75 * IRS_2026_MILEAGE_RATE,
-    vehicleDescription: '2023 Ford F-350 SuperDuty',
-    notes: 'Hauling flatbed trailer for livestock feed delivery',
-    createdAt: new Date(Date.now() - 86400000 * 3).toISOString()
-  },
-  {
-    id: 'trip-102',
-    clientId: 'client-prairie-wind',
-    date: new Date(Date.now() - 86400000 * 7).toISOString().split('T')[0],
-    purpose: 'Emergency tractor replacement hydraulic hoses run to John Deere dealer',
-    schedule: 'SCHEDULE_F',
-    startOdometer: 14020,
-    endOdometer: 14062,
-    miles: 42,
-    ratePerMile: IRS_2026_MILEAGE_RATE,
-    calculatedDeduction: 42 * IRS_2026_MILEAGE_RATE,
-    vehicleDescription: '2023 Ford F-350 SuperDuty',
-    notes: 'Parts pickup during spring tillage',
-    createdAt: new Date(Date.now() - 86400000 * 7).toISOString()
-  },
-  {
-    id: 'trip-103',
-    clientId: 'client-prairie-wind',
-    date: new Date(Date.now() - 86400000 * 12).toISOString().split('T')[0],
-    purpose: 'Client consultation meeting with commercial agricultural loan officer',
-    schedule: 'SCHEDULE_C',
-    startOdometer: 13850,
-    endOdometer: 13910,
-    miles: 60,
-    ratePerMile: IRS_2026_MILEAGE_RATE,
-    calculatedDeduction: 60 * IRS_2026_MILEAGE_RATE,
-    vehicleDescription: 'Chevy Silverado 2500HD',
-    notes: 'Operating line of credit annual renewal',
-    createdAt: new Date(Date.now() - 86400000 * 12).toISOString()
-  }
-];
+const INITIAL_DEMO_MILEAGE: MileageTrip[] = [];
 
-const INITIAL_DEMO_EXEMPTIONS: TaxExemptionCertificate[] = [
-  {
-    id: 'cert-101',
-    clientId: 'client-prairie-wind',
-    title: 'State Department of Revenue Agricultural Production Exemption',
-    exemptionType: 'AGRICULTURAL_FARM',
-    state: 'IA',
-    certificateNumber: 'AG-EX-8849201-B',
-    issuedToName: 'Prairie Wind Agriculture LLC',
-    expirationDate: '2027-12-31',
-    notes: 'Presents at Tractor Supply, Co-Op, and machinery dealers for 100% sales tax exemption on feed, seeds, fertilizer, and tractor parts.',
-    verified: true,
-    createdAt: new Date(Date.now() - 86400000 * 30).toISOString()
-  },
-  {
-    id: 'cert-102',
-    clientId: 'client-prairie-wind',
-    title: 'Wholesale Resale Certificate (Commercial Grains & Livestock)',
-    exemptionType: 'WHOLESALE_RESALE',
-    state: 'IA',
-    certificateNumber: 'RESALE-559281-W',
-    issuedToName: 'Prairie Wind Agriculture LLC',
-    expirationDate: '2026-11-30',
-    notes: 'Applicable for raw commodity grain distribution and auction yard transactions.',
-    verified: true,
-    createdAt: new Date(Date.now() - 86400000 * 60).toISOString()
-  }
-];
+const INITIAL_DEMO_EXEMPTIONS: TaxExemptionCertificate[] = [];
 
 export function getMileageTrips(clientId?: string): MileageTrip[] {
   try {

@@ -367,7 +367,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
     onAddManualKey({
       key: manualKey.trim().toUpperCase(),
       clientName: manualClient.trim() || `${getPlanLabel(manualPlan)} Subscriber`,
-      clientEmail: manualEmail.trim() || (manualPlan === 'ADMIN' ? 'admin@farmtax.com' : 'customer@farmtax.com'),
+      clientEmail: manualEmail.trim() || (manualPlan === 'ADMIN' ? '' : ''),
       plan: manualPlan,
       status: manualStatus,
       inUse: manualInUse,

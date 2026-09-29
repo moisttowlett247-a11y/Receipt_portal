@@ -26,58 +26,7 @@ export interface ClientSubmission {
 const STORAGE_KEY = 'receipt_processor_client_submissions_v1';
 const BROADCAST_CHANNEL_NAME = 'receipt_portal_submissions_broadcast';
 
-const INITIAL_DEMO_SUBMISSIONS: ClientSubmission[] = [
-  {
-    id: 'sub-101',
-    clientId: 'client-prairie-wind',
-    clientName: 'Prairie Wind Agriculture',
-    clientEmail: 'billing@prairiewind.example.com',
-    fileName: 'Tractor_Supply_Hydraulic_Fluid.pdf',
-    fileSize: 142850,
-    fileType: 'application/pdf',
-    categoryHint: 'Supplies & Materials',
-    memo: 'Emergency hydraulic oil for John Deere tractor',
-    uploadedAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-    status: 'SYNCED_QBO',
-    extractedVendor: 'Tractor Supply Co.',
-    extractedAmount: 249.95,
-    extractedDate: new Date().toISOString().split('T')[0],
-    workerNodeId: 'vm-worker-1'
-  },
-  {
-    id: 'sub-102',
-    clientId: 'client-green-acres',
-    clientName: 'Green Acres Dairy Farm',
-    clientEmail: 'finance@greenacresdairy.example.com',
-    fileName: 'Agway_Feed_Order_March.jpg',
-    fileSize: 284100,
-    fileType: 'image/jpeg',
-    categoryHint: 'Farm:Feed',
-    memo: 'Bulk dairy cow feed shipment',
-    uploadedAt: new Date(Date.now() - 3600000 * 12).toISOString(),
-    status: 'SYNCED_QBO',
-    extractedVendor: 'Agway Farm & Home',
-    extractedAmount: 1480.00,
-    extractedDate: new Date().toISOString().split('T')[0],
-    workerNodeId: 'vm-worker-2'
-  },
-  {
-    id: 'sub-103',
-    clientId: 'client-prairie-wind',
-    clientName: 'Prairie Wind Agriculture',
-    clientEmail: 'billing@prairiewind.example.com',
-    fileName: 'Shell_Diesel_Bulk_Fill.png',
-    fileSize: 198400,
-    fileType: 'image/png',
-    categoryHint: 'Automobile:Fuel',
-    memo: 'Field tractor off-road diesel fill',
-    uploadedAt: new Date(Date.now() - 3600000 * 1).toISOString(),
-    status: 'QUEUED',
-    extractedVendor: 'Shell Oil Co.',
-    extractedAmount: 432.50,
-    extractedDate: new Date().toISOString().split('T')[0]
-  }
-];
+const INITIAL_DEMO_SUBMISSIONS: ClientSubmission[] = [];
 
 // Broadcast channel for multi-tab/window real-time sync
 let broadcastChannel: BroadcastChannel | null = null;
