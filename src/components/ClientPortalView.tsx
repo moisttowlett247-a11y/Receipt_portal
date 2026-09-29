@@ -1306,7 +1306,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                               type="button"
                               onClick={() => {
                                 deleteSubmission(sub.id);
-                                refreshSubmissions();
+                                // manual refresh removed - subscription handles it
                               }}
                               className="text-stone-500 hover:text-rose-400 p-1 transition-colors cursor-pointer"
                               title="Delete submission record"

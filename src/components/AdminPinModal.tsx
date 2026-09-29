@@ -21,7 +21,8 @@ import {
   ExternalLink,
   ChevronRight,
   Copy,
-  AlertTriangle
+  AlertTriangle,
+  RefreshCw
 } from 'lucide-react';
 import { computeCredentialsHash } from '../hashUtils';
 import { updateCloudflareAdminCredentials } from '../licenseSyncService';
@@ -140,13 +141,39 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       console.warn('Error loading inquiries into map:', err);
     }
 
-    // 4. Admin Account (Authoritative)
+    // 4. Admin Account (Authoritative - Always ensured)
     try {
-      const adminUsr = savedUsername || localStorage.getItem('receipt_processor_admin_user') || 'admin';
-      const adminId = `admin-${adminUsr}`;
-      map.set(adminId, {
-        id: adminId,
-        username: adminUsr,
+      const adminUsr = (savedUsername || localStorage.getItem('receipt_processor_admin_user') || 'admin').trim();
+      if (adminUsr) {
+        const adminId = `admin-${adminUsr.toLowerCase()}`;
+        if (!map.has(adminId)) {
+          map.set(adminId, {
+            id: adminId,
+            username: adminUsr,
+            displayName: 'Platform Admin',
+            email: 'moisttowlett247@gmail.com',
+            companyName: 'System Administration',
+            passwordHash: 'admin_master',
+            salt: 'admin_salt',
+            plan: 'Master Administrator',
+            planTier: 'ADMIN' as any,
+            planStatus: 'ACTIVE',
+            receiptQuota: -1,
+            receiptsSubmittedCount: 0,
+            createdAt: '2026-01-01T00:00:00.000Z'
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('Error adding admin account to map:', err);
+    }
+
+    const final = Array.from(map.values());
+    // Fallback guarantee: if map was somehow empty, add default admin
+    if (final.length === 0) {
+      return [{
+        id: 'admin-default',
+        username: 'admin',
         displayName: 'Platform Admin',
         email: 'moisttowlett247@gmail.com',
         companyName: 'System Administration',
@@ -158,12 +185,9 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         receiptQuota: -1,
         receiptsSubmittedCount: 0,
         createdAt: '2026-01-01T00:00:00.000Z'
-      });
-    } catch (err) {
-      console.warn('Error adding admin account to map:', err);
+      }];
     }
-
-    return Array.from(map.values());
+    return final;
   };
 
   // Client accounts list state
@@ -313,41 +337,43 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     const token = localStorage.getItem('receipt_processor_admin_token') || undefined;
     setLoading(true);
 
-    // 1. Delete from server and local
-    await deleteAccountFromServer(user.id, token);
-    
-    // 2. Also try delete by username and email to be thorough
-    await deleteAccountFromServer(user.username, token);
-    await deleteAccountFromServer(user.email, token);
+    try {
+      // 1. Delete from server and local
+      await deleteAccountFromServer(user.id, token);
+      
+      // 2. Also try delete by username and email to be thorough
+      await deleteAccountFromServer(user.username, token);
+      await deleteAccountFromServer(user.email, token);
 
-    // 3. Delete license key if present locally
-    if (user.licenseKey) {
+      // 3. Delete license key if present locally
+      if (user.licenseKey) {
+        try {
+          const raw = localStorage.getItem('receipt_processor_keys_v4');
+          if (raw) {
+            const keys = JSON.parse(raw);
+            const filteredKeys = keys.filter((k: any) => k.key !== user.licenseKey && k.id !== user.id);
+            localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(filteredKeys));
+          }
+        } catch {}
+      }
+
+      // 4. Delete access inquiry if present
       try {
-        const raw = localStorage.getItem('receipt_processor_keys_v4');
-        if (raw) {
-          const keys = JSON.parse(raw);
-          const filteredKeys = keys.filter((k: any) => k.key !== user.licenseKey && k.id !== user.id);
-          localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(filteredKeys));
+        const rawInq = localStorage.getItem('receipt_processor_inquiries');
+        if (rawInq) {
+          const inqs = JSON.parse(rawInq);
+          const filteredInq = inqs.filter((i: any) => i.id !== user.id && i.email !== user.email);
+          localStorage.setItem('receipt_processor_inquiries', JSON.stringify(filteredInq));
         }
       } catch {}
+
+      // Redundant setAccounts removed - subscription handled it
+      setConfirmDeleteUser(null);
+      setSelectedUser(null);
+      if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
+    } finally {
+      setLoading(false);
     }
-
-    // 3. Delete access inquiry if present
-    try {
-      const rawInq = localStorage.getItem('receipt_processor_inquiries');
-      if (rawInq) {
-        const inqs = JSON.parse(rawInq);
-        const filteredInq = inqs.filter((i: any) => i.id !== user.id && i.email !== user.email);
-        localStorage.setItem('receipt_processor_inquiries', JSON.stringify(filteredInq));
-      }
-    } catch {}
-
-    const freshList = loadAllSystemAccounts();
-    setAccounts(freshList);
-    setConfirmDeleteUser(null);
-    setSelectedUser(null);
-    setLoading(false);
-    if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
   };
 
   const handleGrantPlan = (user: ClientUserAccount, tier: PlanTier, planName: string) => {

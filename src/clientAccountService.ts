@@ -202,14 +202,21 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
         
         // Merge server and local accounts by ID
         const map = new Map<string, ClientUserAccount>();
+        // Add local ones first
         localAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
+        // Server ones are authoritative if there is a conflict
         serverAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
         
         const merged = Array.from(map.values());
         localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
         notifyAccountsChanged(merged);
         return merged;
+      } else {
+        console.warn('Server returned success:false or invalid accounts array', data);
       }
+    } else {
+      const errorText = await resp.text();
+      console.warn(`Server returned error ${resp.status}: ${errorText}`);
     }
   } catch (err) {
     console.warn('Error fetching all accounts from server:', err);
