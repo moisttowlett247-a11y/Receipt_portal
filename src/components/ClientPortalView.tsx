@@ -248,7 +248,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       for (const file of selectedFiles) {
         setUploadProgress({ current: count + 1, total: selectedFiles.length });
         let dataUrl: string | undefined = undefined;
-        if (file.type.startsWith('image/')) {
+        // Read data URL for both images and PDFs to allow remote OCR processing
+        if (file.type.startsWith('image/') || file.type === 'application/pdf') {
           try {
             dataUrl = await new Promise<string>((resolve) => {
               const reader = new FileReader();
