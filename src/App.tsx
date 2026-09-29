@@ -278,6 +278,14 @@ export default function App() {
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('keydown', handleKeyDown);
 
+    // Periodic background synchronization for client accounts and submissions
+    const syncInterval = setInterval(() => {
+      // Sync accounts
+      syncClientAccountsWithServer().catch(() => {});
+      // Sync submissions
+      import('./clientSubmissionService').then(m => m.syncClientSubmissionsWithBackend().catch(() => {}));
+    }, 45000); // Every 45s
+
     // Check for QuickBooks OAuth callback results or legal deep-links
     if (typeof window !== 'undefined') {
       const searchParams = new URLSearchParams(window.location.search);
@@ -315,6 +323,7 @@ export default function App() {
       window.removeEventListener('popstate', handleLocationChange);
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('keydown', handleKeyDown);
+      clearInterval(syncInterval);
     };
   }, []);
 

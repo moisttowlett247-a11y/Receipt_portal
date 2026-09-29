@@ -140,11 +140,13 @@ export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
 
 /**
  * Synchronizes local client accounts with the centralized Cloudflare KV database.
+ * Merges local and server data to ensure no accounts are lost in either direction.
  */
 export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[]> {
   try {
     const localAccounts = getStoredClientAccounts();
     
+    // Pull first to merge
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -154,13 +156,21 @@ export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[
     if (resp.ok) {
       const data = await resp.json();
       if (data.success && Array.isArray(data.accounts)) {
-        // Only update local storage if server has more or different accounts
         const serverAccounts = data.accounts as ClientUserAccount[];
-        if (serverAccounts.length !== localAccounts.length) {
-          localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(serverAccounts));
-          notifyAccountsChanged(serverAccounts);
+        
+        // Merge bidirectional
+        const map = new Map<string, ClientUserAccount>();
+        serverAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
+        localAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
+        
+        const merged = Array.from(map.values());
+        
+        // Update local if different
+        if (merged.length !== localAccounts.length) {
+          localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
+          notifyAccountsChanged(merged);
         }
-        return serverAccounts;
+        return merged;
       }
     }
   } catch (err) {
@@ -187,11 +197,18 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
     if (resp.ok) {
       const data = await resp.json();
       if (data.success && Array.isArray(data.accounts)) {
-        const accounts = data.accounts as ClientUserAccount[];
-        // Update local storage to match server reality for Admin
-        localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
-        notifyAccountsChanged(accounts);
-        return accounts;
+        const serverAccounts = data.accounts as ClientUserAccount[];
+        const localAccounts = getStoredClientAccounts();
+        
+        // Merge server and local accounts by ID
+        const map = new Map<string, ClientUserAccount>();
+        localAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
+        serverAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
+        
+        const merged = Array.from(map.values());
+        localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
+        notifyAccountsChanged(merged);
+        return merged;
       }
     }
   } catch (err) {

@@ -65,20 +65,23 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     // 1. Client accounts
     try {
       const clients = getStoredClientAccounts();
-      clients.forEach(c => {
-        if (c && c.id) map.set(c.id, c);
-      });
-    } catch {}
+      if (Array.isArray(clients)) {
+        clients.forEach(c => {
+          if (c && c.id) map.set(c.id, c);
+        });
+      }
+    } catch (err) {
+      console.warn('Error loading client accounts into map:', err);
+    }
 
     // 2. License keys / Subscribers
     try {
       const keysRaw = localStorage.getItem('receipt_processor_keys_v4') || (availableKeys.length ? JSON.stringify(availableKeys) : null);
-      if (keysRaw) {
+      if (keysRaw && keysRaw !== 'undefined') {
         const keys = JSON.parse(keysRaw);
         if (Array.isArray(keys)) {
           keys.forEach((k: any) => {
             const kId = k.id || `key-${k.key}`;
-            // ONLY show if it has a real email and doesn't collide with existing account
             if (!map.has(kId) && k.clientEmail && k.clientEmail.includes('@')) {
               map.set(kId, {
                 id: kId,
@@ -102,17 +105,18 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
           });
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn('Error loading license keys into map:', err);
+    }
 
     // 3. Access inquiries / requests
     try {
       const inqRaw = localStorage.getItem('receipt_processor_inquiries');
-      if (inqRaw) {
+      if (inqRaw && inqRaw !== 'undefined') {
         const inqs = JSON.parse(inqRaw);
         if (Array.isArray(inqs)) {
           inqs.forEach((i: any) => {
             const iId = i.id || `inq-${i.email}`;
-            // ONLY show if it has a real email and doesn't collide
             if (!map.has(iId) && i.email && i.email.includes('@')) {
               map.set(iId, {
                 id: iId,
@@ -132,30 +136,32 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
           });
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn('Error loading inquiries into map:', err);
+    }
 
-    // 4. Admin Account
+    // 4. Admin Account (Authoritative)
     try {
       const adminUsr = savedUsername || localStorage.getItem('receipt_processor_admin_user') || 'admin';
       const adminId = `admin-${adminUsr}`;
-      if (!map.has(adminId)) {
-        map.set(adminId, {
-          id: adminId,
-          username: adminUsr,
-          displayName: 'Platform Admin',
-          email: 'moisttowlett247@gmail.com',
-          companyName: 'System Administration',
-          passwordHash: 'admin_master',
-          salt: 'admin_salt',
-          plan: 'Master Administrator',
-          planTier: 'ADMIN' as any,
-          planStatus: 'ACTIVE',
-          receiptQuota: -1,
-          receiptsSubmittedCount: 0,
-          createdAt: new Date().toISOString()
-        });
-      }
-    } catch {}
+      map.set(adminId, {
+        id: adminId,
+        username: adminUsr,
+        displayName: 'Platform Admin',
+        email: 'moisttowlett247@gmail.com',
+        companyName: 'System Administration',
+        passwordHash: 'admin_master',
+        salt: 'admin_salt',
+        plan: 'Master Administrator',
+        planTier: 'ADMIN' as any,
+        planStatus: 'ACTIVE',
+        receiptQuota: -1,
+        receiptsSubmittedCount: 0,
+        createdAt: '2026-01-01T00:00:00.000Z'
+      });
+    } catch (err) {
+      console.warn('Error adding admin account to map:', err);
+    }
 
     return Array.from(map.values());
   };
@@ -164,6 +170,19 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   const [accounts, setAccounts] = useState<ClientUserAccount[]>(() => loadAllSystemAccounts());
   const [searchQuery, setSearchQuery] = useState('');
   const [planFilter, setPlanFilter] = useState<string>('ALL');
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    const token = localStorage.getItem('receipt_processor_admin_token') || undefined;
+    try {
+      await fetchAllAccountsFromServer(token);
+      setAccounts(loadAllSystemAccounts());
+    } finally {
+      setIsRefreshing(false);
+    }
+    if (onToast) onToast('Account database synchronized with cloud.');
+  };
 
   // Selected account for details pop-out
   const [selectedUser, setSelectedUser] = useState<ClientUserAccount | null>(null);
@@ -186,9 +205,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     if (isOpen) {
       // 1. Initial fetch from server for Admin
       const token = localStorage.getItem('receipt_processor_admin_token') || undefined;
-      fetchAllAccountsFromServer(token).then(list => {
-        setAccounts(list);
-      });
+      fetchAllAccountsFromServer(token);
 
       // 2. Local subscription for UI updates
       const unsubscribe = subscribeToClientAccounts(() => {
@@ -377,6 +394,15 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
                 <h3 className="text-base font-bold text-stone-100">
                   Account &amp; User Management
                 </h3>
+                <button
+                  type="button"
+                  onClick={handleManualRefresh}
+                  disabled={isRefreshing}
+                  className={`p-1.5 rounded-lg bg-stone-900 border border-stone-800 text-stone-400 hover:text-amber-400 transition-all cursor-pointer ${isRefreshing ? 'animate-spin opacity-50' : ''}`}
+                  title="Force Synchronize with Cloud Database"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
                 <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
                   Admin Console
                 </span>
