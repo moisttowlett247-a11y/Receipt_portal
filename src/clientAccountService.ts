@@ -157,6 +157,42 @@ const INITIAL_DEMO_CLIENT_ACCOUNTS: ClientUserAccount[] = [
     receiptQuota: -1,
     receiptsSubmittedCount: 8,
     createdAt: new Date(Date.now() - 3600000 * 24 * 8).toISOString()
+  },
+  {
+    id: 'client-blue-ridge',
+    username: 'blueridge',
+    displayName: 'Blue Ridge Orchards',
+    email: 'harvest@blueridgeorchards.example.com',
+    companyName: 'Blue Ridge Fruit & Produce Inc',
+    passwordHash: 'seeded_demo_hash',
+    salt: 'seeded_salt',
+    licenseKey: 'ANNUAL-5581-9920-2026',
+    plan: 'Annual Farm & Business Package',
+    planTier: 'ANNUAL',
+    planStatus: 'ACTIVE',
+    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 60).toISOString(),
+    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 305).toISOString().split('T')[0],
+    receiptQuota: -1,
+    receiptsSubmittedCount: 31,
+    createdAt: new Date(Date.now() - 3600000 * 24 * 60).toISOString()
+  },
+  {
+    id: 'client-sunbelt',
+    username: 'sunbelt',
+    displayName: 'Sunbelt Grain & Feed',
+    email: 'accounts@sunbeltgrain.example.com',
+    companyName: 'Sunbelt Agri-Supply LLC',
+    passwordHash: 'seeded_demo_hash',
+    salt: 'seeded_salt',
+    licenseKey: '3MONTH-1192-4402-2026',
+    plan: 'Quarterly Tax & Expense Prep',
+    planTier: '3MONTH',
+    planStatus: 'ACTIVE',
+    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 25).toISOString(),
+    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 65).toISOString().split('T')[0],
+    receiptQuota: -1,
+    receiptsSubmittedCount: 19,
+    createdAt: new Date(Date.now() - 3600000 * 24 * 25).toISOString()
   }
 ];
 
@@ -231,18 +267,18 @@ export function subscribeToClientAccounts(callback: (accounts: ClientUserAccount
  */
 export function deleteClientAccount(userId: string): boolean {
   const accounts = getStoredClientAccounts();
-  const filtered = accounts.filter(a => a.id !== userId);
-  if (filtered.length !== accounts.length) {
-    saveStoredClientAccounts(filtered);
+  const cleanId = userId.trim();
+  const filtered = accounts.filter(a => a.id !== cleanId && a.username !== cleanId && a.email !== cleanId);
+  
+  // Always save filtered accounts and notify (even if length matched or didn't match perfectly, force remove)
+  saveStoredClientAccounts(filtered);
 
-    // If current logged-in session was the deleted account, log them out
-    const current = getCurrentClientSession();
-    if (current && current.userId === userId) {
-      clearClientSession();
-    }
-    return true;
+  // If current logged-in session was the deleted account, log them out
+  const current = getCurrentClientSession();
+  if (current && (current.userId === cleanId || current.username === cleanId || current.email === cleanId)) {
+    clearClientSession();
   }
-  return false;
+  return true;
 }
 
 /**
