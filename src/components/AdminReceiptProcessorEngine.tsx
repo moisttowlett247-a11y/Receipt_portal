@@ -139,6 +139,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     tax: number;
     paymentMethod: string;
     cardLast4: string;
+    transactionNumber: string;
+    referenceId: string;
+    invoiceNumber: string;
     schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
     irsLineNumber: string;
     irsLineTitle: string;
@@ -152,6 +155,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     tax: 0,
     paymentMethod: 'CASH',
     cardLast4: '',
+    transactionNumber: '',
+    referenceId: '',
+    invoiceNumber: '',
     schedule: 'SCHEDULE_F',
     irsLineNumber: 'Line 27',
     irsLineTitle: 'Supplies purchased',
@@ -328,6 +334,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       tax: r.tax,
       paymentMethod: r.paymentMethod || 'CASH',
       cardLast4: r.cardLast4 || '',
+      transactionNumber: r.transactionNumber || '',
+      referenceId: r.referenceId || '',
+      invoiceNumber: r.invoiceNumber || '',
       schedule: r.schedule,
       irsLineNumber: r.irsLineNumber,
       irsLineTitle: r.irsLineTitle,
@@ -347,6 +356,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       tax: Number(editFormData.tax) || 0,
       paymentMethod: editFormData.paymentMethod.trim() || inspectingReceipt.paymentMethod,
       cardLast4: editFormData.cardLast4.trim() || undefined,
+      transactionNumber: editFormData.transactionNumber.trim() || undefined,
+      referenceId: editFormData.referenceId.trim() || undefined,
+      invoiceNumber: editFormData.invoiceNumber.trim() || undefined,
       schedule: editFormData.schedule,
       irsLineNumber: editFormData.irsLineNumber,
       irsLineTitle: editFormData.irsLineTitle,
@@ -401,6 +413,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           paymentMethod: d.paymentMethod,
           cardLast4: d.cardLast4,
           invoiceNumber: d.invoiceNumber,
+          transactionNumber: d.transactionNumber,
+          referenceId: d.referenceId,
           category: taxCls.categoryName,
           schedule: taxCls.schedule,
           irsLineNumber: taxCls.lineNumber,
@@ -474,6 +488,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           paymentMethod: d.paymentMethod,
           cardLast4: d.cardLast4,
           invoiceNumber: d.invoiceNumber,
+          transactionNumber: d.transactionNumber,
+          referenceId: d.referenceId,
           category: taxCls.categoryName,
           schedule: taxCls.schedule,
           irsLineNumber: taxCls.lineNumber,
@@ -1721,6 +1737,21 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                         <div className="text-[11px] font-mono">
                           {r.paymentMethod} {r.cardLast4 ? `*${r.cardLast4}` : ''}
                         </div>
+                        {(r.transactionNumber || r.referenceId) && (
+                          <div className="flex items-center gap-1.5 text-[9px] font-mono mt-0.5">
+                            {r.transactionNumber && (
+                              <span className="text-amber-300 font-semibold" title="Register Transaction Sequence Number">
+                                Txn #{r.transactionNumber}
+                              </span>
+                            )}
+                            {r.transactionNumber && r.referenceId && <span className="text-stone-600">•</span>}
+                            {r.referenceId && (
+                              <span className="text-cyan-300 font-semibold" title="Payment Processor Reference ID">
+                                Ref #{r.referenceId}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Duplicate Status */}
@@ -1940,6 +1971,39 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   </div>
 
                   <div>
+                    <label className="block text-[10px] uppercase font-semibold text-amber-400 mb-1">Trans # (Register Transaction)</label>
+                    <input
+                      type="text"
+                      value={editFormData.transactionNumber}
+                      onChange={e => setEditFormData({ ...editFormData, transactionNumber: e.target.value })}
+                      placeholder="e.g. 4821 or 0142"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-amber-300 font-mono focus:outline-none focus:border-amber-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-cyan-400 mb-1">Ref ID (Processor Reference)</label>
+                    <input
+                      type="text"
+                      value={editFormData.referenceId}
+                      onChange={e => setEditFormData({ ...editFormData, referenceId: e.target.value })}
+                      placeholder="e.g. 0019284729"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-cyan-300 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">Invoice / Receipt #</label>
+                    <input
+                      type="text"
+                      value={editFormData.invoiceNumber}
+                      onChange={e => setEditFormData({ ...editFormData, invoiceNumber: e.target.value })}
+                      placeholder="e.g. INV-10024"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 font-mono focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
                     <label className="block text-[10px] uppercase font-semibold text-stone-400 mb-1">IRS Tax Schedule</label>
                     <select
                       value={editFormData.schedule}
@@ -2088,10 +2152,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 </div>
 
                 {/* Core Metadata Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-stone-950 p-4 rounded-xl border border-stone-800">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs bg-stone-950 p-4 rounded-xl border border-stone-800">
                   <div>
                     <div className="text-stone-400 text-[10px] uppercase font-semibold">Vendor / Payee</div>
-                    <div className="font-bold text-white mt-0.5">{inspectingReceipt.vendor}</div>
+                    <div className="font-bold text-white mt-0.5 truncate" title={inspectingReceipt.vendor}>{inspectingReceipt.vendor}</div>
                   </div>
                   <div>
                     <div className="text-stone-400 text-[10px] uppercase font-semibold">Transaction Date</div>
@@ -2110,9 +2174,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                     </div>
                   </div>
                   <div>
-                    <div className="text-stone-400 text-[10px] uppercase font-semibold">Invoice / Ref #</div>
-                    <div className="font-mono text-stone-200 mt-0.5">
-                      {inspectingReceipt.invoiceNumber || inspectingReceipt.id.split('-')[1] || 'N/A'}
+                    <div className="text-amber-400 text-[10px] uppercase font-semibold">Trans # (Register)</div>
+                    <div className="font-mono font-bold text-amber-300 mt-0.5">
+                      {inspectingReceipt.transactionNumber || 'N/A'}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-cyan-400 text-[10px] uppercase font-semibold">Ref ID (Processor)</div>
+                    <div className="font-mono font-bold text-cyan-300 mt-0.5">
+                      {inspectingReceipt.referenceId || 'N/A'}
                     </div>
                   </div>
                 </div>

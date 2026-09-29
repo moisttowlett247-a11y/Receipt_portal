@@ -659,7 +659,7 @@ function licenseSyncApiPlugin(): Plugin {
                 return;
               }
 
-              const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return a list of all detected receipts in the 'receipts' field.";
+              const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), and the FINAL GRAND TOTAL actually charged. Return a list of all detected receipts in the 'receipts' field.";
 
               const systemInstructionText = 
                 `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n` +
@@ -670,7 +670,11 @@ function licenseSyncApiPlugin(): Plugin {
                 `4. MATH VALIDATION: Verify that Line Items Sum + Tax + Tip = Total. If they do not match, use the line item sum as the primary source of truth for the subtotal.\n` +
                 `5. VENDOR: Extract the full legal merchant name from the top of the receipt.\n` +
                 `6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
-                `7. Return strictly valid JSON conforming to the schema.`;
+                `7. DISTINGUISH TRANSACTION NUMBER vs REFERENCE ID vs INVOICE NUMBER:\n` +
+                `   - 'transaction_number': Strictly the register, POS, cashier, or terminal sequence transaction number (e.g. labeled 'TRANS #', 'TRAN #', 'TRANSACTION', 'TXN #', 'CHECK #', 'TICKET #', or 'SEQ #'). DO NOT put this into reference_id!\n` +
+                `   - 'reference_id': Strictly the credit card processor, payment gateway, host, or terminal authorization reference code (e.g. labeled 'REF #', 'REF ID', 'REFERENCE', 'HOST REF #', 'ACQ REF', 'TRACE #', or 'AUTH/REF'). NEVER confuse with Trans #!\n` +
+                `   - 'invoice_number': The formal billing invoice number or master receipt number (e.g. labeled 'INVOICE #', 'INV #', 'RECEIPT #', or 'ORDER #'). If none, leave empty string.\n` +
+                `8. Return strictly valid JSON conforming to the schema.`;
 
               const receiptSchema = {
                 type: "OBJECT",
@@ -688,7 +692,9 @@ function licenseSyncApiPlugin(): Plugin {
                         tip: { type: "NUMBER", description: "Tip amount if applicable" },
                         payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
                         card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
-                        invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
+                        transaction_number: { type: "STRING", description: "Register, POS, or cashier sequence/transaction number (e.g. Trans #, Tran #, Txn #). Distinct from Ref ID." },
+                        reference_id: { type: "STRING", description: "Merchant processor or card authorization reference code (e.g. Ref #, Ref ID, Reference). Distinct from Trans #." },
+                        invoice_number: { type: "STRING", description: "Formal Invoice or Receipt number (e.g. Inv #, Receipt #, Order #). Distinct from Trans # or Ref ID." },
                         category: {
                           type: "STRING",
                           enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
@@ -742,7 +748,6 @@ function licenseSyncApiPlugin(): Plugin {
                 "gemini-2.0-flash",
                 "gemini-2.0-flash-lite",
                 "gemini-1.5-flash",
-                "gemini-3.8-flash",
                 "gemini-flash-latest"
               ];
               let rawResult: any = null;
@@ -949,6 +954,26 @@ function licenseSyncApiPlugin(): Plugin {
               if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
               if (cardLast4.length < 4) cardLast4 = '';
 
+              let rawTrans = String(rawResult.transaction_number || rawResult.transactionNumber || '').trim();
+              let rawRef = String(rawResult.reference_id || rawResult.referenceId || '').trim();
+              let rawInv = String(rawResult.invoice_number || rawResult.invoiceNumber || '').trim();
+
+              if (rawRef && !rawTrans && /^(?:trans|tran|txn|transaction)[\s#.:-]/i.test(rawRef)) {
+                rawTrans = rawRef;
+                rawRef = '';
+              } else if (rawTrans && !rawRef && /^(?:ref|reference|auth|trace|host\s*ref)[\s#.:-]/i.test(rawTrans)) {
+                rawRef = rawTrans;
+                rawTrans = '';
+              }
+
+              const cleanTrans = rawTrans ? rawTrans.replace(/^(?:trans(?:action)?|tran|txn)[\s#.:-]*/i, '').trim() : '';
+              const cleanRef = rawRef ? rawRef.replace(/^(?:ref(?:erence)?|auth|trace|host\s*ref|acq\s*ref)[\s#.:-]*/i, '').trim() : '';
+              let cleanInv = rawInv ? rawInv.replace(/^(?:invoice|inv|receipt|order)[\s#.:-]*/i, '').trim() : '';
+              if (!cleanInv) {
+                if (cleanTrans) cleanInv = `TXN-${cleanTrans}`;
+                else if (cleanRef) cleanInv = `REF-${cleanRef}`;
+              }
+
               const resultData = {
                 vendor: rawResult.vendor || 'Unknown Vendor',
                 date: dateStr,
@@ -958,7 +983,9 @@ function licenseSyncApiPlugin(): Plugin {
                 tip: Number(tip.toFixed(2)),
                 paymentMethod: rawResult.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
                 cardLast4: cardLast4 || undefined,
-                invoiceNumber: rawResult.invoice_number || undefined,
+                transactionNumber: cleanTrans || undefined,
+                referenceId: cleanRef || undefined,
+                invoiceNumber: cleanInv || undefined,
                 category: rawResult.category || 'Supplies & Materials',
                 items: rawResult.items || [],
                 memo: rawResult.memo || `AI-OCR Scanned (${fileName})`,

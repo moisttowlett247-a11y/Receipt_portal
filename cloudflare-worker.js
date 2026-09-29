@@ -971,7 +971,7 @@ export default {
         }
 
         const promptText = 
-          "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+          "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
 
         const systemInstructionText = 
           "You are a certified forensic CPA accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax (Schedule C / Schedule F) and QuickBooks Online reconciliation.\n" +
@@ -981,7 +981,11 @@ export default {
           "3. LINE ITEMS & SUBTOTAL: 'subtotal' is pre-tax. 'tax' is sales tax. Extract line items in 'items'.\n" +
           "4. VENDOR: Extract full legal merchant name at the top of the receipt.\n" +
           "5. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n" +
-          "6. Return strictly valid JSON conforming to the schema.";
+          "6. DISTINGUISH TRANSACTION NUMBER vs REFERENCE ID vs INVOICE NUMBER:\n" +
+          "   - 'transaction_number': Strictly the register, POS, cashier, or terminal sequence transaction number (e.g. labeled 'TRANS #', 'TRAN #', 'TRANSACTION', 'TXN #', 'CHECK #', 'TICKET #', or 'SEQ #'). DO NOT put this into reference_id!\n" +
+          "   - 'reference_id': Strictly the credit card processor, payment gateway, host, or terminal authorization reference code (e.g. labeled 'REF #', 'REF ID', 'REFERENCE', 'HOST REF #', 'ACQ REF', 'TRACE #', or 'AUTH/REF'). NEVER confuse with Trans #!\n" +
+          "   - 'invoice_number': The formal billing invoice number or master receipt number (e.g. labeled 'INVOICE #', 'INV #', 'RECEIPT #', or 'ORDER #'). If none, leave empty string.\n" +
+          "7. Return strictly valid JSON conforming to the schema.";
 
         const receiptSchema = {
           type: "OBJECT",
@@ -999,7 +1003,9 @@ export default {
                   tip: { type: "NUMBER" },
                   payment_method: { type: "STRING" },
                   card_last_4: { type: "STRING" },
-                  invoice_number: { type: "STRING" },
+                  transaction_number: { type: "STRING", description: "Register, POS, or cashier sequence/transaction number (e.g. Trans #, Tran #, Txn #). Distinct from Ref ID." },
+                  reference_id: { type: "STRING", description: "Merchant processor or card authorization reference code (e.g. Ref #, Ref ID, Reference). Distinct from Trans #." },
+                  invoice_number: { type: "STRING", description: "Formal Invoice or Receipt number (e.g. Inv #, Receipt #, Order #). Distinct from Trans # or Ref ID." },
                   category: { type: "STRING" },
                   items: {
                     type: "ARRAY",
@@ -1044,7 +1050,6 @@ export default {
           "gemini-2.0-flash",
           "gemini-2.0-flash-lite",
           "gemini-1.5-flash",
-          "gemini-3.8-flash",
           "gemini-flash-latest"
         ];
 
@@ -1101,6 +1106,22 @@ export default {
         }
 
         if (rawResult) {
+          let rawTrans = String(rawResult.transaction_number || rawResult.transactionNumber || '').trim();
+          let rawRef = String(rawResult.reference_id || rawResult.referenceId || '').trim();
+          let rawInv = String(rawResult.invoice_number || rawResult.invoiceNumber || '').trim();
+
+          if (rawRef && !rawTrans && /^(?:trans|tran|txn|transaction)[\s#.:-]/i.test(rawRef)) {
+            rawTrans = rawRef;
+            rawRef = '';
+          } else if (rawTrans && !rawRef && /^(?:ref|reference|auth|trace|host\s*ref)[\s#.:-]/i.test(rawTrans)) {
+            rawRef = rawTrans;
+            rawTrans = '';
+          }
+
+          rawResult.transaction_number = rawTrans ? rawTrans.replace(/^(?:trans(?:action)?|tran|txn)[\s#.:-]*/i, '').trim() : undefined;
+          rawResult.reference_id = rawRef ? rawRef.replace(/^(?:ref(?:erence)?|auth|trace|host\s*ref|acq\s*ref)[\s#.:-]*/i, '').trim() : undefined;
+          rawResult.invoice_number = rawInv ? rawInv.replace(/^(?:invoice|inv|receipt|order)[\s#.:-]*/i, '').trim() : (rawResult.transaction_number ? `TXN-${rawResult.transaction_number}` : (rawResult.reference_id ? `REF-${rawResult.reference_id}` : undefined));
+
           return jsonResponse({ success: true, data: rawResult });
         } else {
           return jsonResponse({ success: false, error: lastError || "Failed to parse receipt with AI vision" }, 502);

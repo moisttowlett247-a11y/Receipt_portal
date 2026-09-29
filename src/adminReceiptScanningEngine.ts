@@ -47,6 +47,8 @@ export interface ProcessedReceipt {
   paymentMethod: string;
   cardLast4?: string;
   invoiceNumber?: string;
+  transactionNumber?: string;
+  referenceId?: string;
   category: string;
   schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
   irsLineNumber: string;
@@ -448,10 +450,18 @@ export function extractReceiptMetadata(
   paymentMethod: string;
   cardLast4?: string;
   invoiceNumber?: string;
+  transactionNumber?: string;
+  referenceId?: string;
   confidence: number;
   memo: string;
 } {
   const text = (rawTextContent || fileName || '').toLowerCase();
+  
+  // Extract transaction sequence and processor reference numbers if present
+  const transMatch = text.match(/(?:trans(?:action)?|tran|txn)[\s#.:-]+([0-9a-zA-Z_-]{2,20})\b/i);
+  const refMatch = text.match(/(?:ref(?:erence)?|auth|trace)[\s#.:-]+([0-9a-zA-Z_-]{3,24})\b/i);
+  const transactionNumber = transMatch ? transMatch[1].trim() : undefined;
+  const referenceId = refMatch ? refMatch[1].trim() : undefined;
   
   // 1. Identify matched vendor
   let matchedProfile: KnownVendorProfile | undefined = undefined;
@@ -632,6 +642,8 @@ export function extractReceiptMetadata(
     paymentMethod,
     cardLast4,
     invoiceNumber: hints?.invoiceNumber || '',
+    transactionNumber,
+    referenceId,
     confidence,
     memo
   };
@@ -794,6 +806,8 @@ export interface ScanReceiptAiOutput {
     paymentMethod: string;
     cardLast4?: string;
     invoiceNumber?: string;
+    transactionNumber?: string;
+    referenceId?: string;
     category?: string;
     schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
     irsLineNumber?: string;
@@ -836,7 +850,7 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
   }
 
   const promptText = 
-    "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+    "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
 
   const systemInstructionText = 
     `You are a certified forensic CPA accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax (Schedule C / Schedule F) and QuickBooks Online reconciliation.\n` +
@@ -846,7 +860,11 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     `3. LINE ITEMS & SUBTOTAL: 'subtotal' is pre-tax. 'tax' is sales tax. Extract line items in 'items'.\n` +
     `4. VENDOR: Extract full legal merchant name at the top of the receipt.\n` +
     `5. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
-    `6. Return strictly valid JSON conforming to the schema.`;
+    `6. DISTINGUISH TRANSACTION NUMBER vs REFERENCE ID vs INVOICE NUMBER:\n` +
+    `   - 'transaction_number': Strictly the register, POS, cashier, or terminal sequence transaction number (e.g. labeled 'TRANS #', 'TRAN #', 'TRANSACTION', 'TXN #', 'CHECK #', 'TICKET #', or 'SEQ #'). DO NOT put this into reference_id!\n` +
+    `   - 'reference_id': Strictly the credit card processor, payment gateway, host, or terminal authorization reference code (e.g. labeled 'REF #', 'REF ID', 'REFERENCE', 'HOST REF #', 'ACQ REF', 'TRACE #', or 'AUTH/REF'). NEVER confuse with Trans #!\n` +
+    `   - 'invoice_number': The formal billing invoice number or master receipt number (e.g. labeled 'INVOICE #', 'INV #', 'RECEIPT #', or 'ORDER #'). If none, leave empty string.\n` +
+    `7. Return strictly valid JSON conforming to the schema.`;
 
   const receiptSchema = {
     type: "OBJECT",
@@ -864,7 +882,9 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
             tip: { type: "NUMBER", description: "Tip amount if applicable" },
             payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
             card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
-            invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
+            transaction_number: { type: "STRING", description: "Register, POS, or cashier sequence/transaction number (e.g. Trans #, Tran #, Txn #). Distinct from Ref ID." },
+            reference_id: { type: "STRING", description: "Merchant processor or card authorization reference code (e.g. Ref #, Ref ID, Reference). Distinct from Trans #." },
+            invoice_number: { type: "STRING", description: "Formal Invoice or Receipt number (e.g. Inv #, Receipt #, Order #). Distinct from Trans # or Ref ID." },
             category: {
               type: "STRING",
               description: "QuickBooks category or IRS classification"
@@ -1012,6 +1032,35 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
     if (cardLast4.length < 4) cardLast4 = '';
 
+    // Disambiguate transaction number (Trans #) vs reference ID (Ref #) vs invoice number
+    let rawTrans = String(rawResult.transaction_number || rawResult.transactionNumber || rawResult.trans_number || rawResult.transNumber || '').trim();
+    let rawRef = String(rawResult.reference_id || rawResult.referenceId || rawResult.ref_id || rawResult.refId || '').trim();
+    let rawInv = String(rawResult.invoice_number || rawResult.invoiceNumber || rawResult.inv_number || rawResult.invNumber || '').trim();
+
+    // Check if the AI model mistakenly placed a Trans number into the Ref field (or vice versa)
+    if (rawRef && !rawTrans && /^(?:trans|tran|txn|transaction)[\s#.:-]/i.test(rawRef)) {
+      rawTrans = rawRef;
+      rawRef = '';
+    } else if (rawTrans && !rawRef && /^(?:ref|reference|auth|trace|host\s*ref)[\s#.:-]/i.test(rawTrans)) {
+      rawRef = rawTrans;
+      rawTrans = '';
+    }
+
+    // Strip redundant leading tags so user gets the actual clean number
+    const cleanTrans = rawTrans ? rawTrans.replace(/^(?:trans(?:action)?|tran|txn)[\s#.:-]*/i, '').trim() : '';
+    const cleanRef = rawRef ? rawRef.replace(/^(?:ref(?:erence)?|auth|trace|host\s*ref|acq\s*ref)[\s#.:-]*/i, '').trim() : '';
+    let cleanInv = rawInv ? rawInv.replace(/^(?:invoice|inv|receipt|order)[\s#.:-]*/i, '').trim() : '';
+
+    if (!cleanInv) {
+      if (cleanTrans && !cleanRef) {
+        cleanInv = `TXN-${cleanTrans}`;
+      } else if (cleanRef && !cleanTrans) {
+        cleanInv = `REF-${cleanRef}`;
+      } else if (cleanTrans && cleanRef) {
+        cleanInv = `TXN-${cleanTrans}`;
+      }
+    }
+
     const vendor = rawResult.vendor ? rawResult.vendor.trim() : 'Unknown Vendor';
     const memo = rawResult.memo || `AI-OCR Processed (${fileName})`;
     const taxCls = classifyExtractedTaxSchedule(vendor, rawResult.category || '', memo, fileName);
@@ -1034,7 +1083,9 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
         total,
         paymentMethod: rawResult.payment_method || rawResult.paymentMethod || (cardLast4 ? 'CARD' : 'CASH'),
         cardLast4: cardLast4 || undefined,
-        invoiceNumber: rawResult.invoice_number || rawResult.invoiceNumber || undefined,
+        invoiceNumber: cleanInv || undefined,
+        transactionNumber: cleanTrans || undefined,
+        referenceId: cleanRef || undefined,
         category: taxCls.categoryName,
         schedule: taxCls.schedule,
         irsLineNumber: taxCls.lineNumber,
@@ -1059,7 +1110,6 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
         "gemini-2.0-flash",
         "gemini-2.0-flash-lite",
         "gemini-1.5-flash",
-        "gemini-3.8-flash",
         "gemini-flash-latest"
       ];
       let rawResult: any = null;
@@ -1136,8 +1186,11 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
                 const errMsg = parsedErr?.error?.message || errText.slice(0, 4000);
                 clientLastError = `HTTP ${gResp.status} [${model}] with Key [${currentKey.slice(0, 6)}...]: ${errMsg}`;
 
-                // If 503 (Temporary High Demand) or 429 (Rate Limit), brief pause before attempting next model/key
-                if (gResp.status === 503 || gResp.status === 429) {
+                // If 429 / RESOURCE_EXHAUSTED (Quota exceeded on this model), skip immediately to alternative models
+                if (gResp.status === 429 || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('resource_exhausted')) {
+                  if (onStep) onStep(`Quota limit on ${model}. Instantly switching to next unexhausted model...`);
+                  continue;
+                } else if (gResp.status === 503) {
                   if (onStep) onStep(`High demand (503) on ${model}. Switching to alternative model...`);
                   await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
                 }
@@ -1325,6 +1378,8 @@ export async function runParallelBatchScan(
         paymentMethod: string;
         cardLast4?: string;
         invoiceNumber?: string;
+        transactionNumber?: string;
+        referenceId?: string;
         category?: string;
         schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
         irsLineNumber?: string;
@@ -1442,6 +1497,8 @@ export async function runParallelBatchScan(
         paymentMethod: extracted.paymentMethod,
         cardLast4: extracted.cardLast4,
         invoiceNumber: extracted.invoiceNumber,
+        transactionNumber: extracted.transactionNumber,
+        referenceId: extracted.referenceId,
         category: taxCls.categoryName,
         schedule: taxCls.schedule,
         irsLineNumber: taxCls.lineNumber,
@@ -1628,6 +1685,9 @@ export async function exportMultiSheetExcelXLSX(
       'Tax ($)',
       'Payment Method',
       'Card Last 4',
+      'Trans # (Txn ID)',
+      'Ref ID (Processor Ref)',
+      'Invoice / Receipt #',
       'Duplicate Status',
       'Verification Status',
       'Worker Pipeline',
@@ -1648,6 +1708,9 @@ export async function exportMultiSheetExcelXLSX(
       Number(r.tax.toFixed(2)),
       r.paymentMethod,
       r.cardLast4 || 'N/A',
+      r.transactionNumber || 'N/A',
+      r.referenceId || 'N/A',
+      r.invoiceNumber || 'N/A',
       r.duplicateStatus,
       r.status,
       r.workerNodeId,
@@ -1746,6 +1809,9 @@ export function exportAuditLedgerCSV(
     'Tip ($)',
     'Payment Method',
     'Card Last 4',
+    'Trans # (Txn ID)',
+    'Ref ID (Processor Ref)',
+    'Invoice / Receipt #',
     'Duplicate Status',
     'Duplicate Reason',
     'Status',
@@ -1769,6 +1835,9 @@ export function exportAuditLedgerCSV(
     r.tip.toFixed(2),
     r.paymentMethod,
     r.cardLast4 || '',
+    r.transactionNumber || '',
+    r.referenceId || '',
+    r.invoiceNumber || '',
     r.duplicateStatus,
     r.duplicateReason || '',
     r.status,
@@ -1810,6 +1879,7 @@ export function exportQBOJsonBatch(
     transactionCount: exportable.length,
     transactions: exportable.map(r => ({
       TxnDate: r.date,
+      DocNumber: r.invoiceNumber || (r.transactionNumber ? `TXN-${r.transactionNumber}` : (r.referenceId ? `REF-${r.referenceId}` : undefined)),
       VendorRef: { name: r.vendor },
       TotalAmt: r.total,
       TaxAmt: r.tax,
@@ -1828,7 +1898,7 @@ export function exportQBOJsonBatch(
           }
         }
       })),
-      PrivateNote: `Parallel Worker Ingested: ${r.fileName} | Duplicate: ${r.duplicateStatus} | Card: ${r.cardLast4 || 'N/A'}`
+      PrivateNote: `Worker Ingested: ${r.fileName} | Trans #: ${r.transactionNumber || 'N/A'} | Ref ID: ${r.referenceId || 'N/A'} | Inv #: ${r.invoiceNumber || 'N/A'} | Card: ${r.cardLast4 || 'N/A'}`
     }))
   };
 
