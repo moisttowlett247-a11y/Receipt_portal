@@ -1,15 +1,48 @@
 import React, { useState, useEffect } from 'react';
-import { Lock, User, KeyRound, X, Check, AlertCircle, Eye, EyeOff, Zap } from 'lucide-react';
+import { 
+  Lock, 
+  User, 
+  KeyRound, 
+  X, 
+  Check, 
+  AlertCircle, 
+  Eye, 
+  EyeOff, 
+  Users, 
+  ShieldCheck, 
+  Trash2, 
+  Building, 
+  Mail, 
+  Calendar, 
+  Award, 
+  Receipt, 
+  Search, 
+  Sparkles, 
+  ExternalLink,
+  ChevronRight,
+  Copy,
+  AlertTriangle
+} from 'lucide-react';
 import { computeCredentialsHash } from '../hashUtils';
 import { updateCloudflareAdminCredentials } from '../licenseSyncService';
+import { 
+  getStoredClientAccounts, 
+  subscribeToClientAccounts, 
+  deleteClientAccount, 
+  updateClientAccount, 
+  grantPlanByAdmin 
+} from '../clientAccountService';
+import { ClientUserAccount, LicenseKeyRecord, PlanTier } from '../types';
 
 interface AdminCredentialsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onSuccess?: () => void;
   savedHash: string | null;
   savedUsername: string | null;
   onUpdateCredentials: (username: string, passwordHash: string) => void;
+  availableKeys?: LicenseKeyRecord[];
+  onToast?: (msg: string) => void;
 }
 
 export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
@@ -17,16 +50,48 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   onClose,
   savedHash,
   savedUsername,
-  onUpdateCredentials
+  onUpdateCredentials,
+  availableKeys = [],
+  onToast
 }) => {
+  // Navigation tabs: 'users' or 'credentials'
+  const [activeTab, setActiveTab] = useState<'users' | 'credentials'>('users');
+
+  // Client accounts list state
+  const [accounts, setAccounts] = useState<ClientUserAccount[]>(() => getStoredClientAccounts());
+  const [searchQuery, setSearchQuery] = useState('');
+  const [planFilter, setPlanFilter] = useState<string>('ALL');
+
+  // Selected account for details pop-out
+  const [selectedUser, setSelectedUser] = useState<ClientUserAccount | null>(null);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<ClientUserAccount | null>(null);
+  const [copiedKey, setCopiedKey] = useState(false);
+
+  // Admin Credentials form state
   const [currentPassword, setCurrentPassword] = useState('');
   const [newUsername, setNewUsername] = useState(savedUsername || 'admin');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Subscribe to real-time client account updates
+  useEffect(() => {
+    if (isOpen) {
+      const unsubscribe = subscribeToClientAccounts((updated) => {
+        setAccounts(updated);
+        // Keep selectedUser in sync if open
+        if (selectedUser) {
+          const fresh = updated.find(a => a.id === selectedUser.id);
+          if (fresh) setSelectedUser(fresh);
+        }
+      });
+      return () => unsubscribe();
+    }
+  }, [isOpen, selectedUser]);
 
   useEffect(() => {
     if (isOpen) {
@@ -35,6 +100,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       setNewPassword('');
       setConfirmPassword('');
       setErrorMsg(null);
+      setSuccessMsg(null);
     }
   }, [isOpen, savedUsername]);
 
@@ -46,9 +112,10 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     setTimeout(() => setShake(false), 500);
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setSuccessMsg(null);
 
     const cleanUser = (savedUsername || 'admin').trim().toLowerCase();
     const cleanCurrentPass = currentPassword.trim();
@@ -65,12 +132,13 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     }
     // Duplicate prevention: check client user accounts to avoid collision
     try {
-      const storedClients = JSON.parse(localStorage.getItem('receipt_processor_client_accounts_v1') || '[]');
-      if (Array.isArray(storedClients) && storedClients.some((c: any) => c.username?.toLowerCase() === cleanNewUser)) {
+      const storedClients = getStoredClientAccounts();
+      if (storedClients.some(c => c.username?.toLowerCase() === cleanNewUser)) {
         triggerError(`Username "${cleanNewUser}" is already taken by a client account. Please choose a different username.`);
         return;
       }
     } catch {}
+
     if (cleanNewPass.length < 6) {
       triggerError('New password must be at least 6 characters.');
       return;
@@ -88,7 +156,9 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       if (cfRes.success) {
         const newHash = await computeCredentialsHash(cleanNewUser, cleanNewPass);
         onUpdateCredentials(cleanNewUser, newHash);
-        onClose();
+        setSuccessMsg(`Admin credentials updated successfully for ${cleanNewUser}!`);
+        if (onToast) onToast(`Admin credentials updated for ${cleanNewUser}`);
+        setTimeout(() => onClose(), 1200);
         return;
       }
 
@@ -99,7 +169,9 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       if ((savedHash && currentHash === savedHash) || currentHash === defaultHash) {
         const newHash = await computeCredentialsHash(cleanNewUser, cleanNewPass);
         onUpdateCredentials(cleanNewUser, newHash);
-        onClose();
+        setSuccessMsg(`Admin credentials updated successfully for ${cleanNewUser}!`);
+        if (onToast) onToast(`Admin credentials updated for ${cleanNewUser}`);
+        setTimeout(() => onClose(), 1200);
       } else {
         triggerError(cfRes.message || 'Current password is incorrect.');
       }
@@ -110,127 +182,568 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     }
   };
 
+  const handleDeleteUser = (user: ClientUserAccount) => {
+    const success = deleteClientAccount(user.id);
+    if (success) {
+      setAccounts(prev => prev.filter(a => a.id !== user.id));
+      setConfirmDeleteUser(null);
+      setSelectedUser(null);
+      if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
+    }
+  };
+
+  const handleGrantPlan = (user: ClientUserAccount, tier: PlanTier, planName: string) => {
+    const res = grantPlanByAdmin(user.id, tier, planName);
+    if (res.success && res.account) {
+      setSelectedUser(res.account);
+      if (onToast) onToast(`Updated plan for ${user.displayName} to ${planName}`);
+    }
+  };
+
+  // Filter accounts
+  const filteredAccounts = accounts.filter(acc => {
+    const q = searchQuery.trim().toLowerCase();
+    const matchQuery = !q || 
+      acc.displayName.toLowerCase().includes(q) || 
+      acc.username.toLowerCase().includes(q) || 
+      acc.email.toLowerCase().includes(q) || 
+      (acc.companyName && acc.companyName.toLowerCase().includes(q)) ||
+      (acc.licenseKey && acc.licenseKey.toLowerCase().includes(q));
+
+    const matchPlan = planFilter === 'ALL' || 
+      (planFilter === 'ACTIVE' && acc.planStatus === 'ACTIVE') ||
+      (planFilter === 'NONE' && (!acc.planStatus || acc.planStatus === 'NONE')) ||
+      (acc.planTier === planFilter);
+
+    return matchQuery && matchPlan;
+  });
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-150">
       <div 
-        className={`bg-stone-900 border border-stone-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 transition-transform ${
+        className={`bg-stone-900 border border-stone-800 rounded-3xl max-w-2xl w-full shadow-2xl flex flex-col max-h-[90vh] overflow-hidden transition-transform ${
           shake ? 'animate-bounce border-rose-500/80' : ''
         }`}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between">
+        {/* Modal Top Header */}
+        <div className="p-5 pb-3 border-b border-stone-800 bg-stone-950/60 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500/20 to-amber-600/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shadow-inner">
               <KeyRound className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-stone-100">
-                Change Admin Credentials
-              </h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-stone-100">
+                  Account &amp; User Management
+                </h3>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                  Admin Console
+                </span>
+              </div>
               <p className="text-xs text-stone-400">
-                Update master login username & password
+                View registered users, inspect account details, and configure master security
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-colors cursor-pointer"
+            className="p-1.5 rounded-xl text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-colors cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {errorMsg && (
-          <div className="p-3 bg-rose-950/50 border border-rose-800/80 rounded-lg flex items-center gap-2 text-xs text-rose-300">
-            <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            <span>{errorMsg}</span>
+        {/* Tab Navigation Buttons */}
+        <div className="px-5 pt-2 border-b border-stone-800 bg-stone-900/90 flex gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setActiveTab('users')}
+            className={`px-4 py-2.5 text-xs font-semibold flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'users'
+                ? 'border-amber-500 text-amber-400'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <Users className="w-4 h-4 text-amber-400" />
+            <span>Registered Users</span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 ml-1">
+              {accounts.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('credentials')}
+            className={`px-4 py-2.5 text-xs font-semibold flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
+              activeTab === 'credentials'
+                ? 'border-amber-500 text-amber-400'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <span>Admin Master Security</span>
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-6 overflow-y-auto space-y-4 flex-1">
+          {/* TAB 1: REGISTERED USERS */}
+          {activeTab === 'users' && (
+            <div className="space-y-4">
+              {/* Search & Filter Controls */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-stone-500 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search by name, @username, email, or company..."
+                    className="w-full pl-9 pr-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-xs text-stone-200 focus:outline-none focus:border-amber-500 placeholder:text-stone-600"
+                  />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-2.5 text-stone-500 hover:text-stone-300"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[11px] text-stone-400 font-medium">Plan:</span>
+                  <select
+                    value={planFilter}
+                    onChange={(e) => setPlanFilter(e.target.value)}
+                    className="px-2.5 py-2 bg-stone-950 border border-stone-800 rounded-xl text-xs text-stone-300 focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="ALL">All Plans ({accounts.length})</option>
+                    <option value="ACTIVE">Active Plan Subscriptions</option>
+                    <option value="ANNUAL">Annual Farm Plan</option>
+                    <option value="3MONTH">Quarterly (3 Month)</option>
+                    <option value="MONTHLY">Monthly Plan</option>
+                    <option value="DEMO">Demo Trial</option>
+                    <option value="NONE">No Active Plan</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Users Cards / List */}
+              {filteredAccounts.length === 0 ? (
+                <div className="p-10 text-center rounded-2xl bg-stone-950/60 border border-stone-800/80 space-y-2">
+                  <Users className="w-8 h-8 text-stone-600 mx-auto" />
+                  <h4 className="text-sm font-semibold text-stone-300">No registered accounts found</h4>
+                  <p className="text-xs text-stone-500 max-w-sm mx-auto">
+                    {searchQuery ? 'No user accounts match your search filter.' : 'Clients who sign up or submit receipts online will automatically appear here.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1 divide-y divide-stone-800/40">
+                  {filteredAccounts.map((user) => {
+                    const initials = user.displayName
+                      ? user.displayName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+                      : user.username.slice(0, 2).toUpperCase();
+
+                    return (
+                      <div
+                        key={user.id}
+                        onClick={() => setSelectedUser(user)}
+                        className="pt-2 first:pt-0 p-3 rounded-2xl bg-stone-950/70 hover:bg-stone-800/60 border border-stone-800/80 hover:border-amber-500/40 transition-all cursor-pointer flex items-center justify-between gap-3 group"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500/20 to-stone-900 border border-amber-500/30 flex items-center justify-center text-amber-300 font-bold text-xs shrink-0 shadow-sm">
+                            {initials}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className="text-xs font-bold text-stone-100 truncate group-hover:text-amber-300 transition-colors">
+                                {user.displayName || user.username}
+                              </h4>
+                              <span className="text-[10px] text-stone-400 font-mono">
+                                @{user.username}
+                              </span>
+                              {user.planStatus === 'ACTIVE' ? (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                  {user.planTier || 'ACTIVE'}
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-mono text-stone-500 bg-stone-900 border border-stone-800">
+                                  NO PLAN
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-stone-400 flex items-center gap-2 truncate mt-0.5">
+                              <span className="truncate">{user.email}</span>
+                              {user.companyName && (
+                                <>
+                                  <span>•</span>
+                                  <span className="truncate text-stone-500">{user.companyName}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 shrink-0">
+                          <div className="text-right hidden sm:block">
+                            <div className="text-[11px] font-bold font-mono text-stone-300 flex items-center justify-end gap-1">
+                              <Receipt className="w-3 h-3 text-amber-400" />
+                              <span>{user.receiptsSubmittedCount || 0} Receipts</span>
+                            </div>
+                            <div className="text-[10px] text-stone-500 font-mono">
+                              {user.createdAt ? new Date(user.createdAt).toLocaleDateString() : 'Active User'}
+                            </div>
+                          </div>
+                          <div className="w-7 h-7 rounded-xl bg-stone-900 group-hover:bg-amber-500/20 text-stone-400 group-hover:text-amber-300 flex items-center justify-center transition-colors">
+                            <ChevronRight className="w-4 h-4" />
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 2: ADMIN MASTER CREDENTIALS */}
+          {activeTab === 'credentials' && (
+            <div className="space-y-4">
+              <div className="p-4 rounded-2xl bg-stone-950/80 border border-stone-800 text-xs space-y-1">
+                <div className="font-bold text-white flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Administrative Security &amp; Salted Hash</span>
+                </div>
+                <p className="text-stone-400 leading-relaxed">
+                  Update your master administrator password. Password hashes are generated using cryptographic salting (SHA-256) 
+                  and synced with your Cloudflare KV configuration for offline &amp; online verification.
+                </p>
+              </div>
+
+              {errorMsg && (
+                <div className="p-3 bg-rose-950/50 border border-rose-800/80 rounded-xl flex items-center gap-2 text-xs text-rose-300">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
+
+              {successMsg && (
+                <div className="p-3 bg-emerald-950/50 border border-emerald-800/80 rounded-xl flex items-center gap-2 text-xs text-emerald-300">
+                  <Check className="w-4 h-4 shrink-0 text-emerald-400" />
+                  <span>{successMsg}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleCredentialsSubmit} className="space-y-3.5 text-xs">
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1">Current Password</label>
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Enter current master password"
+                    className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                    autoFocus
+                  />
+                </div>
+
+                <div className="h-px bg-stone-800/80 my-2" />
+
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1 flex items-center gap-1.5">
+                    <User className="w-3.5 h-3.5 text-stone-400" />
+                    New Admin Username
+                  </label>
+                  <input
+                    type="text"
+                    value={newUsername}
+                    onChange={(e) => setNewUsername(e.target.value)}
+                    placeholder="e.g. admin or custom operator handle"
+                    className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1 flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Lock className="w-3.5 h-3.5 text-stone-400" />
+                      New Password (min 6 chars)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="text-[11px] text-stone-500 hover:text-stone-300 flex items-center gap-1 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                      <span>{showPassword ? 'Hide' : 'Show'}</span>
+                    </button>
+                  </label>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Enter new master password"
+                    className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-stone-300 font-medium block mb-1">Confirm New Password</label>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Re-enter new master password"
+                    className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+
+                <div className="pt-2 flex justify-between items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="px-3.5 py-2 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-medium rounded-xl transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-xl shadow transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>{loading ? 'Saving...' : 'Save Admin Credentials'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Bottom Status Bar */}
+        <div className="p-3.5 bg-stone-950 border-t border-stone-800 text-[11px] text-stone-500 flex items-center justify-between px-6 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-400" />
+            <span>Multi-Client Central Database Active</span>
           </div>
-        )}
+          <span className="font-mono text-stone-400">
+            {accounts.length} Total Users Registered
+          </span>
+        </div>
+      </div>
 
-        <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
-          <div>
-            <label className="text-stone-300 font-medium block mb-1">Current Password</label>
-            <input
-              type="password"
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              placeholder="Enter current password"
-              className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-200 focus:outline-none focus:border-amber-500"
-              autoFocus
-            />
-          </div>
-
-          <div className="h-px bg-stone-800 my-2" />
-
-          <div>
-            <label className="text-stone-300 font-medium block mb-1 flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-stone-400" />
-              New Admin Username
-            </label>
-            <input
-              type="text"
-              value={newUsername}
-              onChange={(e) => setNewUsername(e.target.value)}
-              placeholder="e.g. admin or custom name"
-              className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-200 focus:outline-none focus:border-amber-500"
-            />
-          </div>
-
-          <div>
-            <label className="text-stone-300 font-medium block mb-1 flex items-center justify-between">
-              <span className="flex items-center gap-1.5">
-                <Lock className="w-3.5 h-3.5 text-stone-400" />
-                New Password (min 6 chars)
-              </span>
+      {/* POP-OUT DRAWER / MODAL: USER ACCOUNT DETAILS */}
+      {selectedUser && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-150">
+          <div className="bg-stone-900 border border-stone-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-150">
+            {/* Details Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-stone-800">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-amber-500/20 to-stone-950 border border-amber-500/30 flex items-center justify-center text-amber-300 font-bold text-sm shadow-md">
+                  {selectedUser.displayName
+                    ? selectedUser.displayName.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
+                    : selectedUser.username.slice(0, 2).toUpperCase()}
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>{selectedUser.displayName || selectedUser.username}</span>
+                    <span className="text-xs text-amber-400 font-mono font-normal">
+                      @{selectedUser.username}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-stone-400 font-mono">
+                    ID: {selectedUser.id}
+                  </p>
+                </div>
+              </div>
               <button
                 type="button"
-                onClick={() => setShowPassword(!showPassword)}
-                className="text-[11px] text-stone-500 hover:text-stone-300 flex items-center gap-1 cursor-pointer"
+                onClick={() => setSelectedUser(null)}
+                className="p-1.5 rounded-xl text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-colors cursor-pointer"
               >
-                {showPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                <span>{showPassword ? 'Hide' : 'Show'}</span>
+                <X className="w-5 h-5" />
               </button>
-            </label>
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="Enter new password"
-              className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-200 focus:outline-none focus:border-amber-500"
-            />
-          </div>
+            </div>
 
-          <div>
-            <label className="text-stone-300 font-medium block mb-1">Confirm New Password</label>
-            <input
-              type={showPassword ? 'text' : 'password'}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Re-enter new password"
-              className="w-full font-mono px-3 py-2 bg-stone-950 border border-stone-800 rounded-lg text-stone-200 focus:outline-none focus:border-amber-500"
-            />
-          </div>
+            {/* User Details Grid */}
+            <div className="space-y-3.5 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="p-3 rounded-xl bg-stone-950 border border-stone-800/80 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wider font-semibold text-stone-400 flex items-center gap-1">
+                    <Mail className="w-3 h-3 text-stone-500" />
+                    <span>Email Address</span>
+                  </div>
+                  <div className="font-medium text-stone-200 truncate">{selectedUser.email}</div>
+                </div>
 
-          <div className="pt-2 flex justify-between items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3.5 py-2 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-medium rounded-lg transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading}
-              className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg shadow transition-colors cursor-pointer flex items-center gap-1.5 disabled:opacity-50"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>{loading ? 'Saving...' : 'Save Credentials'}</span>
-            </button>
+                <div className="p-3 rounded-xl bg-stone-950 border border-stone-800/80 space-y-1">
+                  <div className="text-[10px] uppercase tracking-wider font-semibold text-stone-400 flex items-center gap-1">
+                    <Building className="w-3 h-3 text-stone-500" />
+                    <span>Business / Farm Entity</span>
+                  </div>
+                  <div className="font-medium text-stone-200 truncate">{selectedUser.companyName || 'Not Specified'}</div>
+                </div>
+              </div>
+
+              {/* Plan & Subscription Card */}
+              <div className="p-4 rounded-2xl bg-stone-950 border border-amber-500/20 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[10px] uppercase tracking-wider font-bold text-amber-400 flex items-center gap-1">
+                    <Award className="w-3.5 h-3.5" />
+                    <span>Active Subscription & Service Plan</span>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                    selectedUser.planStatus === 'ACTIVE'
+                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-stone-800 text-stone-400'
+                  }`}>
+                    {selectedUser.planStatus === 'ACTIVE' ? 'ACTIVE' : 'NO PLAN'}
+                  </span>
+                </div>
+
+                <div className="text-sm font-bold text-white">
+                  {selectedUser.plan || 'Free Client Intake Profile'}
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-[11px] text-stone-400 pt-1 border-t border-stone-900">
+                  <div>
+                    <span className="text-stone-500 block">Plan Expiration:</span>
+                    <span className="font-mono text-stone-200">{selectedUser.planExpiresAt || 'Never / Non-Expiring'}</span>
+                  </div>
+                  <div>
+                    <span className="text-stone-500 block">Receipts Processed:</span>
+                    <span className="font-mono text-amber-300 font-bold">{selectedUser.receiptsSubmittedCount || 0} Submissions</span>
+                  </div>
+                </div>
+
+                {/* Quick Plan Override Buttons */}
+                <div className="pt-2 border-t border-stone-900/80 flex items-center justify-between gap-2">
+                  <span className="text-[10px] text-stone-500 font-medium">Quick Grant:</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => handleGrantPlan(selectedUser, 'ANNUAL', 'Annual Farm & Business Package')}
+                      className="px-2 py-1 rounded bg-stone-900 hover:bg-amber-500/20 border border-stone-800 hover:border-amber-500/40 text-[10px] text-stone-300 hover:text-amber-300 font-medium transition-colors cursor-pointer"
+                    >
+                      Grant Annual
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleGrantPlan(selectedUser, '3MONTH', 'Quarterly Tax & Expense Prep')}
+                      className="px-2 py-1 rounded bg-stone-900 hover:bg-amber-500/20 border border-stone-800 hover:border-amber-500/40 text-[10px] text-stone-300 hover:text-amber-300 font-medium transition-colors cursor-pointer"
+                    >
+                      Grant Quarterly
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleGrantPlan(selectedUser, 'MONTHLY', 'Monthly Bookkeeping')}
+                      className="px-2 py-1 rounded bg-stone-900 hover:bg-amber-500/20 border border-stone-800 hover:border-amber-500/40 text-[10px] text-stone-300 hover:text-amber-300 font-medium transition-colors cursor-pointer"
+                    >
+                      Grant Monthly
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Linked License Key if present */}
+              {selectedUser.licenseKey && (
+                <div className="p-3 rounded-xl bg-stone-950 border border-stone-800/80 flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[10px] text-stone-500 uppercase tracking-wider font-semibold">Linked License String</div>
+                    <div className="font-mono text-xs text-amber-300 truncate">{selectedUser.licenseKey}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedUser.licenseKey!);
+                      setCopiedKey(true);
+                      setTimeout(() => setCopiedKey(false), 2000);
+                    }}
+                    className="px-2.5 py-1 rounded bg-stone-900 hover:bg-stone-800 text-stone-300 text-[10px] font-medium border border-stone-800 transition-colors flex items-center gap-1 cursor-pointer shrink-0"
+                  >
+                    {copiedKey ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                    <span>{copiedKey ? 'Copied' : 'Copy Key'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Created Date */}
+              <div className="text-[11px] text-stone-500 flex items-center gap-1.5 px-1">
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Account Created: {selectedUser.createdAt ? new Date(selectedUser.createdAt).toLocaleString() : 'Permanent Member'}</span>
+              </div>
+            </div>
+
+            {/* Bottom Actions: Delete Account & Close */}
+            <div className="pt-3 border-t border-stone-800 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteUser(selectedUser)}
+                className="px-3.5 py-2 bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 hover:text-rose-100 text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                <span>Delete Account</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedUser(null)}
+                className="px-4 py-2 bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                Close Details
+              </button>
+            </div>
           </div>
-        </form>
-      </div>
+        </div>
+      )}
+
+      {/* CONFIRMATION POP-OUT: DELETE USER ACCOUNT */}
+      {confirmDeleteUser && (
+        <div className="fixed inset-0 z-70 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-150">
+          <div className="bg-stone-900 border border-rose-500/50 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 mx-auto">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-white">
+                Delete Client Account?
+              </h3>
+              <p className="text-xs text-stone-400">
+                Are you sure you want to permanently delete the registered account for <strong className="text-white">{confirmDeleteUser.displayName || confirmDeleteUser.username}</strong> (<code className="text-amber-300 font-mono">@{confirmDeleteUser.username}</code>)?
+              </p>
+            </div>
+
+            <div className="p-3 bg-stone-950 rounded-xl border border-stone-800 text-[11px] text-stone-400 space-y-1">
+              <div>• Email: <span className="text-stone-200 font-mono">{confirmDeleteUser.email}</span></div>
+              <div>• Plan: <span className="text-stone-200">{confirmDeleteUser.plan || 'No Plan'}</span></div>
+              <div>• Receipts Submitted: <span className="text-amber-300 font-bold">{confirmDeleteUser.receiptsSubmittedCount || 0}</span></div>
+              <div className="text-rose-400/90 pt-1 font-medium">⚠️ This action will revoke client portal access and remove their saved login credentials.</div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmDeleteUser(null)}
+                className="px-4 py-2 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDeleteUser(confirmDeleteUser)}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Yes, Delete Account</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

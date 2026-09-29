@@ -103,6 +103,71 @@ export async function lookupLicenseByEmailAsync(
   return null;
 }
 
+const INITIAL_DEMO_CLIENT_ACCOUNTS: ClientUserAccount[] = [
+  {
+    id: 'client-prairie-wind',
+    username: 'prairiewind',
+    displayName: 'Prairie Wind Agriculture',
+    email: 'billing@prairiewind.example.com',
+    companyName: 'Prairie Wind Farms LLC',
+    passwordHash: 'seeded_demo_hash',
+    salt: 'seeded_salt',
+    licenseKey: 'ANNUAL-9842-8710-2026',
+    plan: 'Annual Farm & Business Package',
+    planTier: 'ANNUAL',
+    planStatus: 'ACTIVE',
+    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 45).toISOString(),
+    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 320).toISOString().split('T')[0],
+    receiptQuota: -1,
+    receiptsSubmittedCount: 24,
+    createdAt: new Date(Date.now() - 3600000 * 24 * 45).toISOString()
+  },
+  {
+    id: 'client-green-acres',
+    username: 'greenacres',
+    displayName: 'Green Acres Dairy Farm',
+    email: 'finance@greenacresdairy.example.com',
+    companyName: 'Green Acres Dairy & Livestock',
+    passwordHash: 'seeded_demo_hash',
+    salt: 'seeded_salt',
+    licenseKey: '3MONTH-4192-8812-2026',
+    plan: 'Quarterly Tax & Expense Prep',
+    planTier: '3MONTH',
+    planStatus: 'ACTIVE',
+    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 18).toISOString(),
+    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 72).toISOString().split('T')[0],
+    receiptQuota: -1,
+    receiptsSubmittedCount: 15,
+    createdAt: new Date(Date.now() - 3600000 * 24 * 18).toISOString()
+  },
+  {
+    id: 'client-red-river',
+    username: 'redriver',
+    displayName: 'Red River Cattle Co.',
+    email: 'operations@redrivercattle.example.com',
+    companyName: 'Red River Ranch & Cattle Corp',
+    passwordHash: 'seeded_demo_hash',
+    salt: 'seeded_salt',
+    licenseKey: 'MONTHLY-7712-4091-2026',
+    plan: 'Monthly Bookkeeping',
+    planTier: 'MONTHLY',
+    planStatus: 'ACTIVE',
+    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 8).toISOString(),
+    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 22).toISOString().split('T')[0],
+    receiptQuota: -1,
+    receiptsSubmittedCount: 8,
+    createdAt: new Date(Date.now() - 3600000 * 24 * 8).toISOString()
+  }
+];
+
+function notifyAccountsChanged(accounts: ClientUserAccount[]): void {
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent('client_accounts_updated', { detail: { accounts } }));
+    } catch {}
+  }
+}
+
 /**
  * Loads all client accounts from persistent local storage.
  * In a static / Cloudflare KV setting, this provides client persistence with zero leakage of cleartext passwords.
@@ -111,20 +176,105 @@ export function getStoredClientAccounts(): ClientUserAccount[] {
   try {
     const raw = localStorage.getItem(CLIENT_ACCOUNTS_STORAGE_KEY);
     if (raw) {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
     }
   } catch (err) {
     console.warn('Error reading stored client accounts:', err);
   }
-  return [];
+  return INITIAL_DEMO_CLIENT_ACCOUNTS;
 }
 
-function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
+export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
   try {
     localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
+    notifyAccountsChanged(accounts);
   } catch (err) {
     console.warn('Error saving client accounts:', err);
   }
+}
+
+export function subscribeToClientAccounts(callback: (accounts: ClientUserAccount[]) => void): () => void {
+  const handler = (e: any) => {
+    if (e?.detail?.accounts) {
+      callback(e.detail.accounts);
+    } else {
+      callback(getStoredClientAccounts());
+    }
+  };
+
+  const storageHandler = (e: StorageEvent) => {
+    if (e.key === CLIENT_ACCOUNTS_STORAGE_KEY) {
+      callback(getStoredClientAccounts());
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('client_accounts_updated', handler);
+    window.addEventListener('storage', storageHandler);
+  }
+
+  callback(getStoredClientAccounts());
+
+  return () => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('client_accounts_updated', handler);
+      window.removeEventListener('storage', storageHandler);
+    }
+  };
+}
+
+/**
+ * Permanently deletes a registered client account by userId.
+ */
+export function deleteClientAccount(userId: string): boolean {
+  const accounts = getStoredClientAccounts();
+  const filtered = accounts.filter(a => a.id !== userId);
+  if (filtered.length !== accounts.length) {
+    saveStoredClientAccounts(filtered);
+
+    // If current logged-in session was the deleted account, log them out
+    const current = getCurrentClientSession();
+    if (current && current.userId === userId) {
+      clearClientSession();
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Updates details for a registered client account.
+ */
+export function updateClientAccount(userId: string, updates: Partial<ClientUserAccount>): { success: boolean; account?: ClientUserAccount } {
+  const accounts = getStoredClientAccounts();
+  const idx = accounts.findIndex(a => a.id === userId);
+  if (idx === -1) return { success: false };
+
+  accounts[idx] = {
+    ...accounts[idx],
+    ...updates
+  };
+
+  saveStoredClientAccounts(accounts);
+
+  const current = getCurrentClientSession();
+  if (current && current.userId === userId) {
+    saveClientSession({
+      ...current,
+      displayName: accounts[idx].displayName,
+      email: accounts[idx].email,
+      companyName: accounts[idx].companyName,
+      plan: accounts[idx].plan,
+      planTier: accounts[idx].planTier,
+      planStatus: accounts[idx].planStatus,
+      planExpiresAt: accounts[idx].planExpiresAt
+    });
+  }
+
+  return { success: true, account: accounts[idx] };
 }
 
 /**

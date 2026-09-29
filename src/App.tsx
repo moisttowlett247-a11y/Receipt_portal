@@ -2254,7 +2254,7 @@ class UpdateManager:
           </div>
         </div>
       )}
-      {/* Admin Credentials Modal (Change Username & Password) */}
+      {/* Admin Account & Registered Users Modal */}
       <AdminPinModal
         isOpen={showPinModal}
         onClose={() => setShowPinModal(false)}
@@ -2262,6 +2262,8 @@ class UpdateManager:
         savedHash={adminCredHash}
         savedUsername={adminUsername}
         onUpdateCredentials={handleUpdateCredentials}
+        availableKeys={licenseKeys}
+        onToast={showToast}
       />
 
       {/* Download Desktop Bundle Modal */}
