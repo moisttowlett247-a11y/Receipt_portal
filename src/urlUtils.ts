@@ -122,3 +122,15 @@ export function getBackendApiUrl(): string {
   // Authoritative default Cloud Run backend URL for moisttowlett247-a11y.github.io
   return 'https://ais-dev-7tlnxttq7bvcilkqujhbtm-397811974491.us-west2.run.app';
 }
+
+/**
+ * Returns the effective Cloudflare Worker edge URL
+ */
+export function getEffectiveCloudflareApiUrl(): string {
+  if (typeof window === 'undefined') return 'https://receipt-license-api.moisttowlett247.workers.dev';
+  try {
+    const saved = localStorage.getItem('receipt_processor_cf_worker_url');
+    if (saved) return saved.trim().replace(/\/+$/, '');
+  } catch {}
+  return 'https://receipt-license-api.moisttowlett247.workers.dev';
+}

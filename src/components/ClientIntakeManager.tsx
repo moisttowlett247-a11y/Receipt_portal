@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Inbox,
   Server,
@@ -29,7 +29,8 @@ import {
   updateSubmissionStatus, 
   deleteSubmission, 
   ClientSubmission,
-  purgeDuplicateSubmissions
+  purgeDuplicateSubmissions,
+  subscribeToClientSubmissions
 } from '../clientSubmissionService';
 import { DesktopPackageCard } from './DesktopPackageCard';
 import { AdminRoutingAndTaxRulesModal } from './AdminRoutingAndTaxRulesModal';
@@ -51,6 +52,13 @@ export const ClientIntakeManager: React.FC<ClientIntakeManagerProps> = ({
   const [isExportingZip, setIsExportingZip] = useState(false);
   const [copiedVmCmd, setCopiedVmCmd] = useState(false);
   const [showRulesModal, setShowRulesModal] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToClientSubmissions((updated) => {
+      setSubmissions(updated);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const refreshList = () => {
     setSubmissions(getClientSubmissions());

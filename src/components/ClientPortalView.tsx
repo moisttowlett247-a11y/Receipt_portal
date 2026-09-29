@@ -50,7 +50,8 @@ import {
   getClientSubmissions, 
   addClientSubmission, 
   ClientSubmission, 
-  deleteSubmission 
+  deleteSubmission,
+  subscribeToClientSubmissions
 } from '../clientSubmissionService';
 import { ClientAuthModal } from './ClientAuthModal';
 import { ClientAccountModal } from './ClientAccountModal';
@@ -140,6 +141,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       }
     }
   }, [clientSession]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToClientSubmissions((updated) => {
+      setSubmissions(updated);
+    });
+    return () => unsubscribe();
+  }, []);
 
   const refreshSubmissions = () => {
     setSubmissions(getClientSubmissions());

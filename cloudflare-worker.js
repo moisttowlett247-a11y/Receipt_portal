@@ -944,6 +944,110 @@ export default {
     }
 
     // -------------------------------------------------------------------------
+    // 7.5. Client Submissions & Intake Queue Synchronizer
+    // -------------------------------------------------------------------------
+    if (pathname === "/api/client/submissions") {
+      if (request.method === "GET") {
+        const raw = await env.LICENSES.get("SYS:CLIENT_SUBMISSIONS");
+        const subs = raw ? JSON.parse(raw) : [];
+        return jsonResponse({ success: true, count: subs.length, submissions: subs });
+      }
+      if (request.method === "POST") {
+        try {
+          const body = await request.json();
+          const item = body.submission || body;
+          if (!item || !item.fileName) {
+            return jsonResponse({ success: false, error: "Invalid submission data" }, 400);
+          }
+          const raw = await env.LICENSES.get("SYS:CLIENT_SUBMISSIONS");
+          const subs = raw ? JSON.parse(raw) : [];
+          const newSub = {
+            ...item,
+            id: item.id || ("sub-" + Date.now() + "-" + Math.floor(Math.random() * 10000)),
+            uploadedAt: item.uploadedAt || new Date().toISOString(),
+            status: item.status || "QUEUED"
+          };
+          const filtered = subs.filter(s => s.id !== newSub.id);
+          const updated = [newSub, ...filtered];
+          await env.LICENSES.put("SYS:CLIENT_SUBMISSIONS", JSON.stringify(updated));
+          return jsonResponse({ success: true, submission: newSub, count: updated.length });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+    }
+
+    if (pathname.startsWith("/api/client/submissions/")) {
+      const subId = decodeURIComponent(pathname.replace("/api/client/submissions/", ""));
+      if (subId === "batch-sync" && request.method === "POST") {
+        try {
+          const body = await request.json();
+          const clientSubs = Array.isArray(body.submissions) ? body.submissions : [];
+          const raw = await env.LICENSES.get("SYS:CLIENT_SUBMISSIONS");
+          const serverSubs = raw ? JSON.parse(raw) : [];
+          const map = new Map();
+          for (const s of serverSubs) {
+            if (s && s.id) map.set(s.id, s);
+          }
+          for (const c of clientSubs) {
+            if (c && c.id) {
+              const existing = map.get(c.id);
+              if (!existing) {
+                map.set(c.id, c);
+              } else {
+                map.set(c.id, { ...existing, ...c });
+              }
+            }
+          }
+          const merged = Array.from(map.values()).sort((a, b) => {
+            const ta = new Date(a.uploadedAt || 0).getTime();
+            const tb = new Date(b.uploadedAt || 0).getTime();
+            return tb - ta;
+          });
+          await env.LICENSES.put("SYS:CLIENT_SUBMISSIONS", JSON.stringify(merged));
+          return jsonResponse({ success: true, count: merged.length, submissions: merged });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+
+      if (request.method === "PUT") {
+        try {
+          const body = await request.json();
+          const raw = await env.LICENSES.get("SYS:CLIENT_SUBMISSIONS");
+          const subs = raw ? JSON.parse(raw) : [];
+          let updatedItem = null;
+          const updated = subs.map(s => {
+            if (s.id === subId) {
+              updatedItem = { ...s, ...(body.status ? { status: body.status } : {}), ...(body.details || {}) };
+              return updatedItem;
+            }
+            return s;
+          });
+          if (updatedItem) {
+            await env.LICENSES.put("SYS:CLIENT_SUBMISSIONS", JSON.stringify(updated));
+            return jsonResponse({ success: true, submission: updatedItem });
+          }
+          return jsonResponse({ success: false, error: "Submission not found" }, 404);
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+
+      if (request.method === "DELETE") {
+        try {
+          const raw = await env.LICENSES.get("SYS:CLIENT_SUBMISSIONS");
+          const subs = raw ? JSON.parse(raw) : [];
+          const updated = subs.filter(s => s.id !== subId);
+          await env.LICENSES.put("SYS:CLIENT_SUBMISSIONS", JSON.stringify(updated));
+          return jsonResponse({ success: true, message: `Submission ${subId} deleted` });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 400);
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
     // 8. Gemini AI Receipt OCR Proxy (/api/scan/receipt)
     // -------------------------------------------------------------------------
     if (pathname === "/api/scan/receipt" && (request.method === "POST" || request.method === "OPTIONS")) {

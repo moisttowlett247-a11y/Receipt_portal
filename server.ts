@@ -29,6 +29,23 @@ const CONFIG_FILE = path.join(DATA_DIR, 'qbo_config.json');
 const COMPANIES_FILE = path.join(DATA_DIR, 'qbo_companies.json');
 const SESSIONS_FILE = path.join(LICENSES_DIR, 'active_sessions.json');
 const INQUIRIES_FILE = path.join(LICENSES_DIR, 'inquiries.json');
+const SUBMISSIONS_FILE = path.join(DATA_DIR, 'client_submissions.json');
+
+function loadSubmissions(): any[] {
+  if (fs.existsSync(SUBMISSIONS_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(SUBMISSIONS_FILE, 'utf-8'));
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return [];
+}
+
+function saveSubmissions(submissions: any[]) {
+  try {
+    fs.writeFileSync(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2), 'utf-8');
+  } catch {}
+}
 
 // QBO Encryption Setup
 const MASTER_SALT = process.env.QBO_ENCRYPTION_KEY || 'receipt_processor_qbo_secure_aes256_salt_8921';
@@ -865,6 +882,120 @@ router.post('/api/licenses/sync', (req, res) => {
       hash,
       record: content
     });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Client Submissions & Intake Queue Endpoints
+router.get('/api/client/submissions', (req, res) => {
+  try {
+    const subs = loadSubmissions();
+    return res.json({ success: true, count: subs.length, submissions: subs });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/api/client/submissions', (req, res) => {
+  try {
+    const body = req.body || {};
+    const item = body.submission || body;
+    if (!item || !item.fileName) {
+      return res.status(400).json({ success: false, error: 'Invalid submission data' });
+    }
+
+    const current = loadSubmissions();
+    const newSubmission = {
+      ...item,
+      id: item.id || `sub-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      uploadedAt: item.uploadedAt || new Date().toISOString(),
+      status: item.status || 'QUEUED'
+    };
+
+    // Prevent exact duplicate insertion if matching id exists
+    const filtered = current.filter((s: any) => s.id !== newSubmission.id);
+    const updated = [newSubmission, ...filtered];
+    saveSubmissions(updated);
+
+    return res.json({ success: true, submission: newSubmission, count: updated.length });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put('/api/client/submissions/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    const body = req.body || {};
+    const status = body.status;
+    const details = body.details || {};
+
+    const current = loadSubmissions();
+    let updatedItem: any = null;
+    const updated = current.map((s: any) => {
+      if (s.id === id) {
+        updatedItem = {
+          ...s,
+          ...(status ? { status } : {}),
+          ...details
+        };
+        return updatedItem;
+      }
+      return s;
+    });
+
+    if (updatedItem) {
+      saveSubmissions(updated);
+      return res.json({ success: true, submission: updatedItem });
+    }
+    return res.status(404).json({ success: false, error: 'Submission not found' });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete('/api/client/submissions/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    const current = loadSubmissions();
+    const updated = current.filter((s: any) => s.id !== id);
+    saveSubmissions(updated);
+    return res.json({ success: true, message: `Submission ${id} deleted` });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/api/client/submissions/batch-sync', (req, res) => {
+  try {
+    const body = req.body || {};
+    const clientSubs = Array.isArray(body.submissions) ? body.submissions : [];
+    const serverSubs = loadSubmissions();
+
+    const map = new Map<string, any>();
+    for (const s of serverSubs) {
+      if (s && s.id) map.set(s.id, s);
+    }
+    for (const c of clientSubs) {
+      if (c && c.id) {
+        const existing = map.get(c.id);
+        if (!existing) {
+          map.set(c.id, c);
+        } else {
+          map.set(c.id, { ...existing, ...c });
+        }
+      }
+    }
+
+    const merged = Array.from(map.values()).sort((a: any, b: any) => {
+      const ta = new Date(a.uploadedAt || 0).getTime();
+      const tb = new Date(b.uploadedAt || 0).getTime();
+      return tb - ta;
+    });
+
+    saveSubmissions(merged);
+    return res.json({ success: true, count: merged.length, submissions: merged });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }

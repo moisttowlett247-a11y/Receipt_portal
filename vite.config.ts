@@ -624,6 +624,110 @@ function licenseSyncApiPlugin(): Plugin {
           }
         }
 
+        // GET /api/client/submissions - List submissions
+        if (normalizedPath === '/api/client/submissions' && req.method === 'GET') {
+          try {
+            const subFile = path.join(licensesDir, 'client_submissions.json');
+            let subs: any[] = [];
+            if (fs.existsSync(subFile)) {
+              subs = JSON.parse(fs.readFileSync(subFile, 'utf-8'));
+            }
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: true, count: subs.length, submissions: subs }));
+            return;
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: err.message }));
+            return;
+          }
+        }
+
+        // POST /api/client/submissions - Add submission
+        if (normalizedPath === '/api/client/submissions' && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', chunk => { bodyStr += chunk; });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const item = body.submission || body;
+              const subFile = path.join(licensesDir, 'client_submissions.json');
+              let subs: any[] = [];
+              if (fs.existsSync(subFile)) {
+                try { subs = JSON.parse(fs.readFileSync(subFile, 'utf-8')); } catch {}
+              }
+              const newSubmission = {
+                ...item,
+                id: item.id || `sub-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+                uploadedAt: item.uploadedAt || new Date().toISOString(),
+                status: item.status || 'QUEUED'
+              };
+              const filtered = subs.filter((s: any) => s.id !== newSubmission.id);
+              const updated = [newSubmission, ...filtered];
+              fs.writeFileSync(subFile, JSON.stringify(updated, null, 2), 'utf-8');
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: true, submission: newSubmission, count: updated.length }));
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
+        }
+
+        // POST /api/client/submissions/batch-sync - Batch sync submissions
+        if (normalizedPath === '/api/client/submissions/batch-sync' && req.method === 'POST') {
+          let bodyStr = '';
+          req.on('data', chunk => { bodyStr += chunk; });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const clientSubs = Array.isArray(body.submissions) ? body.submissions : [];
+              const subFile = path.join(licensesDir, 'client_submissions.json');
+              let serverSubs: any[] = [];
+              if (fs.existsSync(subFile)) {
+                try { serverSubs = JSON.parse(fs.readFileSync(subFile, 'utf-8')); } catch {}
+              }
+
+              const map = new Map<string, any>();
+              for (const s of serverSubs) {
+                if (s && s.id) map.set(s.id, s);
+              }
+              for (const c of clientSubs) {
+                if (c && c.id) {
+                  const existing = map.get(c.id);
+                  if (!existing) {
+                    map.set(c.id, c);
+                  } else {
+                    map.set(c.id, { ...existing, ...c });
+                  }
+                }
+              }
+
+              const merged = Array.from(map.values()).sort((a: any, b: any) => {
+                const ta = new Date(a.uploadedAt || 0).getTime();
+                const tb = new Date(b.uploadedAt || 0).getTime();
+                return tb - ta;
+              });
+
+              fs.writeFileSync(subFile, JSON.stringify(merged, null, 2), 'utf-8');
+
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: true, count: merged.length, submissions: merged }));
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
+        }
+
         // POST /api/scan/receipt - High-accuracy AI OCR Receipt extraction via Gemini
         if (normalizedPath === '/api/scan/receipt' && req.method === 'POST') {
           let bodyStr = '';

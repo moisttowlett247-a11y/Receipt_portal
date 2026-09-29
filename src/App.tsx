@@ -59,6 +59,7 @@ import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode }
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
 import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
+import { getClientSubmissions, subscribeToClientSubmissions } from './clientSubmissionService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -85,6 +86,23 @@ export default function App() {
     }
     return INITIAL_KEYS;
   });
+
+  // Client Submissions live intake count
+  const [pendingSubmissionsCount, setPendingSubmissionsCount] = useState<number>(() => {
+    try {
+      return getClientSubmissions().filter(s => s.status === 'QUEUED').length;
+    } catch {
+      return 0;
+    }
+  });
+
+  useEffect(() => {
+    const unsubscribe = subscribeToClientSubmissions((subs) => {
+      const queued = (subs || []).filter(s => s.status === 'QUEUED').length;
+      setPendingSubmissionsCount(queued);
+    });
+    return () => unsubscribe();
+  }, []);
 
   // Save changes to localStorage
   useEffect(() => {
@@ -1019,9 +1037,15 @@ export default function App() {
         >
           <Cpu className="w-4 h-4 text-emerald-400 animate-pulse" />
           <span>Receipt Processing &amp; Parallel Engine</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
-            Multi-Worker
-          </span>
+          {pendingSubmissionsCount > 0 ? (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500 text-stone-950 animate-pulse ml-1">
+              {pendingSubmissionsCount} Queued
+            </span>
+          ) : (
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
+              Multi-Worker
+            </span>
+          )}
         </button>
 
         <button
@@ -1034,9 +1058,15 @@ export default function App() {
         >
           <Inbox className="w-4 h-4 text-amber-400" />
           <span>Client Intake & Multi-VM Cluster</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 ml-1">
-            Central Hub
-          </span>
+          {pendingSubmissionsCount > 0 ? (
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500 text-stone-950 ml-1">
+              {pendingSubmissionsCount} Pending
+            </span>
+          ) : (
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 ml-1">
+              Central Hub
+            </span>
+          )}
         </button>
 
         <button

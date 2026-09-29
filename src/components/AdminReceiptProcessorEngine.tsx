@@ -54,7 +54,13 @@ import {
   getActiveGeminiApiKeys,
   saveActiveGeminiApiKeys
 } from '../adminReceiptScanningEngine';
-import { getClientSubmissions, purgeDuplicateSubmissions } from '../clientSubmissionService';
+import { 
+  getClientSubmissions, 
+  purgeDuplicateSubmissions, 
+  subscribeToClientSubmissions, 
+  updateSubmissionStatus, 
+  ClientSubmission 
+} from '../clientSubmissionService';
 import { getStoredClientAccounts } from '../clientAccountService';
 import { IRS_SCHEDULE_F_LINES, IRS_SCHEDULE_C_LINES } from '../taxScheduleService';
 
@@ -100,6 +106,56 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [selectedClientTarget, setSelectedClientTarget] = useState<string>('Administrator (Internal Operations)');
   const [customClientInput, setCustomClientInput] = useState<string>('');
   const [isAddingCustomClient, setIsAddingCustomClient] = useState<boolean>(false);
+
+  // Real-time client submissions intake state & Auto-sync
+  const [clientSubmissions, setClientSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
+  const [autoEnqueueClientSubmissions, setAutoEnqueueClientSubmissions] = useState<boolean>(true);
+
+  // Subscribe to real-time client submissions updates across tabs and backend
+  useEffect(() => {
+    const unsubscribe = subscribeToClientSubmissions((updatedSubs) => {
+      setClientSubmissions(updatedSubs);
+
+      if (autoEnqueueClientSubmissions) {
+        const queuedItems = updatedSubs.filter(s => s.status === 'QUEUED');
+        if (queuedItems.length > 0) {
+          setQueuedFiles(prev => {
+            const existingIds = new Set(prev.map(p => p.id).filter(Boolean));
+            const processedIds = new Set(receipts.map(r => r.id));
+            const newToAdd: ReceiptInputItem[] = [];
+
+            for (const s of queuedItems) {
+              if (!existingIds.has(s.id) && !processedIds.has(s.id)) {
+                newToAdd.push({
+                  id: s.id,
+                  clientId: s.clientId,
+                  fileName: s.fileName,
+                  fileSize: s.fileSize,
+                  fileType: s.fileType,
+                  dataUrl: s.dataUrl,
+                  clientName: s.clientName,
+                  clientEmail: s.clientEmail,
+                  submittedBy: s.clientEmail ? `${s.clientName} (${s.clientEmail})` : s.clientName,
+                  submittedByRole: 'CLIENT' as const,
+                  uploadedAt: s.uploadedAt,
+                  memo: s.memo,
+                  categoryHint: s.categoryHint,
+                  vendorHint: s.extractedVendor,
+                  amountHint: s.extractedAmount,
+                  dateHint: s.extractedDate
+                });
+              }
+            }
+
+            if (newToAdd.length === 0) return prev;
+            return [...prev, ...newToAdd];
+          });
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [autoEnqueueClientSubmissions, receipts]);
 
   // Search & Filter controls
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -193,9 +249,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
     // Pull client intake submissions
     try {
-      const subs = getClientSubmissions();
-      if (Array.isArray(subs)) {
-        subs.forEach(s => {
+      if (Array.isArray(clientSubmissions)) {
+        clientSubmissions.forEach(s => {
           if (s.clientName?.trim()) set.add(s.clientName.trim());
         });
       }
@@ -207,17 +262,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     }
 
     return Array.from(set);
-  }, [receipts]);
+  }, [clientSubmissions, receipts]);
 
   // Pending client intake submissions count
   const pendingIntakeCount = useMemo(() => {
     try {
-      const subs = getClientSubmissions();
-      return subs.filter(s => s.status === 'QUEUED').length;
+      return (clientSubmissions || []).filter(s => s.status === 'QUEUED').length;
     } catch {
       return 0;
     }
-  }, []);
+  }, [clientSubmissions]);
 
   // Filtered Receipts for table
   const filteredReceipts = useMemo(() => {
@@ -271,10 +325,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
   // Detailed per-client tracking: volume of uploaded, pending, and processed receipts
   const clientBreakdown = useMemo(() => {
-    let subs: any[] = [];
-    try {
-      subs = getClientSubmissions();
-    } catch {}
+    const subs = clientSubmissions || [];
 
     const map: Record<string, {
       clientName: string;
@@ -320,7 +371,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     });
 
     return Object.values(map);
-  }, [availableClients, receipts]);
+  }, [availableClients, receipts, clientSubmissions]);
 
   const handleOpenInspect = (r: ProcessedReceipt) => {
     setInspectingReceipt(r);
@@ -685,6 +736,19 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           setReceipts(prev => [processed, ...prev]);
         }
       });
+
+      // Update client submission statuses in real time
+      for (const res of scannedResults) {
+        if (res.id && (res.id.startsWith('sub-') || res.submittedByRole === 'CLIENT')) {
+          try {
+            updateSubmissionStatus(res.id, 'SYNCED_QBO', {
+              extractedVendor: res.vendor,
+              extractedAmount: res.total,
+              extractedDate: res.date
+            });
+          } catch {}
+        }
+      }
 
       // Clear the queued files after successful batch
       setQueuedFiles([]);
@@ -1250,6 +1314,97 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 </div>
               </div>
             )}
+
+            {/* QUEUED FILES PREVIEW & INTAKE SYNC STATUS */}
+            <div className="p-3.5 rounded-xl bg-stone-950 border border-stone-800/80 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <Inbox className="w-4 h-4 text-emerald-400" />
+                  <span className="font-bold text-stone-200">
+                    Active Scanning Queue ({queuedFiles.length} {queuedFiles.length === 1 ? 'Item' : 'Items'} Ready)
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    Client Portal Sync: Live
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1.5 text-[11px] text-stone-400 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={autoEnqueueClientSubmissions}
+                      onChange={e => setAutoEnqueueClientSubmissions(e.target.checked)}
+                      className="rounded border-stone-700 text-emerald-500 focus:ring-0 cursor-pointer"
+                    />
+                    <span>Auto-Enqueue Client Submissions</span>
+                  </label>
+
+                  {queuedFiles.length > 0 && !isScanning && (
+                    <button
+                      type="button"
+                      onClick={() => setQueuedFiles([])}
+                      className="px-2 py-0.5 rounded bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-rose-300 text-[11px] border border-stone-800 transition-colors cursor-pointer"
+                    >
+                      Clear Queue
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {queuedFiles.length > 0 ? (
+                <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1 divide-y divide-stone-900">
+                  {queuedFiles.map((item, idx) => (
+                    <div
+                      key={`${item.id || item.fileName}-${idx}`}
+                      className="pt-1.5 first:pt-0 flex items-center justify-between gap-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-6 h-6 rounded bg-stone-900 border border-stone-800 flex items-center justify-center shrink-0 text-[10px] font-mono text-stone-400">
+                          {idx + 1}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-medium text-stone-200 truncate flex items-center gap-1.5">
+                            <span className="truncate">{item.fileName}</span>
+                            {item.submittedByRole === 'CLIENT' && (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                                CLIENT PORTAL
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-stone-500 flex items-center gap-2">
+                            <span>{item.clientName || 'General'}</span>
+                            <span>•</span>
+                            <span>{(item.fileSize / 1024).toFixed(0)} KB</span>
+                            {item.memo && (
+                              <>
+                                <span>•</span>
+                                <span className="truncate max-w-[150px] italic">"{item.memo}"</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {!isScanning && (
+                        <button
+                          type="button"
+                          onClick={() => setQueuedFiles(prev => prev.filter((_, i) => i !== idx))}
+                          className="p-1 rounded text-stone-500 hover:text-rose-400 hover:bg-stone-900 transition-colors"
+                          title="Remove from queue"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-3 text-xs text-stone-500">
+                  No receipts currently queued. Submissions from the Client Portal will automatically appear here ready to scan.
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
