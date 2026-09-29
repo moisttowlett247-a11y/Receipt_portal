@@ -115,7 +115,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [inspectingReceipt, setInspectingReceipt] = useState<ProcessedReceipt | null>(null);
   const [isEditingReceipt, setIsEditingReceipt] = useState<boolean>(false);
   const [isReScanning, setIsReScanning] = useState<boolean>(false);
-  const [activeOcrError, setActiveOcrError] = useState<{ fileName: string; ocrError: string } | null>(null);
+  const [activeOcrError, setActiveOcrError] = useState<{ id: string; fileName: string; ocrError: string } | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
   const [confirmClearLedger, setConfirmClearLedger] = useState<boolean>(false);
   const [showClientRoster, setShowClientRoster] = useState<boolean>(true);
 
@@ -421,6 +422,84 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       if (onToast) onToast(`Re-scan notice: ${e.message || String(e)}`);
     } finally {
       setIsReScanning(false);
+    }
+  };
+
+  const handleRetryScanById = async (id: string) => {
+    const target = receipts.find(r => r.id === id);
+    if (!target) return;
+    if (!target.dataUrl) {
+      if (onToast) onToast('Cannot re-scan: original document image data not available in ledger.');
+      return;
+    }
+
+    setRetryingId(id);
+    if (onToast) onToast(`Retrying AI Vision OCR for ${target.fileName}...`);
+
+    try {
+      const ocrRes = await scanReceiptWithAI({
+        dataUrl: target.dataUrl,
+        fileType: target.fileType || 'image/jpeg',
+        fileName: target.fileName,
+        clientName: target.clientName
+      });
+
+      if (ocrRes.success && ocrRes.data) {
+        const d = ocrRes.data;
+        const taxCls = (d.schedule && d.irsLineNumber && d.irsLineTitle)
+          ? {
+              schedule: d.schedule,
+              lineNumber: d.irsLineNumber,
+              lineTitle: d.irsLineTitle,
+              categoryName: d.category || 'Supplies',
+              confidence: 0.99
+            }
+          : classifyExtractedTaxSchedule(
+              d.vendor,
+              d.category || 'Supplies & Materials',
+              d.memo || '',
+              target.fileName
+            );
+
+        const updated: ProcessedReceipt = {
+          ...target,
+          vendor: d.vendor,
+          normalizedVendor: normalizeVendorName(d.vendor),
+          date: d.date,
+          lineItems: d.lineItems,
+          subtotal: d.subtotal,
+          tax: d.tax,
+          tip: d.tip,
+          total: d.total,
+          paymentMethod: d.paymentMethod,
+          cardLast4: d.cardLast4,
+          invoiceNumber: d.invoiceNumber,
+          category: taxCls.categoryName,
+          schedule: taxCls.schedule,
+          irsLineNumber: taxCls.lineNumber,
+          irsLineTitle: taxCls.lineTitle,
+          confidence: 0.99,
+          ocrFailed: false,
+          ocrError: undefined,
+          processedAt: new Date().toISOString()
+        };
+
+        setReceipts(prev => prev.map(item => item.id === updated.id ? updated : item));
+        if (inspectingReceipt?.id === updated.id) {
+          setInspectingReceipt(updated);
+        }
+        if (activeOcrError?.id === updated.id) {
+          setActiveOcrError(null);
+        }
+        if (onToast) onToast(`Receipt (${updated.fileName}) re-scanned successfully with high-accuracy AI!`);
+      } else {
+        throw new Error(ocrRes.errorMessage || 'AI OCR extraction failed');
+      }
+    } catch (e: any) {
+      console.error(e);
+      if (onToast) onToast(`Re-scan failed: ${e.message || String(e)}`);
+    } finally {
+      setRetryingId(null);
     }
   };
 
@@ -1595,6 +1674,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   setActiveOcrError({
+                                    id: r.id,
                                     fileName: r.fileName,
                                     ocrError: r.ocrError || 'AI OCR Vision failed due to API limits or network overload. Switched to local heuristic fallback.'
                                   });
@@ -1683,6 +1763,17 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       {/* Actions */}
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
+                          {r.ocrFailed && (
+                            <button
+                              onClick={() => handleRetryScanById(r.id)}
+                              disabled={retryingId === r.id}
+                              className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 border border-rose-500/30 transition-colors cursor-pointer"
+                              title="Retry AI Vision OCR"
+                            >
+                              <RefreshCw className={`w-3.5 h-3.5 ${retryingId === r.id ? 'animate-spin' : ''}`} />
+                            </button>
+                          )}
+
                           <button
                             onClick={() => handleOpenInspect(r)}
                             className="p-1.5 rounded-lg hover:bg-stone-800 text-stone-300 hover:text-white transition-colors cursor-pointer"
@@ -2190,17 +2281,28 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             </div>
 
             <div className="flex items-center justify-between gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setKeyInputText(configuredKeys.join('\n'));
-                  setIsKeyModalOpen(true);
-                }}
-                className="px-3.5 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-              >
-                <Key className="w-3.5 h-3.5" />
-                <span>Configure Gemini Keys</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={retryingId === activeOcrError.id}
+                  onClick={() => handleRetryScanById(activeOcrError.id)}
+                  className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${retryingId === activeOcrError.id ? 'animate-spin' : ''}`} />
+                  <span>{retryingId === activeOcrError.id ? 'Re-scanning...' : 'Retry AI Vision OCR'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeyInputText(configuredKeys.join('\n'));
+                    setIsKeyModalOpen(true);
+                  }}
+                  className="px-3 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Key className="w-3.5 h-3.5" />
+                  <span>Keys</span>
+                </button>
+              </div>
               <button
                 type="button"
                 onClick={() => setActiveOcrError(null)}

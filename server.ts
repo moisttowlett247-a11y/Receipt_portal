@@ -317,7 +317,17 @@ router.post('/api/scan/receipt', async (req, res) => {
     }
   };
 
-  const modelsToTry = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+  const modelsToTry = [
+    "gemini-2.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-latest"
+  ];
   let rawResult: any = null;
   let lastError = "";
 
@@ -374,8 +384,11 @@ router.post('/api/scan/receipt', async (req, res) => {
             lastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
           }
         } else {
-          const errText = await gResp.text();
-          lastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
+          const errText = await gResp.text().catch(() => '');
+          lastError = `HTTP ${gResp.status} [${model}] with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
+          if (gResp.status === 503 || gResp.status === 429) {
+            await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
+          }
         }
       } catch (mErr: any) {
         lastError = `Fetch error [${model}]: ${mErr.message}`;

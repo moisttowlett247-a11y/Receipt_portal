@@ -943,6 +943,173 @@ export default {
       }
     }
 
+    // -------------------------------------------------------------------------
+    // 8. Gemini AI Receipt OCR Proxy (/api/scan/receipt)
+    // -------------------------------------------------------------------------
+    if (pathname === "/api/scan/receipt" && (request.method === "POST" || request.method === "OPTIONS")) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: CORS_HEADERS });
+      }
+
+      try {
+        const body = await request.json();
+        const imageBase64 = body.imageBase64 || body.dataUrl || "";
+        const clientApiKey = request.headers.get("x-gemini-key") || (env && env.GEMINI_API_KEY) || "";
+
+        let cleanBase64 = imageBase64;
+        let cleanMime = body.mimeType || "image/jpeg";
+        if (cleanBase64.includes("base64,")) {
+          const parts = cleanBase64.split("base64,");
+          cleanBase64 = parts[1];
+          if (parts[0].includes("data:")) {
+            cleanMime = parts[0].replace("data:", "").replace(";", "").trim();
+          }
+        }
+
+        if (!cleanBase64) {
+          return jsonResponse({ success: false, error: "Missing image base64 data" }, 400);
+        }
+
+        const promptText = 
+          "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+
+        const systemInstructionText = 
+          "You are a certified forensic CPA accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax (Schedule C / Schedule F) and QuickBooks Online reconciliation.\n" +
+          "CRITICAL RULES:\n" +
+          "1. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Format strictly as 'YYYY-MM-DD'. If 2-digit year (e.g. 26), format as 2026.\n" +
+          "2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged or paid to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total.\n" +
+          "3. LINE ITEMS & SUBTOTAL: 'subtotal' is pre-tax. 'tax' is sales tax. Extract line items in 'items'.\n" +
+          "4. VENDOR: Extract full legal merchant name at the top of the receipt.\n" +
+          "5. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n" +
+          "6. Return strictly valid JSON conforming to the schema.";
+
+        const receiptSchema = {
+          type: "OBJECT",
+          properties: {
+            receipts: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  vendor: { type: "STRING" },
+                  date: { type: "STRING" },
+                  total: { type: "NUMBER" },
+                  subtotal: { type: "NUMBER" },
+                  tax: { type: "NUMBER" },
+                  tip: { type: "NUMBER" },
+                  payment_method: { type: "STRING" },
+                  card_last_4: { type: "STRING" },
+                  invoice_number: { type: "STRING" },
+                  category: { type: "STRING" },
+                  items: {
+                    type: "ARRAY",
+                    items: {
+                      type: "OBJECT",
+                      properties: {
+                        description: { type: "STRING" },
+                        amount: { type: "NUMBER" }
+                      }
+                    }
+                  },
+                  memo: { type: "STRING" }
+                },
+                required: ["vendor", "date", "total"]
+              }
+            }
+          },
+          required: ["receipts"]
+        };
+
+        const payload = {
+          contents: [{
+            role: "user",
+            parts: [
+              { text: promptText },
+              { inlineData: { mimeType: cleanMime, data: cleanBase64 } }
+            ]
+          }],
+          systemInstruction: { parts: [{ text: systemInstructionText }] },
+          generationConfig: {
+            temperature: 0.0,
+            responseMimeType: "application/json",
+            responseSchema: receiptSchema
+          }
+        };
+
+        const modelsToTry = [
+          "gemini-2.5-flash",
+          "gemini-3.5-flash-lite",
+          "gemini-3.1-flash-lite",
+          "gemini-2.5-flash-lite",
+          "gemini-2.0-flash",
+          "gemini-2.0-flash-lite",
+          "gemini-1.5-flash",
+          "gemini-3.8-flash",
+          "gemini-flash-latest"
+        ];
+
+        let rawResult = null;
+        let lastError = "";
+
+        if (!clientApiKey) {
+          return jsonResponse({ success: false, error: "No Gemini API key provided. Include x-gemini-key header or configure in worker environment." }, 401);
+        }
+
+        for (const model of modelsToTry) {
+          try {
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${clientApiKey}`;
+            const gResp = await fetch(geminiUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload)
+            });
+
+            if (gResp.ok) {
+              const gData = await gResp.json();
+              if (gData.error) {
+                lastError = `[${model}] ${gData.error.message}`;
+                continue;
+              }
+              const text = gData?.candidates?.[0]?.content?.parts?.[0]?.text;
+              if (text) {
+                let parsed = null;
+                try {
+                  parsed = JSON.parse(text.trim());
+                } catch {
+                  const m = text.match(/(\{.*\})/s);
+                  if (m) {
+                    try { parsed = JSON.parse(m[1]); } catch {}
+                  }
+                }
+                if (parsed) {
+                  if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                    rawResult = parsed.receipts[0];
+                    break;
+                  } else if (parsed.vendor && parsed.total !== undefined) {
+                    rawResult = parsed;
+                    break;
+                  }
+                }
+              }
+            } else {
+              const errText = await gResp.text().catch(() => "");
+              lastError = `HTTP ${gResp.status} [${model}]: ${errText.slice(0, 500)}`;
+            }
+          } catch (e) {
+            lastError = `Fetch error [${model}]: ${e.message}`;
+          }
+        }
+
+        if (rawResult) {
+          return jsonResponse({ success: true, data: rawResult });
+        } else {
+          return jsonResponse({ success: false, error: lastError || "Failed to parse receipt with AI vision" }, 502);
+        }
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 500);
+      }
+    }
+
     return jsonResponse({ error: "Endpoint not found on Cloudflare Worker: " + pathname }, 404);
   }
 };

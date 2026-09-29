@@ -1051,66 +1051,100 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
   if (apiKeys.length > 0 || isStaticHost) {
     if (apiKeys.length > 0) {
       if (onStep) onStep('Connecting to Gemini Vision API...');
-      const modelsToTry = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+      const modelsToTry = [
+        "gemini-2.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
+        "gemini-3.8-flash",
+        "gemini-flash-latest"
+      ];
       let rawResult: any = null;
+      const MAX_CYCLES = 4;
 
-      outerLoop:
-      for (const model of modelsToTry) {
-        for (const currentKey of apiKeys) {
-          try {
-            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
-            const gResp = await fetch(geminiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
+      cycleLoop:
+      for (let cycle = 0; cycle < MAX_CYCLES; cycle++) {
+        if (cycle > 0) {
+          const waitTime = 1200 * cycle + Math.round(Math.random() * 800);
+          if (onStep) onStep(`High demand (503). Retrying in ${(waitTime / 1000).toFixed(1)}s (Pass ${cycle + 1}/${MAX_CYCLES})...`);
+          await new Promise(r => setTimeout(r, waitTime));
+        }
 
-            if (gResp.ok) {
-              const gData = await gResp.json();
-              if (gData.error) {
-                clientLastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
-                continue;
+        for (const model of modelsToTry) {
+          for (const currentKey of apiKeys) {
+            try {
+              if (onStep) {
+                onStep(`Processing with ${model} [Key ${currentKey.slice(0, 4)}...]${cycle > 0 ? ` (Retry pass ${cycle + 1})` : ''}...`);
               }
+              const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+              const gResp = await fetch(geminiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
 
-              const candidates = gData?.candidates || [];
-              if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
-                clientLastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
-                continue;
-              }
-
-              const text = candidates[0]?.content?.parts?.[0]?.text;
-              if (text) {
-                let parsed: any = null;
-                const cleanText = text.trim();
-                try {
-                  parsed = JSON.parse(cleanText);
-                } catch {
-                  const jsonMatch = cleanText.match(/(\{.*\})/s);
-                  if (jsonMatch) {
-                    try {
-                      parsed = JSON.parse(jsonMatch[1]);
-                    } catch {}
-                  }
+              if (gResp.ok) {
+                const gData = await gResp.json();
+                if (gData.error) {
+                  clientLastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
+                  continue;
                 }
 
-                if (parsed) {
-                  if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
-                    rawResult = parsed.receipts[0];
-                    break outerLoop;
-                  } else if (parsed.vendor && parsed.total !== undefined) {
-                    rawResult = parsed;
-                    break outerLoop;
+                const candidates = gData?.candidates || [];
+                if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
+                  clientLastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
+                  continue;
+                }
+
+                const text = candidates[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                  let parsed: any = null;
+                  const cleanText = text.trim();
+                  try {
+                    parsed = JSON.parse(cleanText);
+                  } catch {
+                    const jsonMatch = cleanText.match(/(\{.*\})/s);
+                    if (jsonMatch) {
+                      try {
+                        parsed = JSON.parse(jsonMatch[1]);
+                      } catch {}
+                    }
                   }
+
+                  if (parsed) {
+                    if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                      rawResult = parsed.receipts[0];
+                      break cycleLoop;
+                    } else if (parsed.vendor && parsed.total !== undefined) {
+                      rawResult = parsed;
+                      break cycleLoop;
+                    }
+                  }
+                } else {
+                  clientLastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
                 }
               } else {
-                clientLastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
+                const errText = await gResp.text().catch(() => '');
+                let parsedErr: any = null;
+                try {
+                  parsedErr = JSON.parse(errText);
+                } catch {}
+
+                const errMsg = parsedErr?.error?.message || errText.slice(0, 4000);
+                clientLastError = `HTTP ${gResp.status} [${model}] with Key [${currentKey.slice(0, 6)}...]: ${errMsg}`;
+
+                // If 503 (Temporary High Demand) or 429 (Rate Limit), brief pause before attempting next model/key
+                if (gResp.status === 503 || gResp.status === 429) {
+                  if (onStep) onStep(`High demand (503) on ${model}. Switching to alternative model...`);
+                  await new Promise(r => setTimeout(r, 600 + Math.random() * 600));
+                }
               }
-            } else {
-              const errText = await gResp.text().catch(() => '');
-              clientLastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
+            } catch (mErr: any) {
+              clientLastError = `Fetch error [${model}]: ${mErr.message}`;
             }
-          } catch (mErr: any) {
-            clientLastError = `Fetch error [${model}]: ${mErr.message}`;
           }
         }
       }
@@ -1156,6 +1190,30 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     }
   } catch (sErr: any) {
     serverLastError = sErr.message || String(sErr);
+  }
+
+  // 3. Edge Worker fallback (bypasses 405 and network issues on static GitHub Pages)
+  if (apiKeys.length > 0) {
+    try {
+      const cfResp = await fetch('https://receipt-license-api.moisttowlett247.workers.dev/api/scan/receipt', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gemini-key': apiKeys[0]
+        },
+        body: JSON.stringify({
+          imageBase64: dataUrl,
+          mimeType: cleanMime,
+          fileName
+        })
+      });
+      if (cfResp.ok) {
+        const cfJson = await cfResp.json();
+        if (cfJson.success && cfJson.data) {
+          return normalizeOcrResult(cfJson.data, 'SERVER_API');
+        }
+      }
+    } catch {}
   }
 
   // If both failed, construct a helpful detailed error message
@@ -1420,8 +1478,13 @@ export async function runParallelBatchScan(
     options.onWorkerUpdate([...workers]);
   };
 
-  // Launch worker promises
-  const activeWorkerPromises = Array.from({ length: concurrency }).map((_, idx) => runWorker(idx));
+  // Launch worker promises with slight stagger to prevent concurrent burst
+  const activeWorkerPromises = Array.from({ length: concurrency }).map(async (_, idx) => {
+    if (idx > 0) {
+      await new Promise(r => setTimeout(r, idx * 250));
+    }
+    return runWorker(idx);
+  });
   await Promise.all(activeWorkerPromises);
 
   return results;
