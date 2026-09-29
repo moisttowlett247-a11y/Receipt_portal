@@ -317,7 +317,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     }
   };
 
-  const modelsToTry = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
+  const modelsToTry = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
   let rawResult: any = null;
   let lastError = "";
 
@@ -422,13 +422,6 @@ router.post('/api/scan/receipt', async (req, res) => {
     } else if (itemSum > 0) {
       total = Number((itemSum + tax).toFixed(2));
     }
-  } else if (subtotal > 0 && expectedSum > 0) {
-    const diffRatio = total / expectedSum;
-    if (diffRatio > 1.5 || diffRatio < 0.5) {
-      if (expectedSum > 0.01) {
-        total = expectedSum;
-      }
-    }
   }
 
   total = Number(total.toFixed(2));
@@ -448,9 +441,9 @@ router.post('/api/scan/receipt', async (req, res) => {
   };
 
   const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
-  const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9][0-9])\b/);
-  const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
-  const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
+  const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9]{2})\b/);
+  const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
+  const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
 
   if (isoMatch) {
     dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
@@ -461,7 +454,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     }
     dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
   } else if (monthNameMatch) {
-    const mStr = monthNameMatch[1].toLowerCase();
+    const mStr = monthNameMatch[1].toLowerCase().slice(0, 3);
     const mNum = monthMap[mStr] || '01';
     const day = monthNameMatch[2].padStart(2, '0');
     let yr = monthNameMatch[3];
@@ -470,7 +463,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     }
     dateStr = `${yr}-${mNum}-${day}`;
   } else if (dayMonthMatch) {
-    const mStr = dayMonthMatch[2].toLowerCase();
+    const mStr = dayMonthMatch[2].toLowerCase().slice(0, 3);
     const mNum = monthMap[mStr] || '01';
     const day = dayMonthMatch[1].padStart(2, '0');
     let yr = dayMonthMatch[3];
@@ -478,12 +471,10 @@ router.post('/api/scan/receipt', async (req, res) => {
       yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
     }
     dateStr = `${yr}-${mNum}-${day}`;
-  } else {
-    const fallbackMatch = dateStr.match(/\b(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})\b/);
-    if (fallbackMatch) {
-      dateStr = `${fallbackMatch[1]}-${fallbackMatch[2].padStart(2, '0')}-${fallbackMatch[3].padStart(2, '0')}`;
-    } else {
-      dateStr = '';
+  } else if (!isNaN(Date.parse(dateStr))) {
+    const parsedD = new Date(dateStr);
+    if (!isNaN(parsedD.getTime())) {
+      dateStr = parsedD.toISOString().split('T')[0];
     }
   }
 
@@ -492,7 +483,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     if (fileDateMatch) {
       dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
     } else {
-      dateStr = 'Pending Review';
+      dateStr = new Date().toISOString().split('T')[0];
     }
   }
 

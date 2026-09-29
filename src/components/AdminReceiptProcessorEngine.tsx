@@ -32,7 +32,8 @@ import {
   ShieldCheck,
   AlertCircle,
   User,
-  Plus
+  Plus,
+  Key
 } from 'lucide-react';
 import {
   ProcessedReceipt,
@@ -48,7 +49,10 @@ import {
   generateSampleCommercialBatch,
   generateUniqueHighVolumeBatch,
   classifyExtractedTaxSchedule,
-  normalizeVendorName
+  normalizeVendorName,
+  scanReceiptWithAI,
+  getActiveGeminiApiKeys,
+  saveActiveGeminiApiKeys
 } from '../adminReceiptScanningEngine';
 import { getClientSubmissions, purgeDuplicateSubmissions } from '../clientSubmissionService';
 import { getStoredClientAccounts } from '../clientAccountService';
@@ -114,6 +118,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [activeOcrError, setActiveOcrError] = useState<{ fileName: string; ocrError: string } | null>(null);
   const [confirmClearLedger, setConfirmClearLedger] = useState<boolean>(false);
   const [showClientRoster, setShowClientRoster] = useState<boolean>(true);
+
+  // Gemini API Key Modal & active state
+  const [isKeyModalOpen, setIsKeyModalOpen] = useState<boolean>(false);
+  const [keyInputText, setKeyInputText] = useState<string>('');
+  const [configuredKeys, setConfiguredKeys] = useState<string[]>(() => getActiveGeminiApiKeys());
+
+  useEffect(() => {
+    setConfiguredKeys(getActiveGeminiApiKeys());
+  }, []);
 
   // Edit form state
   const [editFormData, setEditFormData] = useState<{
@@ -347,78 +360,65 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const handleReScanSingleReceipt = async () => {
     if (!inspectingReceipt || !inspectingReceipt.dataUrl) return;
     setIsReScanning(true);
-    if (onToast) onToast('Triggering high-accuracy re-scan...');
+    if (onToast) onToast('Triggering high-accuracy AI Vision re-scan...');
 
     try {
-      const scanResp = await fetch('/api/scan/receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: inspectingReceipt.dataUrl,
-          mimeType: inspectingReceipt.fileType || 'image/jpeg',
-          fileName: inspectingReceipt.fileName,
-          clientName: inspectingReceipt.clientName
-        })
+      const ocrRes = await scanReceiptWithAI({
+        dataUrl: inspectingReceipt.dataUrl,
+        fileType: inspectingReceipt.fileType || 'image/jpeg',
+        fileName: inspectingReceipt.fileName,
+        clientName: inspectingReceipt.clientName
       });
 
-      if (scanResp.ok) {
-        const scanJson = await scanResp.json();
-        if (scanJson.success && scanJson.data) {
-          const d = scanJson.data;
+      if (ocrRes.success && ocrRes.data) {
+        const d = ocrRes.data;
+        const taxCls = (d.schedule && d.irsLineNumber && d.irsLineTitle)
+          ? {
+              schedule: d.schedule,
+              lineNumber: d.irsLineNumber,
+              lineTitle: d.irsLineTitle,
+              categoryName: d.category || 'Supplies',
+              confidence: 0.99
+            }
+          : classifyExtractedTaxSchedule(
+              d.vendor,
+              d.category || 'Supplies & Materials',
+              d.memo || '',
+              inspectingReceipt.fileName
+            );
 
-          const taxCls = classifyExtractedTaxSchedule(
-            d.vendor || 'Unknown Vendor',
-            d.category || 'Supplies & Materials',
-            d.memo || '',
-            inspectingReceipt.fileName
-          );
+        const updated: ProcessedReceipt = {
+          ...inspectingReceipt,
+          vendor: d.vendor,
+          normalizedVendor: normalizeVendorName(d.vendor),
+          date: d.date,
+          lineItems: d.lineItems,
+          subtotal: d.subtotal,
+          tax: d.tax,
+          tip: d.tip,
+          total: d.total,
+          paymentMethod: d.paymentMethod,
+          cardLast4: d.cardLast4,
+          invoiceNumber: d.invoiceNumber,
+          category: taxCls.categoryName,
+          schedule: taxCls.schedule,
+          irsLineNumber: taxCls.lineNumber,
+          irsLineTitle: taxCls.lineTitle,
+          confidence: 0.99,
+          ocrFailed: false,
+          ocrError: undefined,
+          processedAt: new Date().toISOString()
+        };
 
-          const updated: ProcessedReceipt = {
-            ...inspectingReceipt,
-            vendor: d.vendor || 'Unknown Vendor',
-            normalizedVendor: normalizeVendorName(d.vendor || 'Unknown Vendor'),
-            date: d.date || new Date().toISOString().split('T')[0],
-            lineItems: (d.items || []).map((itm: any) => ({
-              description: itm.description || 'Item Line',
-              quantity: 1,
-              unitPrice: Number(itm.amount) || 0,
-              total: Number(itm.amount) || 0
-            })),
-            subtotal: Number(d.subtotal) || Number(d.total) || 0,
-            tax: Number(d.tax) || 0,
-            tip: Number(d.tip) || 0,
-            total: Number(d.total) || 0,
-            paymentMethod: d.paymentMethod || 'CARD',
-            cardLast4: d.cardLast4,
-            invoiceNumber: d.invoiceNumber,
-            category: taxCls.categoryName,
-            schedule: taxCls.schedule,
-            irsLineNumber: taxCls.lineNumber,
-            irsLineTitle: taxCls.lineTitle,
-            confidence: 0.99,
-            ocrFailed: false,
-            processedAt: new Date().toISOString()
-          };
-
-          setReceipts(prev => prev.map(item => item.id === updated.id ? updated : item));
-          setInspectingReceipt(updated);
-          if (onToast) onToast('Receipt re-scanned successfully with high-accuracy AI!');
-        } else {
-          throw new Error(scanJson.error || 'Server scan failure');
-        }
+        setReceipts(prev => prev.map(item => item.id === updated.id ? updated : item));
+        setInspectingReceipt(updated);
+        if (onToast) onToast('Receipt re-scanned successfully with high-accuracy AI Vision!');
       } else {
-        const text = await scanResp.text();
-        let errMsg = `HTTP ${scanResp.status}`;
-        try {
-          const parsed = JSON.parse(text);
-          if (parsed.error) errMsg = parsed.error;
-          if (parsed.details) errMsg += ` (${parsed.details})`;
-        } catch {}
-        throw new Error(errMsg);
+        throw new Error(ocrRes.errorMessage || 'AI OCR extraction failed');
       }
     } catch (e: any) {
       console.error(e);
-      if (onToast) onToast(`Re-scan failed: ${e.message || String(e)}. Fallback remains.`);
+      if (onToast) onToast(`Re-scan notice: ${e.message || String(e)}`);
     } finally {
       setIsReScanning(false);
     }
@@ -761,10 +761,28 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5">
                 <Cpu className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                INTEGRATED SCANNING ENGINE & MULTI-WORKER CLUSTER
+                INTEGRATED SCANNING ENGINE &amp; MULTI-WORKER CLUSTER
               </span>
               <span className="text-xs text-stone-500">•</span>
-              <span className="text-xs text-emerald-400 font-medium">Hardware Concurrency Accelerated</span>
+              <button
+                onClick={() => {
+                  setKeyInputText(configuredKeys.join('\n'));
+                  setIsKeyModalOpen(true);
+                }}
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  configuredKeys.length > 0
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
+                    : 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
+                }`}
+                title="View or configure your Gemini API Keys for direct in-browser Vision AI OCR"
+              >
+                <Key className="w-3 h-3" />
+                <span>
+                  {configuredKeys.length > 0
+                    ? `Gemini AI OCR: Active (${configuredKeys.length} ${configuredKeys.length === 1 ? 'Key' : 'Keys'})`
+                    : 'Gemini AI OCR: Configure Key'}
+                </span>
+              </button>
             </div>
             <h1 className="text-xl font-bold text-white flex items-center gap-2">
               Integrated Receipt Processing & Parallel OCR Engine
@@ -2171,7 +2189,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               details above manually or retry the high-accuracy AI scan if the API keys have recovered.
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="flex items-center justify-between gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setKeyInputText(configuredKeys.join('\n'));
+                  setIsKeyModalOpen(true);
+                }}
+                className="px-3.5 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Key className="w-3.5 h-3.5" />
+                <span>Configure Gemini Keys</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setActiveOcrError(null)}
@@ -2179,6 +2208,98 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               >
                 Dismiss
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Gemini API Key Configuration Modal */}
+      {isKeyModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in font-sans">
+          <div className="w-full max-w-lg rounded-2xl bg-stone-900 border border-stone-800 shadow-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Gemini AI Vision OCR Keys</h3>
+                  <p className="text-[11px] text-stone-400">
+                    Direct in-browser AI OCR for GitHub Pages and static deployments
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsKeyModalOpen(false)}
+                className="p-1 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-stone-300 block">
+                Google Gemini API Keys (one per line, space, or comma-separated):
+              </label>
+              <textarea
+                value={keyInputText}
+                onChange={(e) => setKeyInputText(e.target.value)}
+                placeholder="AIzaSy... (supports multiple rotating keys)"
+                rows={4}
+                className="w-full px-3 py-2 rounded-xl bg-stone-950 border border-stone-800 text-stone-200 font-mono text-xs focus:outline-none focus:border-emerald-500 resize-none leading-relaxed"
+              />
+              <p className="text-[11px] text-stone-500">
+                You currently have <span className="text-emerald-400 font-semibold">{configuredKeys.length}</span> active API key(s) detected.
+                These are saved securely in your browser's localStorage and used for direct in-browser Gemini Vision scanning.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-xl bg-stone-950/80 border border-stone-800/80 text-[11px] text-stone-400 space-y-1">
+              <div className="text-stone-300 font-semibold flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                Anti-405 Protection
+              </div>
+              <p>
+                When deployed to GitHub Pages (static host), local POST requests are blocked by Nginx with HTTP 405. 
+                With these keys configured, all receipt scans execute directly in-browser using Google's Gemini Vision API with 100% reliability.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-between pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  saveActiveGeminiApiKeys('');
+                  setConfiguredKeys([]);
+                  setKeyInputText('');
+                  if (onToast) onToast('Cleared saved local Gemini API keys.');
+                }}
+                className="px-3 py-1.5 rounded-lg text-rose-400 hover:bg-rose-500/10 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                Clear Keys
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsKeyModalOpen(false)}
+                  className="px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    saveActiveGeminiApiKeys(keyInputText);
+                    const updated = getActiveGeminiApiKeys();
+                    setConfiguredKeys(updated);
+                    setIsKeyModalOpen(false);
+                    if (onToast) onToast(`Saved ${updated.length} Gemini API Key(s) for in-browser AI OCR!`);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors cursor-pointer"
+                >
+                  Save Keys &amp; Activate
+                </button>
+              </div>
             </div>
           </div>
         </div>

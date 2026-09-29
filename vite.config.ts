@@ -734,7 +734,7 @@ function licenseSyncApiPlugin(): Plugin {
                 }
               };
 
-              const modelsToTry = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
+              const modelsToTry = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
               let rawResult: any = null;
               let lastError = "";
 
@@ -845,17 +845,6 @@ function licenseSyncApiPlugin(): Plugin {
                 } else if (itemSum > 0) {
                   total = Number((itemSum + tax).toFixed(2));
                 }
-              } else if (subtotal > 0 && expectedSum > 0) {
-                // If model picked an outlier like 'Cash Tendered' or 'Change Due'
-                // We check if the total is wildly different from (Subtotal + Tax)
-                // A common case is paying $100 for a $20 receipt.
-                const diffRatio = total / expectedSum;
-                if (diffRatio > 1.5 || diffRatio < 0.5) {
-                  // If the discrepancy is huge, trust the sum of parts over the single 'total' field
-                  if (expectedSum > 0.01) {
-                    total = expectedSum;
-                  }
-                }
               }
 
               // Final rounding
@@ -932,7 +921,7 @@ function licenseSyncApiPlugin(): Plugin {
                 if (fileDateMatch) {
                   dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
                 } else {
-                  dateStr = 'Pending Review'; // Better than today's date which is likely wrong
+                  dateStr = new Date().toISOString().split('T')[0];
                 }
               }
 

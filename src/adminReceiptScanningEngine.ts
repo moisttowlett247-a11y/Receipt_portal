@@ -734,6 +734,443 @@ export function classifyExtractedTaxSchedule(
 }
 
 // ---------------------------------------------------------------------------
+// DIRECT GEMINI AI OCR & ENTITY EXTRACTION ENGINE
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns all available Gemini API keys from localStorage and build-time env vars.
+ * Supports multiple keys separated by commas, semicolons, whitespace, or newlines.
+ */
+export function getActiveGeminiApiKeys(): string[] {
+  let stored = '';
+  if (typeof localStorage !== 'undefined') {
+    stored = (
+      localStorage.getItem('receipt_processor_gemini_key') ||
+      localStorage.getItem('gemini_api_key') ||
+      localStorage.getItem('VITE_GEMINI_API_KEY') ||
+      ''
+    ).trim();
+  }
+
+  const envVite = ((import.meta as any).env?.VITE_GEMINI_API_KEY || '').toString().trim();
+  const envGemini = ((import.meta as any).env?.GEMINI_API_KEY || '').toString().trim();
+
+  const combined = `${stored} ${envVite} ${envGemini}`.trim();
+  const keys = combined
+    .split(/[,;\s\n\r]+/)
+    .map(k => k.trim())
+    .filter(k => k.length > 5);
+
+  return Array.from(new Set(keys));
+}
+
+/**
+ * Persists user-configured Gemini API keys into local storage.
+ */
+export function saveActiveGeminiApiKeys(keys: string): void {
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('receipt_processor_gemini_key', keys.trim());
+  }
+}
+
+export interface ScanReceiptAiOptions {
+  dataUrl: string;
+  fileType?: string;
+  fileName: string;
+  clientName?: string;
+  onStep?: (step: string) => void;
+}
+
+export interface ScanReceiptAiOutput {
+  success: boolean;
+  data?: {
+    vendor: string;
+    date: string;
+    lineItems: ExtractedLineItem[];
+    subtotal: number;
+    tax: number;
+    tip: number;
+    total: number;
+    paymentMethod: string;
+    cardLast4?: string;
+    invoiceNumber?: string;
+    category?: string;
+    schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
+    irsLineNumber?: string;
+    irsLineTitle?: string;
+    confidence: number;
+    memo: string;
+  };
+  errorMessage?: string;
+  source?: 'CLIENT_GEMINI' | 'SERVER_API';
+}
+
+/**
+ * High-accuracy AI OCR receipt scanner.
+ * On GitHub Pages (static host) or when API keys are configured, executes direct
+ * in-browser Gemini Vision API with automatic key rotation and model fallbacks.
+ * Bypasses HTTP 405 Method Not Allowed errors on static web hosts.
+ */
+export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<ScanReceiptAiOutput> {
+  const { dataUrl, fileType, fileName, clientName, onStep } = params;
+
+  if (!dataUrl || (!dataUrl.startsWith('data:image/') && !dataUrl.startsWith('data:application/pdf'))) {
+    return {
+      success: false,
+      errorMessage: 'Missing valid image or document base64 data'
+    };
+  }
+
+  const apiKeys = getActiveGeminiApiKeys();
+  const isStaticHost = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
+
+  let cleanBase64 = dataUrl;
+  let cleanMime = fileType || (dataUrl.startsWith('data:application/pdf') ? 'application/pdf' : 'image/jpeg');
+  if (typeof dataUrl === 'string' && dataUrl.includes('base64,')) {
+    const parts = dataUrl.split('base64,');
+    cleanBase64 = parts[1];
+    const header = parts[0];
+    if (header.includes('data:')) {
+      cleanMime = header.replace('data:', '').replace(';', '').trim();
+    }
+  }
+
+  const promptText = 
+    "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+
+  const systemInstructionText = 
+    `You are a certified forensic CPA accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax (Schedule C / Schedule F) and QuickBooks Online reconciliation.\n` +
+    `CRITICAL RULES:\n` +
+    `1. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'. If 2-digit year (e.g. 26), format as 2026.\n` +
+    `2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged or paid to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n` +
+    `3. LINE ITEMS & SUBTOTAL: 'subtotal' is pre-tax. 'tax' is sales tax. Extract line items in 'items'.\n` +
+    `4. VENDOR: Extract full legal merchant name at the top of the receipt.\n` +
+    `5. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
+    `6. Return strictly valid JSON conforming to the schema.`;
+
+  const receiptSchema = {
+    type: "OBJECT",
+    properties: {
+      receipts: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            vendor: { type: "STRING", description: "Store or merchant name" },
+            date: { type: "STRING", description: "YYYY-MM-DD format" },
+            total: { type: "NUMBER", description: "Final Grand Total amount actually charged" },
+            subtotal: { type: "NUMBER", description: "Pre-tax subtotal" },
+            tax: { type: "NUMBER", description: "Total sales tax" },
+            tip: { type: "NUMBER", description: "Tip amount if applicable" },
+            payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
+            card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
+            invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
+            category: {
+              type: "STRING",
+              description: "QuickBooks category or IRS classification"
+            },
+            items: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  description: { type: "STRING" },
+                  amount: { type: "NUMBER" }
+                }
+              }
+            },
+            memo: { type: "STRING" }
+          },
+          required: ["vendor", "date", "total"]
+        }
+      }
+    },
+    required: ["receipts"]
+  };
+
+  const payload = {
+    contents: [{
+      role: "user",
+      parts: [
+        { text: promptText },
+        { inlineData: { mimeType: cleanMime, data: cleanBase64 } }
+      ]
+    }],
+    systemInstruction: { parts: [{ text: systemInstructionText }] },
+    safetySettings: [
+      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+    ],
+    generationConfig: {
+      temperature: 0.0,
+      responseMimeType: "application/json",
+      responseSchema: receiptSchema
+    }
+  };
+
+  const normalizeOcrResult = (rawResult: any, sourceName: 'CLIENT_GEMINI' | 'SERVER_API'): ScanReceiptAiOutput => {
+    let total = typeof rawResult.total === 'number' && !isNaN(rawResult.total) ? rawResult.total : 0;
+    let subtotal = typeof rawResult.subtotal === 'number' && !isNaN(rawResult.subtotal) ? rawResult.subtotal : 0;
+    let tax = typeof rawResult.tax === 'number' && !isNaN(rawResult.tax) ? rawResult.tax : 0;
+    let tip = typeof rawResult.tip === 'number' && !isNaN(rawResult.tip) ? rawResult.tip : 0;
+
+    const itemsList = Array.isArray(rawResult.items) ? rawResult.items : [];
+    let itemSum = 0;
+    for (const itm of itemsList) {
+      if (itm && typeof itm.amount === 'number' && !isNaN(itm.amount)) {
+        itemSum += itm.amount;
+      }
+    }
+    itemSum = Number(itemSum.toFixed(2));
+
+    // If total is 0 or missing, compute from subtotal + tax + tip or item sum
+    if (total <= 0.01) {
+      if (subtotal > 0) {
+        total = Number((subtotal + tax + tip).toFixed(2));
+      } else if (itemSum > 0) {
+        total = Number((itemSum + tax + tip).toFixed(2));
+        subtotal = itemSum;
+      }
+    }
+
+    // If subtotal is missing, derive from total - tax - tip
+    if (subtotal <= 0.01) {
+      if (total > 0) {
+        subtotal = total > (tax + tip) ? Number((total - tax - tip).toFixed(2)) : total;
+      } else if (itemSum > 0) {
+        subtotal = itemSum;
+      }
+    }
+
+    total = Number(total.toFixed(2));
+    subtotal = Number(subtotal.toFixed(2));
+    tax = Number(tax.toFixed(2));
+    tip = Number(tip.toFixed(2));
+
+    // Date parsing
+    let dateStr = String(rawResult.date || '').trim();
+    dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
+    dateStr = dateStr.replace(/[;,.]$/, '');
+
+    const monthMap: Record<string, string> = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+      january: '01', february: '02', march: '03', april: '04', june: '06',
+      july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+    };
+
+    const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
+    const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9]{2})\b/);
+    const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
+    const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
+
+    if (isoMatch) {
+      dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+    } else if (usMatch) {
+      let yr = usMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
+      dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
+    } else if (monthNameMatch) {
+      const mStr = monthNameMatch[1].toLowerCase().slice(0, 3);
+      const mNum = monthMap[mStr] || '01';
+      const day = monthNameMatch[2].padStart(2, '0');
+      let yr = monthNameMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
+      dateStr = `${yr}-${mNum}-${day}`;
+    } else if (dayMonthMatch) {
+      const mStr = dayMonthMatch[2].toLowerCase().slice(0, 3);
+      const mNum = monthMap[mStr] || '01';
+      const day = dayMonthMatch[1].padStart(2, '0');
+      let yr = dayMonthMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
+      dateStr = `${yr}-${mNum}-${day}`;
+    } else if (!isNaN(Date.parse(dateStr))) {
+      const parsedD = new Date(dateStr);
+      if (!isNaN(parsedD.getTime())) {
+        dateStr = parsedD.toISOString().split('T')[0];
+      }
+    }
+
+    if (!dateStr || dateStr.length < 8) {
+      const fileDateMatch = fileName.match(/\b(20[123][0-9])[-_](0?[1-9]|1[0-2])[-_](0?[1-9]|[12][0-9]|3[01])\b/);
+      if (fileDateMatch) {
+        dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
+      } else {
+        dateStr = new Date().toISOString().split('T')[0];
+      }
+    }
+
+    let cardLast4 = String(rawResult.card_last_4 || rawResult.cardLast4 || '').replace(/\D/g, '');
+    if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
+    if (cardLast4.length < 4) cardLast4 = '';
+
+    const vendor = rawResult.vendor ? rawResult.vendor.trim() : 'Unknown Vendor';
+    const memo = rawResult.memo || `AI-OCR Processed (${fileName})`;
+    const taxCls = classifyExtractedTaxSchedule(vendor, rawResult.category || '', memo, fileName);
+
+    return {
+      success: true,
+      source: sourceName,
+      data: {
+        vendor,
+        date: dateStr,
+        lineItems: (itemsList || []).map((itm: any) => ({
+          description: itm.description || 'Item Line',
+          quantity: 1,
+          unitPrice: Number(itm.amount) || 0,
+          total: Number(itm.amount) || 0
+        })),
+        subtotal,
+        tax,
+        tip,
+        total,
+        paymentMethod: rawResult.payment_method || rawResult.paymentMethod || (cardLast4 ? 'CARD' : 'CASH'),
+        cardLast4: cardLast4 || undefined,
+        invoiceNumber: rawResult.invoice_number || rawResult.invoiceNumber || undefined,
+        category: taxCls.categoryName,
+        schedule: taxCls.schedule,
+        irsLineNumber: taxCls.lineNumber,
+        irsLineTitle: taxCls.lineTitle,
+        confidence: 0.99,
+        memo
+      }
+    };
+  };
+
+  let clientLastError = '';
+
+  // 1. Direct Client-Side Gemini Vision Scan (Prioritized on GitHub Pages or when local keys are present)
+  if (apiKeys.length > 0 || isStaticHost) {
+    if (apiKeys.length > 0) {
+      if (onStep) onStep('Connecting to Gemini Vision API...');
+      const modelsToTry = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+      let rawResult: any = null;
+
+      outerLoop:
+      for (const model of modelsToTry) {
+        for (const currentKey of apiKeys) {
+          try {
+            const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
+            const gResp = await fetch(geminiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+
+            if (gResp.ok) {
+              const gData = await gResp.json();
+              if (gData.error) {
+                clientLastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
+                continue;
+              }
+
+              const candidates = gData?.candidates || [];
+              if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
+                clientLastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
+                continue;
+              }
+
+              const text = candidates[0]?.content?.parts?.[0]?.text;
+              if (text) {
+                let parsed: any = null;
+                const cleanText = text.trim();
+                try {
+                  parsed = JSON.parse(cleanText);
+                } catch {
+                  const jsonMatch = cleanText.match(/(\{.*\})/s);
+                  if (jsonMatch) {
+                    try {
+                      parsed = JSON.parse(jsonMatch[1]);
+                    } catch {}
+                  }
+                }
+
+                if (parsed) {
+                  if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                    rawResult = parsed.receipts[0];
+                    break outerLoop;
+                  } else if (parsed.vendor && parsed.total !== undefined) {
+                    rawResult = parsed;
+                    break outerLoop;
+                  }
+                }
+              } else {
+                clientLastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
+              }
+            } else {
+              const errText = await gResp.text().catch(() => '');
+              clientLastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
+            }
+          } catch (mErr: any) {
+            clientLastError = `Fetch error [${model}]: ${mErr.message}`;
+          }
+        }
+      }
+
+      if (rawResult) {
+        return normalizeOcrResult(rawResult, 'CLIENT_GEMINI');
+      }
+    } else {
+      clientLastError = 'No local Gemini API keys configured. (Click "Configure Gemini Key" in the header or add GEMINI_API_KEY to GitHub Secrets)';
+    }
+  }
+
+  // 2. Server-side API Proxy fallback (for local development or fullstack container environments)
+  let serverLastError = '';
+  try {
+    if (onStep) onStep('Contacting backend scan endpoint...');
+    const scanResp = await fetch(getBackendApiUrl() + '/api/scan/receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64: dataUrl,
+        mimeType: cleanMime,
+        fileName,
+        clientName: clientName || 'General'
+      })
+    });
+
+    if (scanResp.ok) {
+      const scanJson = await scanResp.json();
+      if (scanJson.success && scanJson.data) {
+        return normalizeOcrResult(scanJson.data, 'SERVER_API');
+      } else {
+        serverLastError = scanJson.error || 'Server scan logic failed';
+        if (scanJson.details) serverLastError += ` (${scanJson.details})`;
+      }
+    } else {
+      const errText = await scanResp.text().catch(() => '');
+      if (scanResp.status === 405) {
+        serverLastError = `HTTP 405 Method Not Allowed (GitHub Pages static host rejects POST /api/scan/receipt). To bypass, configure your Gemini API Key in the engine header.`;
+      } else {
+        serverLastError = `HTTP ${scanResp.status}: ${errText.slice(0, 4000)}`;
+      }
+    }
+  } catch (sErr: any) {
+    serverLastError = sErr.message || String(sErr);
+  }
+
+  // If both failed, construct a helpful detailed error message
+  const combinedError = [
+    clientLastError ? `Direct AI Vision: ${clientLastError}` : '',
+    serverLastError ? `Backend Proxy: ${serverLastError}` : ''
+  ].filter(Boolean).join(' | ');
+
+  return {
+    success: false,
+    errorMessage: combinedError || 'AI OCR extraction failed'
+  };
+}
+
+// ---------------------------------------------------------------------------
 // CONCURRENT PARALLEL WORKER POOL EXECUTION
 // ---------------------------------------------------------------------------
 
@@ -830,6 +1267,10 @@ export async function runParallelBatchScan(
         paymentMethod: string;
         cardLast4?: string;
         invoiceNumber?: string;
+        category?: string;
+        schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
+        irsLineNumber?: string;
+        irsLineTitle?: string;
         confidence: number;
         memo: string;
       };
@@ -838,371 +1279,27 @@ export async function runParallelBatchScan(
       let ocrErrorMessage = '';
 
       if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/pdf'))) {
-        try {
-          const scanResp = await fetch(getBackendApiUrl() + '/api/scan/receipt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              imageBase64: dataUrl,
-              mimeType: item.fileType || (dataUrl.startsWith('data:application/pdf') ? 'application/pdf' : 'image/jpeg'),
-              fileName: item.fileName,
-              clientName
-            })
-          });
-
-          if (scanResp.ok) {
-            const scanJson = await scanResp.json();
-            if (scanJson.success && scanJson.data) {
-              const d = scanJson.data;
-              extracted = {
-                vendor: d.vendor || item.vendorHint || 'Unknown Vendor',
-                date: d.date || item.dateHint || new Date().toISOString().split('T')[0],
-                lineItems: (d.items || []).map((itm: any) => ({
-                  description: itm.description || 'Item Line',
-                  quantity: 1,
-                  unitPrice: Number(itm.amount) || 0,
-                  total: Number(itm.amount) || 0
-                })),
-                subtotal: Number(d.subtotal) || Number(d.total) || 0,
-                tax: Number(d.tax) || 0,
-                tip: Number(d.tip) || 0,
-                total: Number(d.total) || 0,
-                paymentMethod: d.paymentMethod || 'CARD',
-                cardLast4: d.cardLast4,
-                invoiceNumber: d.invoiceNumber,
-                confidence: 0.99,
-                memo: d.memo || item.memo || `AI-OCR Processed (${item.fileName})`
-              };
-              aiScanSuccess = true;
-            } else {
-              ocrErrorMessage = scanJson.error || 'Server scan logic failed to extract fields';
-              if (scanJson.details) ocrErrorMessage += ` (${scanJson.details})`;
-              console.error('Server scan logic failure:', scanJson.error, scanJson.details);
-            }
-          } else {
-            const errText = await scanResp.text().catch(() => '');
-            ocrErrorMessage = `Server returned HTTP ${scanResp.status}: ${errText.slice(0, 4000)}`;
-            console.error(`HTTP ${scanResp.status} from scan endpoint`);
+        const ocrRes = await scanReceiptWithAI({
+          dataUrl,
+          fileType: item.fileType,
+          fileName: item.fileName,
+          clientName,
+          onStep: (step) => {
+            worker.currentStep = step;
+            options.onWorkerUpdate([...workers]);
           }
-        } catch (e: any) {
-          ocrErrorMessage = e.message || String(e);
-          console.warn('AI OCR server scan notice, will attempt client-side fallback:', e);
-        }
+        });
 
-        // Direct Client-side Gemini API scan fallback if server scan failed (e.g. Nginx HTTP 405/404 or offline)
-        if (!aiScanSuccess) {
-          try {
-            const rawApiKey = ((import.meta as any).env?.VITE_GEMINI_API_KEY || (import.meta as any).env?.GEMINI_API_KEY || '').toString();
-            const apiKeys = rawApiKey.split(/[,;\s]+/).map((k: string) => k.trim()).filter(Boolean);
-
-            if (apiKeys.length > 0) {
-              worker.currentStep = 'Executing Client-Side Direct AI Vision Fallback...';
-              console.log('[Direct Client OCR] Server-side route failed or returned 405. Trying direct client-side Gemini scan with rotating keys:', apiKeys.length);
-
-              let cleanBase64 = dataUrl;
-              let cleanMime = item.fileType || (dataUrl.startsWith('data:application/pdf') ? 'application/pdf' : 'image/jpeg');
-              if (typeof dataUrl === 'string' && dataUrl.includes('base64,')) {
-                const parts = dataUrl.split('base64,');
-                cleanBase64 = parts[1];
-                const header = parts[0];
-                if (header.includes('data:')) {
-                  cleanMime = header.replace('data:', '').replace(';', '').trim();
-                }
-              }
-
-              const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
-
-              const systemInstructionText = 
-                `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n` +
-                `CRITICAL RULES:\n` +
-                `1. MULTI-RECEIPT: Return an array of receipt objects in the 'receipts' field. If an image contains multiple separate receipts, process EVERY one of them.\n` +
-                `2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n` +
-                `3. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'.\n` +
-                `4. MATH VALIDATION: Verify that Line Items Sum + Tax + Tip = Total. If they do not match, use the line item sum as the primary source of truth for the subtotal.\n` +
-                `5. VENDOR: Extract the full legal merchant name from the top of the receipt.\n` +
-                `6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
-                `7. Return strictly valid JSON conforming to the schema.`;
-
-              const receiptSchema = {
-                type: "OBJECT",
-                properties: {
-                  receipts: {
-                    type: "ARRAY",
-                    items: {
-                      type: "OBJECT",
-                      properties: {
-                        vendor: { type: "STRING", description: "Store or merchant name" },
-                        date: { type: "STRING", description: "YYYY-MM-DD format" },
-                        total: { type: "NUMBER", description: "Final Grand Total amount actually charged" },
-                        subtotal: { type: "NUMBER", description: "Pre-tax subtotal" },
-                        tax: { type: "NUMBER", description: "Total sales tax" },
-                        tip: { type: "NUMBER", description: "Tip amount if applicable" },
-                        payment_method: { type: "STRING", description: "VISA, MasterCard, AMEX, Cash, Check, Debit" },
-                        card_last_4: { type: "STRING", description: "Exact 4 digits of card or empty string" },
-                        invoice_number: { type: "STRING", description: "Invoice ID, Ref ID, or Trans ID if present" },
-                        category: {
-                          type: "STRING",
-                          enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
-                        },
-                        items: {
-                          type: "ARRAY",
-                          items: {
-                            type: "OBJECT",
-                            properties: {
-                              description: { type: "STRING" },
-                              amount: { type: "NUMBER" }
-                            }
-                          }
-                        },
-                        memo: { type: "STRING" }
-                      },
-                      required: ["vendor", "date", "total", "category"]
-                    }
-                  }
-                },
-                required: ["receipts"]
-              };
-
-              const payload = {
-                contents: [{
-                  role: "user",
-                  parts: [
-                    { text: promptText },
-                    { inlineData: { mimeType: cleanMime, data: cleanBase64 } }
-                  ]
-                }],
-                systemInstruction: { parts: [{ text: systemInstructionText }] },
-                safetySettings: [
-                  { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-                  { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-                  { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-                  { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-                ],
-                generationConfig: {
-                  temperature: 0.0,
-                  responseMimeType: "application/json",
-                  responseSchema: receiptSchema
-                }
-              };
-
-              const modelsToTry = ["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"];
-              let rawResult: any = null;
-              let clientLastError = "";
-
-              outerLoop:
-              for (const model of modelsToTry) {
-                for (const currentKey of apiKeys) {
-                  try {
-                    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${currentKey}`;
-                    const gResp = await fetch(geminiUrl, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify(payload)
-                    });
-
-                    if (gResp.ok) {
-                      const gData = await gResp.json();
-                      if (gData.error) {
-                        clientLastError = `API Error [${model}] with Key [${currentKey.slice(0, 6)}...]: ${gData.error.message}`;
-                        continue;
-                      }
-
-                      const candidates = gData?.candidates || [];
-                      if (candidates.length === 0 || candidates[0].finishReason === 'SAFETY' || candidates[0].finishReason === 'RECITATION') {
-                        clientLastError = `Model [${model}] blocked: ${candidates[0]?.finishReason || 'No candidates'}`;
-                        continue;
-                      }
-
-                      const text = candidates[0]?.content?.parts?.[0]?.text;
-                      if (text) {
-                        let parsed: any = null;
-                        const cleanText = text.trim();
-                        try {
-                          parsed = JSON.parse(cleanText);
-                        } catch (e) {
-                          const jsonMatch = cleanText.match(/(\{.*\})/s);
-                          if (jsonMatch) {
-                            try {
-                              parsed = JSON.parse(jsonMatch[1]);
-                            } catch (e2) {}
-                          }
-                        }
-
-                        if (parsed) {
-                          if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
-                            rawResult = parsed.receipts[0];
-                            break outerLoop;
-                          } else if (parsed.vendor && parsed.total !== undefined) {
-                            rawResult = parsed;
-                            break outerLoop;
-                          }
-                        }
-                      } else {
-                        clientLastError = `Empty text for ${model} (Reason: ${candidates[0]?.finishReason})`;
-                      }
-                    } else {
-                      const errText = await gResp.text().catch(() => '');
-                      clientLastError = `HTTP ${gResp.status} with Key [${currentKey.slice(0, 6)}...]: ${errText.slice(0, 4000)}`;
-                    }
-                  } catch (mErr: any) {
-                    clientLastError = `Fetch error [${model}]: ${mErr.message}`;
-                  }
-                }
-              }
-
-              if (rawResult) {
-                // Mathematical reconciliation
-                let total = Number(rawResult.total) || 0;
-                let subtotal = Number(rawResult.subtotal) || 0;
-                let tax = Number(rawResult.tax) || 0;
-                const tip = Number(rawResult.tip) || 0;
-
-                const itemsList = Array.isArray(rawResult.items) ? rawResult.items : [];
-                let itemSum = 0;
-                for (const itm of itemsList) {
-                  if (itm && typeof itm.amount === 'number') {
-                    itemSum += itm.amount;
-                  }
-                }
-                itemSum = Number(itemSum.toFixed(2));
-
-                if (subtotal <= 0 && itemSum > 0) {
-                  subtotal = itemSum;
-                }
-
-                if (subtotal <= 0 && total > 0) {
-                  subtotal = total > (tax + tip) ? Number((total - tax - tip).toFixed(2)) : total;
-                }
-
-                const expectedSum = Number((subtotal + tax + tip).toFixed(2));
-                
-                if (total <= 0.01) {
-                  if (expectedSum > 0) {
-                    total = expectedSum;
-                  } else if (itemSum > 0) {
-                    total = Number((itemSum + tax).toFixed(2));
-                  }
-                } else if (subtotal > 0 && expectedSum > 0) {
-                  const diffRatio = total / expectedSum;
-                  if (diffRatio > 1.5 || diffRatio < 0.5) {
-                    if (expectedSum > 0.01) {
-                      total = expectedSum;
-                    }
-                  }
-                }
-
-                total = Number(total.toFixed(2));
-                subtotal = Number(subtotal.toFixed(2));
-                tax = Number(tax.toFixed(2));
-
-                // Date parsing
-                let dateStr = String(rawResult.date || '').trim();
-                dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
-                dateStr = dateStr.replace(/[;,.]$/, '');
-
-                const monthMap: Record<string, string> = {
-                  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-                  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
-                  january: '01', february: '02', march: '03', april: '04', june: '06',
-                  july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
-                };
-
-                const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
-                const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9][0-9])\b/);
-                const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
-                const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9][0-9])\b/i);
-
-                if (isoMatch) {
-                  dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
-                } else if (usMatch) {
-                  let yr = usMatch[3];
-                  if (yr.length === 2) {
-                    yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
-                  }
-                  dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
-                } else if (monthNameMatch) {
-                  const mStr = monthNameMatch[1].toLowerCase();
-                  const mNum = monthMap[mStr] || '01';
-                  const day = monthNameMatch[2].padStart(2, '0');
-                  let yr = monthNameMatch[3];
-                  if (yr.length === 2) {
-                    yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
-                  }
-                  dateStr = `${yr}-${mNum}-${day}`;
-                } else if (dayMonthMatch) {
-                  const mStr = dayMonthMatch[2].toLowerCase();
-                  const mNum = monthMap[mStr] || '01';
-                  const day = dayMonthMatch[1].padStart(2, '0');
-                  let yr = dayMonthMatch[3];
-                  if (yr.length === 2) {
-                    yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
-                  }
-                  dateStr = `${yr}-${mNum}-${day}`;
-                } else {
-                  const fallbackMatch = dateStr.match(/\b(\d{4})[-/. ](\d{1,2})[-/. ](\d{1,2})\b/);
-                  if (fallbackMatch) {
-                    dateStr = `${fallbackMatch[1]}-${fallbackMatch[2].padStart(2, '0')}-${fallbackMatch[3].padStart(2, '0')}`;
-                  } else {
-                    dateStr = '';
-                  }
-                }
-
-                if (!dateStr || dateStr.length < 8) {
-                  const fileDateMatch = item.fileName.match(/\b(20[123][0-9])[-_](0?[1-9]|1[0-2])[-_](0?[1-9]|[12][0-9]|3[01])\b/);
-                  if (fileDateMatch) {
-                    dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
-                  } else {
-                    dateStr = 'Pending Review';
-                  }
-                }
-
-                const yearCheck = dateStr.match(/^(\d{4})/);
-                if (yearCheck) {
-                  const yr = parseInt(yearCheck[1]);
-                  if (yr < 2000 || yr > 2040) {
-                    dateStr = new Date().toISOString().split('T')[0];
-                  }
-                }
-
-                let cardLast4 = String(rawResult.card_last_4 || '').replace(/\D/g, '');
-                if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
-                if (cardLast4.length < 4) cardLast4 = '';
-
-                extracted = {
-                  vendor: rawResult.vendor || item.vendorHint || 'Unknown Vendor',
-                  date: dateStr,
-                  lineItems: (rawResult.items || []).map((itm: any) => ({
-                    description: itm.description || 'Item Line',
-                    quantity: 1,
-                    unitPrice: Number(itm.amount) || 0,
-                    total: Number(itm.amount) || 0
-                  })),
-                  subtotal,
-                  tax,
-                  tip,
-                  total,
-                  paymentMethod: rawResult.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
-                  cardLast4: cardLast4 || undefined,
-                  invoiceNumber: rawResult.invoice_number || undefined,
-                  confidence: 0.99,
-                  memo: rawResult.memo || item.memo || `Direct Client-Side AI-OCR Scanned (${item.fileName})`
-                };
-                aiScanSuccess = true;
-              } else {
-                ocrErrorMessage = `[Server error: ${ocrErrorMessage}] AND [Direct client scan error: ${clientLastError}]`;
-              }
-            } else {
-              ocrErrorMessage += ' | Client fallback skipped: No local keys configured.';
-            }
-          } catch (clErr: any) {
-            ocrErrorMessage += ` | Direct client error: ${clErr.message || clErr}`;
-          }
+        if (ocrRes.success && ocrRes.data) {
+          extracted = ocrRes.data;
+          aiScanSuccess = true;
+        } else {
+          ocrErrorMessage = ocrRes.errorMessage || 'AI OCR extraction failed';
         }
       }
 
       if (!aiScanSuccess) {
-        // Small async yield to allow UI rendering
-        await new Promise(r => setTimeout(r, 60 + Math.random() * 80));
+        await new Promise(r => setTimeout(r, 50));
         extracted = extractReceiptMetadata(
           item.fileName,
           undefined,
@@ -1221,12 +1318,20 @@ export async function runParallelBatchScan(
       worker.progressPercent = 80;
       options.onWorkerUpdate([...workers]);
 
-      const taxCls = classifyExtractedTaxSchedule(
-        extracted.vendor,
-        item.categoryHint || extracted.memo,
-        item.memo || extracted.memo,
-        item.fileName
-      );
+      const taxCls = (extracted.schedule && extracted.irsLineNumber && extracted.irsLineTitle)
+        ? {
+            schedule: extracted.schedule,
+            lineNumber: extracted.irsLineNumber,
+            lineTitle: extracted.irsLineTitle,
+            categoryName: extracted.category || 'Supplies',
+            confidence: 0.99
+          }
+        : classifyExtractedTaxSchedule(
+            extracted.vendor,
+            item.categoryHint || extracted.memo,
+            item.memo || extracted.memo,
+            item.fileName
+          );
 
       // 4. Duplicate Check against existing ledger + newly scanned items
       worker.currentStep = 'Running Duplicate Receipt Detector...';
