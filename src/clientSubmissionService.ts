@@ -246,13 +246,14 @@ export function subscribeToClientSubmissions(callback: (submissions: ClientSubmi
 // Server / Cloudflare KV Backend Synchronization
 // ---------------------------------------------------------------------------
 
-export async function fetchServerSubmissions(): Promise<ClientSubmission[]> {
+export async function fetchServerSubmissions(): Promise<ClientSubmission[] | null> {
   const endpoints = [
     getBackendApiUrl() + '/api/client/submissions',
     getEffectiveCloudflareApiUrl() + '/api/client/submissions',
     '/api/client/submissions'
   ];
 
+  let lastError: any = null;
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
@@ -266,15 +267,20 @@ export async function fetchServerSubmissions(): Promise<ClientSubmission[]> {
           return data.submissions;
         }
       }
-    } catch {}
+    } catch (err) {
+      lastError = err;
+    }
   }
+  // If we had an error and no success, return null to indicate failure (not empty)
+  if (lastError) return null;
   return [];
 }
 
 export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmission[] | null> {
   try {
     const serverSubs = await fetchServerSubmissions();
-    if (!serverSubs || serverSubs.length === 0) {
+    // If fetch failed (null), don't sync/overwrite
+    if (serverSubs === null) {
       return null;
     }
 
@@ -286,19 +292,45 @@ export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmissi
       if (s && s.id) map.set(s.id, s);
     }
 
-    // Merge local subs (if local has new or un-synced items)
+    // Merge local subs (local is authoritative for new/recent deletions)
     let needsPushToServer = false;
+    
+    // We want to keep local items that are NOT on the server yet (new uploads)
+    // BUT we want to respect local deletions (items on server but NOT in local)
+    // UNLESS the item on server was JUST added there and we don't have it yet.
+    
+    // To handle this properly without a complex tombstone system:
+    // If an item is in serverSubs but NOT in localSubs, we check its age.
+    // If it was uploaded more than 30 seconds ago and it's missing locally, it was likely deleted locally.
+    const now = Date.now();
+    const thirtySeconds = 30 * 1000;
+
     for (const loc of localSubs) {
       if (!loc || !loc.id) continue;
       const existing = map.get(loc.id);
       if (!existing) {
+        // New local item not on server yet
         map.set(loc.id, loc);
         needsPushToServer = true;
       } else {
-        // If local status is newer or updated, keep the local version and push to server
-        if (loc.status !== existing.status || loc.extractedVendor !== existing.extractedVendor) {
-          map.set(loc.id, { ...existing, ...loc });
-          needsPushToServer = true;
+        // Exists in both, check for updates
+        if (loc.status !== existing.status || loc.extractedVendor !== existing.extractedVendor || loc.extractedAmount !== existing.extractedAmount) {
+          // If local has more data (e.g. status was updated locally), keep local
+          // Actually, server is usually authoritative for status/OCR
+          map.set(loc.id, { ...loc, ...existing }); 
+        }
+      }
+    }
+
+    // Now, filter the map: remove items that were likely deleted locally
+    // If item is in map (from server) but NOT in localSubs, and it's "old", remove it.
+    const localIds = new Set(localSubs.map(l => l.id));
+    for (const [id, item] of map.entries()) {
+      if (!localIds.has(id)) {
+        const uploadTime = new Date(item.uploadedAt).getTime();
+        if (now - uploadTime > thirtySeconds) {
+          // It's old and missing locally -> it was deleted locally.
+          map.delete(id);
         }
       }
     }
@@ -319,7 +351,9 @@ export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmissi
       }
       return merged;
     }
-  } catch {}
+  } catch (err) {
+    console.warn('Submission sync error:', err);
+  }
   return null;
 }
 

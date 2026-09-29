@@ -278,7 +278,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
       recordReceiptSubmitted(clientSession.userId, count);
       setClientSession(getCurrentClientSession());
-      refreshSubmissions();
+      // refreshSubmissions(); // Removed - subscription handles updates
       setSelectedFiles([]);
       setSubmissionMemo('');
       setUploadSuccessCount(count);
@@ -1306,7 +1306,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                               type="button"
                               onClick={() => {
                                 deleteSubmission(sub.id);
-                                // manual refresh removed - subscription handles it
+                                // manual refresh removed - subscription handles it seamlessly
                               }}
                               className="text-stone-500 hover:text-rose-400 p-1 transition-colors cursor-pointer"
                               title="Delete submission record"

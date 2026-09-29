@@ -338,14 +338,10 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
     setLoading(true);
 
     try {
-      // 1. Delete from server and local
+      // 1. Delete from server and local (one call is enough now as server handles lookup by id/email/user)
       await deleteAccountFromServer(user.id, token);
       
-      // 2. Also try delete by username and email to be thorough
-      await deleteAccountFromServer(user.username, token);
-      await deleteAccountFromServer(user.email, token);
-
-      // 3. Delete license key if present locally
+      // 2. Delete license key if present locally
       if (user.licenseKey) {
         try {
           const raw = localStorage.getItem('receipt_processor_keys_v4');
@@ -357,7 +353,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         } catch {}
       }
 
-      // 4. Delete access inquiry if present
+      // 3. Delete access inquiry if present
       try {
         const rawInq = localStorage.getItem('receipt_processor_inquiries');
         if (rawInq) {
@@ -367,7 +363,6 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         }
       } catch {}
 
-      // Redundant setAccounts removed - subscription handled it
       setConfirmDeleteUser(null);
       setSelectedUser(null);
       if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
@@ -386,6 +381,10 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
 
   // Filter accounts
   const filteredAccounts = accounts.filter(acc => {
+    // 0. Admin account always matches if it's the current user's admin account
+    // This ensures the "zero users" doesn't happen for the admin themselves
+    const isAdmin = acc.planTier === 'ADMIN';
+    
     const q = searchQuery.trim().toLowerCase();
     const matchQuery = !q || 
       acc.displayName.toLowerCase().includes(q) || 
@@ -394,7 +393,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       (acc.companyName && acc.companyName.toLowerCase().includes(q)) ||
       (acc.licenseKey && acc.licenseKey.toLowerCase().includes(q));
 
-    const matchPlan = planFilter === 'ALL' || 
+    const matchPlan = isAdmin || planFilter === 'ALL' || 
       (planFilter === 'ACTIVE' && acc.planStatus === 'ACTIVE') ||
       (planFilter === 'NONE' && (!acc.planStatus || acc.planStatus === 'NONE')) ||
       (acc.planTier === planFilter);

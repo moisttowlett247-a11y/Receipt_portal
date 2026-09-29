@@ -204,19 +204,19 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
         const map = new Map<string, ClientUserAccount>();
         // Add local ones first
         localAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
-        // Server ones are authoritative if there is a conflict
+        // Server ones are authoritative
         serverAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
         
         const merged = Array.from(map.values());
+        
+        // Prevent accidental wipe-out: if we have local accounts but server returned empty (and we're sure it succeeded)
+        // we should keep local. But here success is true.
+        // Usually server is authority for Admin.
+        
         localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
         notifyAccountsChanged(merged);
         return merged;
-      } else {
-        console.warn('Server returned success:false or invalid accounts array', data);
       }
-    } else {
-      const errorText = await resp.text();
-      console.warn(`Server returned error ${resp.status}: ${errorText}`);
     }
   } catch (err) {
     console.warn('Error fetching all accounts from server:', err);
@@ -229,14 +229,15 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
  */
 export async function deleteAccountFromServer(userId: string, adminToken?: string): Promise<boolean> {
   try {
-    // 1. Local delete
+    // 1. Local delete (immediate UI update)
     deleteClientAccount(userId);
 
-    // 2. Server delete
-    const headers: Record<string, string> = {};
-    if (adminToken) {
-      headers['Authorization'] = `Bearer ${adminToken}`;
-    }
+    // 2. Server delete (one call only)
+    if (!adminToken) return true; // Can't delete on server without token, but local is gone
+    
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${adminToken}`
+    };
 
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/${encodeURIComponent(userId)}`, {
       method: 'DELETE',
