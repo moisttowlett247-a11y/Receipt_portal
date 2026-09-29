@@ -116,42 +116,73 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const unsubscribe = subscribeToClientSubmissions((updatedSubs) => {
       setClientSubmissions(updatedSubs);
 
-      if (autoEnqueueClientSubmissions) {
-        const queuedItems = updatedSubs.filter(s => s.status === 'QUEUED');
-        if (queuedItems.length > 0) {
-          setQueuedFiles(prev => {
-            const existingIds = new Set(prev.map(p => p.id).filter(Boolean));
-            const processedIds = new Set(receipts.map(r => r.id));
-            const newToAdd: ReceiptInputItem[] = [];
-
-            for (const s of queuedItems) {
-              if (!existingIds.has(s.id) && !processedIds.has(s.id)) {
-                newToAdd.push({
-                  id: s.id,
-                  clientId: s.clientId,
-                  fileName: s.fileName,
-                  fileSize: s.fileSize,
-                  fileType: s.fileType,
-                  dataUrl: s.dataUrl,
-                  clientName: s.clientName,
-                  clientEmail: s.clientEmail,
-                  submittedBy: s.clientEmail ? `${s.clientName} (${s.clientEmail})` : s.clientName,
-                  submittedByRole: 'CLIENT' as const,
-                  uploadedAt: s.uploadedAt,
-                  memo: s.memo,
-                  categoryHint: s.categoryHint,
-                  vendorHint: s.extractedVendor,
-                  amountHint: s.extractedAmount,
-                  dateHint: s.extractedDate
-                });
-              }
-            }
-
-            if (newToAdd.length === 0) return prev;
-            return [...prev, ...newToAdd];
-          });
+      const queuedMap = new Map<string, ClientSubmission>();
+      (updatedSubs || []).forEach(s => {
+        if (s.status === 'QUEUED') {
+          queuedMap.set(s.id, s);
         }
-      }
+      });
+
+      // 1. First, purge any items from queuedFiles that are no longer in QUEUED status (e.g. scanned or archived)
+      // and also purge any items already present in the processed receipts ledger
+      const processedIds = new Set<string>();
+      receipts.forEach(r => {
+        if (r.id) processedIds.add(r.id);
+        if (r.submissionId) processedIds.add(r.submissionId);
+        if (r.fileName && r.clientName) processedIds.add(`${r.clientName}__${r.fileName}`);
+      });
+
+      setQueuedFiles(prev => {
+        // Filter out items that are already processed or were marked as synced
+        const validExisting = prev.filter(p => {
+          if (p.id) {
+            if (processedIds.has(p.id)) return false;
+            // If it's a client submission, check if it's still QUEUED
+            if (p.submittedByRole === 'CLIENT' && !queuedMap.has(p.id)) {
+              return false;
+            }
+          }
+          if (p.fileName && p.clientName && processedIds.has(`${p.clientName}__${p.fileName}`)) {
+            return false;
+          }
+          return true;
+        });
+
+        if (!autoEnqueueClientSubmissions) {
+          return validExisting;
+        }
+
+        // 2. Add any newly queued client items
+        const existingIds = new Set(validExisting.map(p => p.id).filter(Boolean));
+        const newToAdd: ReceiptInputItem[] = [];
+
+        for (const s of queuedMap.values()) {
+          const fileClientKey = `${s.clientName}__${s.fileName}`;
+          if (!existingIds.has(s.id) && !processedIds.has(s.id) && !processedIds.has(fileClientKey)) {
+            newToAdd.push({
+              id: s.id,
+              clientId: s.clientId,
+              fileName: s.fileName,
+              fileSize: s.fileSize,
+              fileType: s.fileType,
+              dataUrl: s.dataUrl,
+              clientName: s.clientName,
+              clientEmail: s.clientEmail,
+              submittedBy: s.clientEmail ? `${s.clientName} (${s.clientEmail})` : s.clientName,
+              submittedByRole: 'CLIENT' as const,
+              uploadedAt: s.uploadedAt,
+              memo: s.memo,
+              categoryHint: s.categoryHint,
+              vendorHint: s.extractedVendor,
+              amountHint: s.extractedAmount,
+              dateHint: s.extractedDate
+            });
+          }
+        }
+
+        if (newToAdd.length === 0) return validExisting;
+        return [...validExisting, ...newToAdd];
+      });
     });
 
     return () => unsubscribe();
@@ -734,14 +765,35 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         onItemProcessed: (processed, current, total) => {
           setScanProgress({ current, total });
           setReceipts(prev => [processed, ...prev]);
+
+          // Update client submission status immediately in client intake
+          const targetSubId = processed.submissionId || (processed.id && processed.id.startsWith('sub-') ? processed.id : null);
+          if (targetSubId) {
+            try {
+              updateSubmissionStatus(targetSubId, 'SYNCED_QBO', {
+                extractedVendor: processed.vendor,
+                extractedAmount: processed.total,
+                extractedDate: processed.date
+              });
+            } catch {}
+          }
+
+          // Remove the processed item from queued files immediately
+          setQueuedFiles(prev => prev.filter(q => {
+            if (targetSubId && q.id === targetSubId) return false;
+            if (q.id === processed.id) return false;
+            if (q.fileName === processed.fileName && q.clientName === processed.clientName) return false;
+            return true;
+          }));
         }
       });
 
-      // Update client submission statuses in real time
+      // Update client submission statuses in real time for any remaining items
       for (const res of scannedResults) {
-        if (res.id && (res.id.startsWith('sub-') || res.submittedByRole === 'CLIENT')) {
+        const subId = res.submissionId || (res.id && res.id.startsWith('sub-') ? res.id : null);
+        if (subId) {
           try {
-            updateSubmissionStatus(res.id, 'SYNCED_QBO', {
+            updateSubmissionStatus(subId, 'SYNCED_QBO', {
               extractedVendor: res.vendor,
               extractedAmount: res.total,
               extractedDate: res.date

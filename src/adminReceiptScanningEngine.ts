@@ -30,6 +30,7 @@ export interface ProcessedReceipt {
   fileType: string;
   dataUrl?: string;
   fileHash: string;
+  submissionId?: string;
   clientId?: string;
   clientName: string;
   clientEmail?: string;
@@ -1474,7 +1475,8 @@ export async function runParallelBatchScan(
       const uploadTimestamp = item.uploadedAt || new Date().toISOString();
 
       const processedRecord: ProcessedReceipt = {
-        id: `rec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        id: item.id || `rec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        submissionId: item.id,
         fileName: item.fileName,
         fileSize: item.fileSize || (item.file?.size ?? 125000),
         fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
