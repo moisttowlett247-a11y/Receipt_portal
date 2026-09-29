@@ -728,6 +728,74 @@ function licenseSyncApiPlugin(): Plugin {
           return;
         }
 
+        // PUT /api/client/submissions/:id - Update submission status
+        if (normalizedPath.startsWith('/api/client/submissions/') && req.method === 'PUT') {
+          const subId = decodeURIComponent(normalizedPath.replace('/api/client/submissions/', ''));
+          let bodyStr = '';
+          req.on('data', chunk => { bodyStr += chunk; });
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(bodyStr || '{}');
+              const subFile = path.join(licensesDir, 'client_submissions.json');
+              let subs: any[] = [];
+              if (fs.existsSync(subFile)) {
+                try { subs = JSON.parse(fs.readFileSync(subFile, 'utf-8')); } catch {}
+              }
+
+              let updatedItem: any = null;
+              const updated = subs.map((s: any) => {
+                if (s.id === subId) {
+                  updatedItem = {
+                    ...s,
+                    ...(body.status ? { status: body.status } : {}),
+                    ...(body.details || {})
+                  };
+                  return updatedItem;
+                }
+                return s;
+              });
+
+              if (updatedItem) {
+                fs.writeFileSync(subFile, JSON.stringify(updated, null, 2), 'utf-8');
+                res.statusCode = 200;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: true, submission: updatedItem }));
+              } else {
+                res.statusCode = 404;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: false, error: 'Submission not found' }));
+              }
+            } catch (err: any) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json');
+              res.end(JSON.stringify({ success: false, error: err.message }));
+            }
+          });
+          return;
+        }
+
+        // DELETE /api/client/submissions/:id - Delete submission
+        if (normalizedPath.startsWith('/api/client/submissions/') && req.method === 'DELETE') {
+          const subId = decodeURIComponent(normalizedPath.replace('/api/client/submissions/', ''));
+          try {
+            const subFile = path.join(licensesDir, 'client_submissions.json');
+            let subs: any[] = [];
+            if (fs.existsSync(subFile)) {
+              try { subs = JSON.parse(fs.readFileSync(subFile, 'utf-8')); } catch {}
+            }
+            const updated = subs.filter((s: any) => s.id !== subId);
+            fs.writeFileSync(subFile, JSON.stringify(updated, null, 2), 'utf-8');
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: true, message: `Submission ${subId} deleted` }));
+          } catch (err: any) {
+            res.statusCode = 500;
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({ success: false, error: err.message }));
+          }
+          return;
+        }
+
         // POST /api/scan/receipt - High-accuracy AI OCR Receipt extraction via Gemini
         if (normalizedPath === '/api/scan/receipt' && req.method === 'POST') {
           let bodyStr = '';

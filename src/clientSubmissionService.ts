@@ -162,8 +162,14 @@ export function updateSubmissionStatus(
 ): void {
   const submissions = getClientSubmissions();
   let updatedItem: ClientSubmission | null = null;
+  let targetId = id;
+
   const updated = submissions.map(sub => {
-    if (sub.id === id) {
+    const isIdMatch = sub.id === id || (id.startsWith('sub-') && sub.id.endsWith(id.replace('sub-', '')));
+    const isFileMatch = details?.fileName && sub.fileName === details.fileName && (!details.clientName || sub.clientName === details.clientName);
+
+    if (isIdMatch || isFileMatch) {
+      targetId = sub.id;
       updatedItem = {
         ...sub,
         status,
@@ -173,10 +179,12 @@ export function updateSubmissionStatus(
     }
     return sub;
   });
+
   saveClientSubmissions(updated);
   if (updatedItem) {
     notifySubmissionsChanged(updated, { action: 'UPDATE', item: updatedItem });
-    updateSubmissionOnServer(id, status, details).catch(() => {});
+    updateSubmissionOnServer(targetId, status, details).catch(() => {});
+    batchSyncSubmissionsToServer(updated).catch(() => {});
   }
 }
 
@@ -338,9 +346,10 @@ export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmissi
         map.set(loc.id, loc);
         needsPushToServer = true;
       } else {
-        // If local status is newer or updated, keep the local version
+        // If local status is newer or updated, keep the local version and push to server
         if (loc.status !== existing.status || loc.extractedVendor !== existing.extractedVendor) {
           map.set(loc.id, { ...existing, ...loc });
+          needsPushToServer = true;
         }
       }
     }

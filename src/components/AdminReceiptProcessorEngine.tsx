@@ -110,6 +110,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   // Real-time client submissions intake state & Auto-sync
   const [clientSubmissions, setClientSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
   const [autoEnqueueClientSubmissions, setAutoEnqueueClientSubmissions] = useState<boolean>(true);
+  const processedSubmissionIdsRef = useRef<Set<string>>(new Set());
+
+  // Populate processed submission IDs from initial ledger
+  useEffect(() => {
+    receipts.forEach(r => {
+      if (r.id) processedSubmissionIdsRef.current.add(r.id);
+      if (r.submissionId) processedSubmissionIdsRef.current.add(r.submissionId);
+      if (r.fileName && r.clientName) processedSubmissionIdsRef.current.add(`${r.clientName}__${r.fileName}`);
+    });
+  }, [receipts]);
 
   // Subscribe to real-time client submissions updates across tabs and backend
   useEffect(() => {
@@ -123,13 +133,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         }
       });
 
-      // 1. First, purge any items from queuedFiles that are no longer in QUEUED status (e.g. scanned or archived)
-      // and also purge any items already present in the processed receipts ledger
-      const processedIds = new Set<string>();
+      // 1. Build authoritative set of processed IDs
+      const processedIds = new Set<string>(processedSubmissionIdsRef.current);
       receipts.forEach(r => {
         if (r.id) processedIds.add(r.id);
         if (r.submissionId) processedIds.add(r.submissionId);
         if (r.fileName && r.clientName) processedIds.add(`${r.clientName}__${r.fileName}`);
+      });
+      (updatedSubs || []).forEach(s => {
+        if (s.status !== 'QUEUED') {
+          processedIds.add(s.id);
+          if (s.fileName && s.clientName) processedIds.add(`${s.clientName}__${s.fileName}`);
+        }
       });
 
       setQueuedFiles(prev => {
@@ -766,17 +781,24 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           setScanProgress({ current, total });
           setReceipts(prev => [processed, ...prev]);
 
+          // Record in processed IDs ref so subscriber never re-queues it
+          if (processed.id) processedSubmissionIdsRef.current.add(processed.id);
+          if (processed.submissionId) processedSubmissionIdsRef.current.add(processed.submissionId);
+          if (processed.fileName && processed.clientName) {
+            processedSubmissionIdsRef.current.add(`${processed.clientName}__${processed.fileName}`);
+          }
+
           // Update client submission status immediately in client intake
           const targetSubId = processed.submissionId || (processed.id && processed.id.startsWith('sub-') ? processed.id : null);
-          if (targetSubId) {
-            try {
-              updateSubmissionStatus(targetSubId, 'SYNCED_QBO', {
-                extractedVendor: processed.vendor,
-                extractedAmount: processed.total,
-                extractedDate: processed.date
-              });
-            } catch {}
-          }
+          try {
+            updateSubmissionStatus(targetSubId || processed.fileName, 'SYNCED_QBO', {
+              fileName: processed.fileName,
+              clientName: processed.clientName,
+              extractedVendor: processed.vendor,
+              extractedAmount: processed.total,
+              extractedDate: processed.date
+            });
+          } catch {}
 
           // Remove the processed item from queued files immediately
           setQueuedFiles(prev => prev.filter(q => {
@@ -790,16 +812,22 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       // Update client submission statuses in real time for any remaining items
       for (const res of scannedResults) {
-        const subId = res.submissionId || (res.id && res.id.startsWith('sub-') ? res.id : null);
-        if (subId) {
-          try {
-            updateSubmissionStatus(subId, 'SYNCED_QBO', {
-              extractedVendor: res.vendor,
-              extractedAmount: res.total,
-              extractedDate: res.date
-            });
-          } catch {}
+        if (res.id) processedSubmissionIdsRef.current.add(res.id);
+        if (res.submissionId) processedSubmissionIdsRef.current.add(res.submissionId);
+        if (res.fileName && res.clientName) {
+          processedSubmissionIdsRef.current.add(`${res.clientName}__${res.fileName}`);
         }
+
+        const subId = res.submissionId || (res.id && res.id.startsWith('sub-') ? res.id : null);
+        try {
+          updateSubmissionStatus(subId || res.fileName, 'SYNCED_QBO', {
+            fileName: res.fileName,
+            clientName: res.clientName,
+            extractedVendor: res.vendor,
+            extractedAmount: res.total,
+            extractedDate: res.date
+          });
+        } catch {}
       }
 
       // Clear the queued files after successful batch
@@ -817,6 +845,86 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     } finally {
       setIsScanning(false);
     }
+  };
+
+  // Scan a single item directly from the queue
+  const handleScanSingleQueuedItem = async (item: ReceiptInputItem, index: number) => {
+    if (isScanning) return;
+    setIsScanning(true);
+    if (onToast) onToast(`🚀 Scanning single receipt: ${item.fileName}...`);
+
+    try {
+      const scanned = await runParallelBatchScan([item], {
+        concurrency: 1,
+        defaultClientName: item.clientName || selectedClientTarget,
+        existingLedger: receipts,
+        onWorkerUpdate: () => {},
+        onItemProcessed: (processed) => {
+          setReceipts(prev => [processed, ...prev]);
+          if (processed.id) processedSubmissionIdsRef.current.add(processed.id);
+          if (processed.submissionId) processedSubmissionIdsRef.current.add(processed.submissionId);
+          if (processed.fileName && processed.clientName) {
+            processedSubmissionIdsRef.current.add(`${processed.clientName}__${processed.fileName}`);
+          }
+
+          const targetSubId = processed.submissionId || (processed.id && processed.id.startsWith('sub-') ? processed.id : null);
+          try {
+            updateSubmissionStatus(targetSubId || processed.fileName, 'SYNCED_QBO', {
+              fileName: processed.fileName,
+              clientName: processed.clientName,
+              extractedVendor: processed.vendor,
+              extractedAmount: processed.total,
+              extractedDate: processed.date
+            });
+          } catch {}
+        }
+      });
+
+      // Remove item from queuedFiles
+      setQueuedFiles(prev => prev.filter((_, i) => i !== index));
+
+      if (onToast) onToast(`✅ Scanned & reconciled ${item.fileName}! Removed from queue.`);
+    } catch (err: any) {
+      if (onToast) onToast(`Error scanning receipt: ${err.message || String(err)}`);
+    } finally {
+      setIsScanning(false);
+    }
+  };
+
+  const handleRemoveQueuedItem = (item: ReceiptInputItem, index: number) => {
+    setQueuedFiles(prev => prev.filter((_, i) => i !== index));
+    if (item.id) {
+      processedSubmissionIdsRef.current.add(item.id);
+      if (item.submittedByRole === 'CLIENT') {
+        updateSubmissionStatus(item.id, 'ARCHIVED', {
+          fileName: item.fileName,
+          clientName: item.clientName
+        });
+      }
+    }
+    if (item.fileName && item.clientName) {
+      processedSubmissionIdsRef.current.add(`${item.clientName}__${item.fileName}`);
+    }
+    if (onToast) onToast(`Removed ${item.fileName} from queue.`);
+  };
+
+  const handleClearQueue = () => {
+    queuedFiles.forEach(item => {
+      if (item.id) {
+        processedSubmissionIdsRef.current.add(item.id);
+        if (item.submittedByRole === 'CLIENT') {
+          updateSubmissionStatus(item.id, 'ARCHIVED', {
+            fileName: item.fileName,
+            clientName: item.clientName
+          });
+        }
+      }
+      if (item.fileName && item.clientName) {
+        processedSubmissionIdsRef.current.add(`${item.clientName}__${item.fileName}`);
+      }
+    });
+    setQueuedFiles([]);
+    if (onToast) onToast('Cleared all items from queue.');
   };
 
   // -------------------------------------------------------------------------
@@ -1395,7 +1503,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   {queuedFiles.length > 0 && !isScanning && (
                     <button
                       type="button"
-                      onClick={() => setQueuedFiles([])}
+                      onClick={handleClearQueue}
                       className="px-2 py-0.5 rounded bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-rose-300 text-[11px] border border-stone-800 transition-colors cursor-pointer"
                     >
                       Clear Queue
@@ -1405,7 +1513,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </div>
 
               {queuedFiles.length > 0 ? (
-                <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1 divide-y divide-stone-900">
+                <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1 divide-y divide-stone-900">
                   {queuedFiles.map((item, idx) => (
                     <div
                       key={`${item.id || item.fileName}-${idx}`}
@@ -1427,7 +1535,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                           <div className="text-[10px] text-stone-500 flex items-center gap-2">
                             <span>{item.clientName || 'General'}</span>
                             <span>•</span>
-                            <span>{(item.fileSize / 1024).toFixed(0)} KB</span>
+                            <span>{((item.fileSize || 100000) / 1024).toFixed(0)} KB</span>
                             {item.memo && (
                               <>
                                 <span>•</span>
@@ -1439,14 +1547,25 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       </div>
 
                       {!isScanning && (
-                        <button
-                          type="button"
-                          onClick={() => setQueuedFiles(prev => prev.filter((_, i) => i !== idx))}
-                          className="p-1 rounded text-stone-500 hover:text-rose-400 hover:bg-stone-900 transition-colors"
-                          title="Remove from queue"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleScanSingleQueuedItem(item, idx)}
+                            className="px-2 py-1 rounded bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800/80 text-emerald-300 hover:text-emerald-200 text-[10px] font-semibold transition-colors flex items-center gap-1 cursor-pointer shadow-sm"
+                            title="Scan and reconcile this individual receipt immediately"
+                          >
+                            <Play className="w-2.5 h-2.5 fill-current" />
+                            <span>Scan</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveQueuedItem(item, idx)}
+                            className="p-1 rounded text-stone-500 hover:text-rose-400 hover:bg-stone-900 transition-colors cursor-pointer"
+                            title="Remove from queue & archive"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   ))}
