@@ -103,99 +103,6 @@ export async function lookupLicenseByEmailAsync(
   return null;
 }
 
-const INITIAL_DEMO_CLIENT_ACCOUNTS: ClientUserAccount[] = [
-  {
-    id: 'client-prairie-wind',
-    username: 'prairiewind',
-    displayName: 'Prairie Wind Agriculture',
-    email: 'billing@prairiewind.example.com',
-    companyName: 'Prairie Wind Farms LLC',
-    passwordHash: 'seeded_demo_hash',
-    salt: 'seeded_salt',
-    licenseKey: 'ANNUAL-9842-8710-2026',
-    plan: 'Annual Farm & Business Package',
-    planTier: 'ANNUAL',
-    planStatus: 'ACTIVE',
-    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 45).toISOString(),
-    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 320).toISOString().split('T')[0],
-    receiptQuota: -1,
-    receiptsSubmittedCount: 24,
-    createdAt: new Date(Date.now() - 3600000 * 24 * 45).toISOString()
-  },
-  {
-    id: 'client-green-acres',
-    username: 'greenacres',
-    displayName: 'Green Acres Dairy Farm',
-    email: 'finance@greenacresdairy.example.com',
-    companyName: 'Green Acres Dairy & Livestock',
-    passwordHash: 'seeded_demo_hash',
-    salt: 'seeded_salt',
-    licenseKey: '3MONTH-4192-8812-2026',
-    plan: 'Quarterly Tax & Expense Prep',
-    planTier: '3MONTH',
-    planStatus: 'ACTIVE',
-    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 18).toISOString(),
-    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 72).toISOString().split('T')[0],
-    receiptQuota: -1,
-    receiptsSubmittedCount: 15,
-    createdAt: new Date(Date.now() - 3600000 * 24 * 18).toISOString()
-  },
-  {
-    id: 'client-red-river',
-    username: 'redriver',
-    displayName: 'Red River Cattle Co.',
-    email: 'operations@redrivercattle.example.com',
-    companyName: 'Red River Ranch & Cattle Corp',
-    passwordHash: 'seeded_demo_hash',
-    salt: 'seeded_salt',
-    licenseKey: 'MONTHLY-7712-4091-2026',
-    plan: 'Monthly Bookkeeping',
-    planTier: 'MONTHLY',
-    planStatus: 'ACTIVE',
-    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 8).toISOString(),
-    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 22).toISOString().split('T')[0],
-    receiptQuota: -1,
-    receiptsSubmittedCount: 8,
-    createdAt: new Date(Date.now() - 3600000 * 24 * 8).toISOString()
-  },
-  {
-    id: 'client-blue-ridge',
-    username: 'blueridge',
-    displayName: 'Blue Ridge Orchards',
-    email: 'harvest@blueridgeorchards.example.com',
-    companyName: 'Blue Ridge Fruit & Produce Inc',
-    passwordHash: 'seeded_demo_hash',
-    salt: 'seeded_salt',
-    licenseKey: 'ANNUAL-5581-9920-2026',
-    plan: 'Annual Farm & Business Package',
-    planTier: 'ANNUAL',
-    planStatus: 'ACTIVE',
-    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 60).toISOString(),
-    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 305).toISOString().split('T')[0],
-    receiptQuota: -1,
-    receiptsSubmittedCount: 31,
-    createdAt: new Date(Date.now() - 3600000 * 24 * 60).toISOString()
-  },
-  {
-    id: 'client-sunbelt',
-    username: 'sunbelt',
-    displayName: 'Sunbelt Grain & Feed',
-    email: 'accounts@sunbeltgrain.example.com',
-    companyName: 'Sunbelt Agri-Supply LLC',
-    passwordHash: 'seeded_demo_hash',
-    salt: 'seeded_salt',
-    licenseKey: '3MONTH-1192-4402-2026',
-    plan: 'Quarterly Tax & Expense Prep',
-    planTier: '3MONTH',
-    planStatus: 'ACTIVE',
-    planPurchasedAt: new Date(Date.now() - 3600000 * 24 * 25).toISOString(),
-    planExpiresAt: new Date(Date.now() + 3600000 * 24 * 65).toISOString().split('T')[0],
-    receiptQuota: -1,
-    receiptsSubmittedCount: 19,
-    createdAt: new Date(Date.now() - 3600000 * 24 * 25).toISOString()
-  }
-];
-
 function notifyAccountsChanged(accounts: ClientUserAccount[]): void {
   if (typeof window !== 'undefined') {
     try {
@@ -204,23 +111,19 @@ function notifyAccountsChanged(accounts: ClientUserAccount[]): void {
   }
 }
 
-/**
- * Loads all client accounts from persistent local storage.
- * In a static / Cloudflare KV setting, this provides client persistence with zero leakage of cleartext passwords.
- */
 export function getStoredClientAccounts(): ClientUserAccount[] {
   try {
     const raw = localStorage.getItem(CLIENT_ACCOUNTS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
+      if (Array.isArray(parsed)) {
         return parsed;
       }
     }
   } catch (err) {
     console.warn('Error reading stored client accounts:', err);
   }
-  return INITIAL_DEMO_CLIENT_ACCOUNTS;
+  return [];
 }
 
 export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
