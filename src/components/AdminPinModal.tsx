@@ -99,8 +99,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
           keys.forEach((k: any) => {
             const kId = k.id || `key-${k.key}`;
             const kKey = String(k.key || '').trim().toLowerCase();
-            const kEm = String(k.clientEmail || '').trim().toLowerCase();
-            if (deleted.has(String(kId).toLowerCase()) || (kKey && deleted.has(kKey)) || (kEm && deleted.has(kEm))) {
+            if (deleted.has(String(kId).toLowerCase()) || (kKey && deleted.has(kKey))) {
               return;
             }
             if (!map.has(kId) && k.clientEmail && k.clientEmail.includes('@')) {

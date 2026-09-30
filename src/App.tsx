@@ -60,7 +60,7 @@ import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncServic
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
 import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 import { getClientSubmissions, subscribeToClientSubmissions } from './clientSubmissionService';
-import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted } from './clientAccountService';
+import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted, unrecordAccountDeleted } from './clientAccountService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -128,8 +128,7 @@ export default function App() {
             for (const k of prev) {
               const kKey = k.key.trim().toUpperCase();
               const kId = (k.id || '').trim().toLowerCase();
-              const kEm = (k.clientEmail || '').trim().toLowerCase();
-              if (!deleted.has(kKey.toLowerCase()) && !deleted.has(kId) && (!kEm || !deleted.has(kEm))) {
+              if (!deleted.has(kKey.toLowerCase()) && !deleted.has(kId)) {
                 map.set(kKey, k);
               }
             }
@@ -137,8 +136,7 @@ export default function App() {
               const effectiveKey = (cf.key || '').trim().toUpperCase();
               if (!effectiveKey) continue;
               const cfId = `cf-${effectiveKey}`.toLowerCase();
-              const cfEmail = (cf.user_email || '').trim().toLowerCase();
-              if (deleted.has(effectiveKey.toLowerCase()) || deleted.has(cfId) || (cfEmail && deleted.has(cfEmail))) {
+              if (deleted.has(effectiveKey.toLowerCase()) || deleted.has(cfId)) {
                 continue;
               }
 
@@ -189,8 +187,7 @@ export default function App() {
             for (const k of prev) {
               const kKey = k.key.trim().toUpperCase();
               const kId = (k.id || '').trim().toLowerCase();
-              const kEm = (k.clientEmail || '').trim().toLowerCase();
-              if (!deleted.has(kKey.toLowerCase()) && !deleted.has(kId) && (!kEm || !deleted.has(kEm))) {
+              if (!deleted.has(kKey.toLowerCase()) && !deleted.has(kId)) {
                 map.set(kKey, k);
               }
             }
@@ -198,8 +195,7 @@ export default function App() {
             for (const s of serverItems) {
               const effectiveKey = (s.key || '').trim().toUpperCase();
               if (!effectiveKey) continue;
-              const sEmail = (s.clientEmail || '').trim().toLowerCase();
-              if (deleted.has(effectiveKey.toLowerCase()) || (sEmail && deleted.has(sEmail))) {
+              if (deleted.has(effectiveKey.toLowerCase())) {
                 continue;
               }
 
@@ -397,6 +393,10 @@ export default function App() {
   };
 
   const handleImportKeys = (imported: LicenseKeyRecord[]) => {
+    for (const k of imported) {
+      if (k.key) unrecordAccountDeleted(k.key);
+      if (k.id) unrecordAccountDeleted(k.id);
+    }
     setLicenseKeys(prev => {
       const map = new Map<string, LicenseKeyRecord>();
       for (const k of prev) {
@@ -495,6 +495,9 @@ export default function App() {
       notes: `Perpetual Admin Master Key (${adminFlavor}) - Never Expires`
     };
 
+    unrecordAccountDeleted(keyToRegister);
+    unrecordAccountDeleted(newAdminRecord.id);
+
     setLicenseKeys(prev => [newAdminRecord, ...prev]);
     const nextKey = generateAdminKey(adminFlavor);
     setGeneratedAdminKey(nextKey);
@@ -543,6 +546,9 @@ export default function App() {
       expiresDate: expires,
       notes: `Generated on ${new Date().toLocaleDateString()}`
     };
+
+    unrecordAccountDeleted(keyToRegister);
+    unrecordAccountDeleted(newRecord.id);
 
     setLicenseKeys(prev => [newRecord, ...prev]);
     setTestKeyInput(keyToRegister);
@@ -662,11 +668,10 @@ export default function App() {
       if (target) {
         showToast(`Key ${target.key} removed from registry.`);
 
-        // Record tombstones so it cannot repopulate on refresh
+        // Record tombstones for this specific key so it cannot repopulate on refresh
         recordAccountDeleted(target.key);
         recordAccountDeleted(target.id);
         recordAccountDeleted(`key-${target.key}`);
-        if (target.clientEmail) recordAccountDeleted(target.clientEmail);
 
         // Delete from website API server and Cloudflare KV
         syncKeyToServer(target, 'DELETE');
@@ -694,6 +699,9 @@ export default function App() {
       ...record,
       id: `manual-key-${Date.now()}`
     };
+    unrecordAccountDeleted(newRecord.key);
+    unrecordAccountDeleted(newRecord.id);
+
     setLicenseKeys(prev => [newRecord, ...prev]);
     showToast(`Key ${newRecord.key} registered (${newRecord.status})`);
 

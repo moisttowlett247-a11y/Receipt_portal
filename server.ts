@@ -837,6 +837,31 @@ router.route('/api/inquiries')
     }
   });
 
+router.get(['/api/licenses/all', '/api/licenses'], (req, res) => {
+  try {
+    if (!fs.existsSync(LICENSES_DIR)) {
+      return res.json({ success: true, count: 0, licenses: [] });
+    }
+    const files = fs.readdirSync(LICENSES_DIR);
+    const licenses: any[] = [];
+    for (const f of files) {
+      if (f.endsWith('.json') && f !== 'active_sessions.json' && f !== 'inquiries.json') {
+        try {
+          const content = JSON.parse(fs.readFileSync(path.join(LICENSES_DIR, f), 'utf-8'));
+          const hash = f.replace('.json', '');
+          licenses.push({
+            hash,
+            ...content
+          });
+        } catch {}
+      }
+    }
+    return res.json({ success: true, count: licenses.length, licenses });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/api/licenses/sync', (req, res) => {
   try {
     const body = req.body || {};

@@ -29,6 +29,18 @@ export function recordAccountDeleted(idOrEmailOrUser: string): void {
     localStorage.setItem(DELETED_ACCOUNTS_STORAGE_KEY, JSON.stringify(Array.from(current)));
   } catch {}
 }
+
+export function unrecordAccountDeleted(idOrEmailOrUser: string): void {
+  const clean = String(idOrEmailOrUser || '').trim().toLowerCase();
+  if (!clean) return;
+  const current = getDeletedAccountKeys();
+  if (current.has(clean)) {
+    current.delete(clean);
+    try {
+      localStorage.setItem(DELETED_ACCOUNTS_STORAGE_KEY, JSON.stringify(Array.from(current)));
+    } catch {}
+  }
+}
 const RESERVED_ADMIN_USERNAMES = [
   'admin',
   'administrator',
