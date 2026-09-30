@@ -68,9 +68,11 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
 
   const loadAllSystemAccounts = (): ClientUserAccount[] => {
     const map = new Map<string, ClientUserAccount>();
+    const emailToId = new Map<string, string>();
+    const keyToId = new Map<string, string>();
     const deleted = getDeletedAccountKeys();
 
-    // 1. Client accounts
+    // 1. Client accounts (Real registered user accounts)
     try {
       const clients = getStoredClientAccounts();
       if (Array.isArray(clients)) {
@@ -78,10 +80,12 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
           if (c && c.id) {
             const id = String(c.id).toLowerCase();
             const u = String(c.username || '').toLowerCase();
-            const em = String(c.email || '').toLowerCase();
-            const k = String(c.licenseKey || '').toLowerCase();
-            if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
+            const em = String(c.email || '').trim().toLowerCase();
+            const k = String(c.licenseKey || '').trim().toUpperCase();
+            if (!deleted.has(id) && !deleted.has(u)) {
               map.set(c.id, c);
+              if (em) emailToId.set(em, c.id);
+              if (k) keyToId.set(k, c.id);
             }
           }
         });
@@ -98,14 +102,36 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         if (Array.isArray(keys)) {
           keys.forEach((k: any) => {
             const kId = k.id || `key-${k.key}`;
-            const kKey = String(k.key || '').trim().toLowerCase();
-            if (deleted.has(String(kId).toLowerCase()) || (kKey && deleted.has(kKey))) {
+            const kKey = String(k.key || '').trim().toUpperCase();
+            const kEm = String(k.clientEmail || '').trim().toLowerCase();
+            if (deleted.has(String(kId).toLowerCase()) || (kKey && deleted.has(kKey.toLowerCase()))) {
               return;
             }
+
+            // Check if this license belongs to an already registered client user account
+            const matchedAccountId = (kEm && emailToId.get(kEm)) || (kKey && keyToId.get(kKey));
+            if (matchedAccountId && map.has(matchedAccountId)) {
+              // Merge/enrich the existing account rather than creating a duplicate
+              const existing = map.get(matchedAccountId)!;
+              map.set(matchedAccountId, {
+                ...existing,
+                licenseKey: existing.licenseKey || k.key,
+                plan: existing.plan || k.plan || 'Standard Plan',
+                planTier: existing.planTier || k.plan || 'MONTHLY',
+                planStatus: (k.status === 'ACTIVE' || existing.planStatus === 'ACTIVE') ? 'ACTIVE' : existing.planStatus,
+                planExpiresAt: existing.planExpiresAt || k.expiresDate || '',
+                planPurchasedAt: existing.planPurchasedAt || k.issuedDate || existing.createdAt,
+                companyName: existing.companyName || k.clientName || 'License Holder',
+              });
+              if (kKey) keyToId.set(kKey, matchedAccountId);
+              return;
+            }
+
+            // If no existing account for this key or email, add as a license-holder profile
             if (!map.has(kId) && k.clientEmail && k.clientEmail.includes('@')) {
-              map.set(kId, {
+              const newAcc: ClientUserAccount = {
                 id: kId,
-                username: (k.clientName || 'subscriber').toLowerCase().replace(/[^a-z0-9]/g, ''),
+                username: (k.clientName || 'subscriber').toLowerCase().replace(/[^a-z0-9]/g, '') || `user_${kKey.slice(0, 6).toLowerCase()}`,
                 displayName: k.clientName || 'Subscriber',
                 email: k.clientEmail,
                 companyName: k.clientName || 'License Holder',
@@ -120,7 +146,10 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
                 receiptQuota: -1,
                 receiptsSubmittedCount: 0,
                 createdAt: k.issuedDate || new Date().toISOString()
-              });
+              };
+              map.set(kId, newAcc);
+              if (kEm) emailToId.set(kEm, kId);
+              if (kKey) keyToId.set(kKey, kId);
             }
           });
         }
@@ -141,10 +170,21 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
             if (deleted.has(String(iId).toLowerCase()) || (iEm && deleted.has(iEm))) {
               return;
             }
+
+            // Check if existing account exists for this email
+            const matchedAccountId = iEm && emailToId.get(iEm);
+            if (matchedAccountId && map.has(matchedAccountId)) {
+              const existing = map.get(matchedAccountId)!;
+              if (!existing.companyName && i.company) {
+                existing.companyName = i.company;
+              }
+              return;
+            }
+
             if (!map.has(iId) && i.email && i.email.includes('@')) {
-              map.set(iId, {
+              const newInqAcc: ClientUserAccount = {
                 id: iId,
-                username: (i.name || 'inquiry').toLowerCase().replace(/[^a-z0-9]/g, ''),
+                username: (i.name || 'inquiry').toLowerCase().replace(/[^a-z0-9]/g, '') || `inq_${Date.now().toString(36)}`,
                 displayName: i.name || 'Access Requester',
                 email: i.email,
                 companyName: i.company || i.receiptVolume || 'Portal Inquiry',
@@ -155,7 +195,9 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
                 receiptQuota: 0,
                 receiptsSubmittedCount: 0,
                 createdAt: i.submittedAt || new Date().toISOString()
-              });
+              };
+              map.set(iId, newInqAcc);
+              if (iEm) emailToId.set(iEm, iId);
             }
           });
         }

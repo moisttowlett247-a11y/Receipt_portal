@@ -148,21 +148,58 @@ function notifyAccountsChanged(accounts: ClientUserAccount[]): void {
   }
 }
 
+export function mergeAccountLists(accounts: ClientUserAccount[]): ClientUserAccount[] {
+  const map = new Map<string, ClientUserAccount>();
+  const emailToId = new Map<string, string>();
+  const usernameToId = new Map<string, string>();
+  const deleted = getDeletedAccountKeys();
+
+  for (const a of accounts) {
+    if (!a || !a.id) continue;
+    const id = String(a.id).trim().toLowerCase();
+    const u = String(a.username || '').trim().toLowerCase();
+    const em = String(a.email || '').trim().toLowerCase();
+
+    if (deleted.has(id) || (u && deleted.has(u))) {
+      continue;
+    }
+
+    const matchedId = (em && emailToId.get(em)) || (u && usernameToId.get(u));
+    if (matchedId && map.has(matchedId)) {
+      const existing = map.get(matchedId)!;
+      const mergedAcc: ClientUserAccount = {
+        ...existing,
+        displayName: existing.displayName || a.displayName,
+        companyName: existing.companyName || a.companyName,
+        email: existing.email || a.email,
+        licenseKey: existing.licenseKey || a.licenseKey,
+        plan: existing.plan || a.plan,
+        planTier: existing.planTier || a.planTier,
+        planStatus: (existing.planStatus === 'ACTIVE' || a.planStatus === 'ACTIVE') ? 'ACTIVE' : existing.planStatus,
+        planExpiresAt: existing.planExpiresAt || a.planExpiresAt,
+        receiptQuota: Math.max(existing.receiptQuota ?? -1, a.receiptQuota ?? -1),
+        receiptsSubmittedCount: Math.max(existing.receiptsSubmittedCount || 0, a.receiptsSubmittedCount || 0),
+        passwordHash: (existing.passwordHash && existing.passwordHash !== 'licensed_user' && existing.passwordHash !== 'inquiry_user') ? existing.passwordHash : a.passwordHash,
+        salt: (existing.salt && existing.salt !== 'salt') ? existing.salt : a.salt,
+      };
+      map.set(matchedId, mergedAcc);
+    } else {
+      map.set(a.id, a);
+      if (em) emailToId.set(em, a.id);
+      if (u) usernameToId.set(u, a.id);
+    }
+  }
+
+  return Array.from(map.values());
+}
+
 export function getStoredClientAccounts(): ClientUserAccount[] {
   try {
     const raw = localStorage.getItem(CLIENT_ACCOUNTS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        const deleted = getDeletedAccountKeys();
-        return parsed.filter(a => {
-          if (!a || !a.id) return false;
-          const id = String(a.id).trim().toLowerCase();
-          const username = String(a.username || '').trim().toLowerCase();
-          const email = String(a.email || '').trim().toLowerCase();
-          const key = String(a.licenseKey || '').trim().toLowerCase();
-          return !deleted.has(id) && !deleted.has(username) && (!email || !deleted.has(email)) && (!key || !deleted.has(key));
-        });
+        return mergeAccountLists(parsed);
       }
     }
   } catch (err) {
@@ -173,14 +210,7 @@ export function getStoredClientAccounts(): ClientUserAccount[] {
 
 export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
   try {
-    const deleted = getDeletedAccountKeys();
-    const clean = accounts.filter(a => {
-      if (!a || !a.id) return false;
-      const id = String(a.id).trim().toLowerCase();
-      const username = String(a.username || '').trim().toLowerCase();
-      const email = String(a.email || '').trim().toLowerCase();
-      return !deleted.has(id) && !deleted.has(username) && (!email || !deleted.has(email));
-    });
+    const clean = mergeAccountLists(accounts);
     localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(clean));
     notifyAccountsChanged(clean);
     
@@ -198,7 +228,6 @@ export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
 export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[]> {
   try {
     const localAccounts = getStoredClientAccounts();
-    const deleted = getDeletedAccountKeys();
 
     // 1. Sync to local backend server
     try {
@@ -227,25 +256,7 @@ export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[
         const data = await resp.json();
         if (data.success && Array.isArray(data.accounts)) {
           const serverAccounts = data.accounts as ClientUserAccount[];
-          
-          const map = new Map<string, ClientUserAccount>();
-          serverAccounts.forEach(a => {
-            if (a && a.id) {
-              const id = String(a.id).toLowerCase();
-              const u = String(a.username || '').toLowerCase();
-              const em = String(a.email || '').toLowerCase();
-              if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em))) {
-                map.set(a.id, a);
-              }
-            }
-          });
-          localAccounts.forEach(a => {
-            if (a && a.id) {
-              map.set(a.id, a);
-            }
-          });
-          
-          const merged = Array.from(map.values());
+          const merged = mergeAccountLists([...localAccounts, ...serverAccounts]);
           if (merged.length !== localAccounts.length) {
             localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
             notifyAccountsChanged(merged);
@@ -265,7 +276,6 @@ export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[
  */
 export async function fetchAllAccountsFromServer(adminToken?: string): Promise<ClientUserAccount[]> {
   try {
-    const deleted = getDeletedAccountKeys();
     const token = adminToken || getAdminToken() || undefined;
     const headers: Record<string, string> = { 'Accept': 'application/json' };
     if (token) {
@@ -283,30 +293,7 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
           if (data && data.success && Array.isArray(data.accounts)) {
             const serverAccounts = data.accounts as ClientUserAccount[];
             const localAccounts = getStoredClientAccounts();
-            const map = new Map<string, ClientUserAccount>();
-            localAccounts.forEach(a => {
-              if (a && a.id) {
-                const id = String(a.id).trim().toLowerCase();
-                const u = String(a.username || '').trim().toLowerCase();
-                const em = String(a.email || '').trim().toLowerCase();
-                const k = String(a.licenseKey || '').trim().toLowerCase();
-                if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
-                  map.set(a.id, a);
-                }
-              }
-            });
-            serverAccounts.forEach(a => {
-              if (a && a.id) {
-                const id = String(a.id).trim().toLowerCase();
-                const u = String(a.username || '').trim().toLowerCase();
-                const em = String(a.email || '').trim().toLowerCase();
-                const k = String(a.licenseKey || '').trim().toLowerCase();
-                if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
-                  map.set(a.id, a);
-                }
-              }
-            });
-            const merged = Array.from(map.values());
+            const merged = mergeAccountLists([...localAccounts, ...serverAccounts]);
             localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
             notifyAccountsChanged(merged);
             return merged;
@@ -327,32 +314,7 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
       if (data.success && Array.isArray(data.accounts)) {
         const serverAccounts = data.accounts as ClientUserAccount[];
         const localAccounts = getStoredClientAccounts();
-        
-        const map = new Map<string, ClientUserAccount>();
-        localAccounts.forEach(a => {
-          if (a && a.id) {
-            const id = String(a.id).trim().toLowerCase();
-            const u = String(a.username || '').trim().toLowerCase();
-            const em = String(a.email || '').trim().toLowerCase();
-            const k = String(a.licenseKey || '').trim().toLowerCase();
-            if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
-              map.set(a.id, a);
-            }
-          }
-        });
-        serverAccounts.forEach(a => {
-          if (a && a.id) {
-            const id = String(a.id).trim().toLowerCase();
-            const u = String(a.username || '').trim().toLowerCase();
-            const em = String(a.email || '').trim().toLowerCase();
-            const k = String(a.licenseKey || '').trim().toLowerCase();
-            if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
-              map.set(a.id, a);
-            }
-          }
-        });
-        
-        const merged = Array.from(map.values());
+        const merged = mergeAccountLists([...localAccounts, ...serverAccounts]);
         localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
         notifyAccountsChanged(merged);
         return merged;
