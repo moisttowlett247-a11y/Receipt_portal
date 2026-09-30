@@ -55,6 +55,7 @@ import {
   getActiveGeminiApiKeys,
   saveActiveGeminiApiKeys
 } from '../adminReceiptScanningEngine';
+import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata } from '../googleDriveService';
 import { 
   getClientSubmissions, 
   purgeDuplicateSubmissions, 
@@ -1184,6 +1185,94 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     if (onNavigateToIntake) onNavigateToIntake();
   };
 
+  const [isSyncingLedger, setIsSyncingLedger] = useState<boolean>(false);
+
+  const handleSyncExistingToDrive = async () => {
+    if (!googleAccessToken) {
+      if (onToast) onToast('Please connect to Google Drive first.');
+      return;
+    }
+
+    const localReceipts = receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+    if (localReceipts.length === 0) {
+      if (onToast) onToast('No local unsynced receipts found in ledger.');
+      return;
+    }
+
+    setIsSyncingLedger(true);
+    if (onToast) onToast(`🚀 Syncing ${localReceipts.length} unsynced receipts to Cloud Vault...`);
+
+    let successCount = 0;
+    const updatedReceipts = [...receipts];
+
+    for (const r of localReceipts) {
+      try {
+        const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
+        const folderId = await ensureFolderPath(googleAccessToken, ['Receipt Vault', year, r.clientName]);
+        
+        if (folderId && r.dataUrl) {
+          const driveRes = await uploadReceiptToDrive(googleAccessToken, folderId, r.fileName, r.dataUrl);
+          if (driveRes) {
+            const idx = updatedReceipts.findIndex(item => item.id === r.id);
+            if (idx !== -1) {
+              const updated = {
+                ...updatedReceipts[idx],
+                googleDriveId: driveRes.id,
+                googleDriveLink: driveRes.webViewLink
+              };
+              // RAM Optimization: Clear dataUrl after sync
+              delete updated.dataUrl;
+              updatedReceipts[idx] = updated;
+              successCount++;
+
+              const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
+              await updateFileMetadata(googleAccessToken, driveRes.id, description);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Individual sync fail:', err);
+      }
+    }
+
+    setReceipts(updatedReceipts);
+    setIsSyncingLedger(false);
+    if (onToast) onToast(`✅ Cloud Sync Complete: ${successCount} receipts moved to Google Drive!`);
+  };
+
+  const handleSyncSingleToDrive = async (id: string) => {
+    if (!googleAccessToken) return;
+    const r = receipts.find(item => item.id === id);
+    if (!r || !r.dataUrl || r.googleDriveId) return;
+
+    if (onToast) onToast(`Syncing ${r.fileName} to Cloud Vault...`);
+
+    try {
+      const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
+      const folderId = await ensureFolderPath(googleAccessToken, ['Receipt Vault', year, r.clientName]);
+      
+      if (folderId) {
+        const driveRes = await uploadReceiptToDrive(googleAccessToken, folderId, r.fileName, r.dataUrl);
+        if (driveRes) {
+          setReceipts(prev => prev.map(item => {
+            if (item.id === id) {
+              const updated = { ...item, googleDriveId: driveRes.id, googleDriveLink: driveRes.webViewLink };
+              delete updated.dataUrl;
+              return updated;
+            }
+            return item;
+          }));
+
+          const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
+          await updateFileMetadata(googleAccessToken, driveRes.id, description);
+          if (onToast) onToast(`✅ ${r.fileName} synced to Cloud!`);
+        }
+      }
+    } catch (err) {
+      if (onToast) onToast('Sync failed for this receipt.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Central Hero Banner */}
@@ -1959,6 +2048,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           </select>
         </div>
 
+        {/* Cloud Sync Tool */}
+        {googleAccessToken && receipts.some(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED') && (
+          <button
+            onClick={handleSyncExistingToDrive}
+            disabled={isSyncingLedger}
+            className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer animate-in fade-in"
+          >
+            <Cloud className={`w-3.5 h-3.5 ${isSyncingLedger ? 'animate-bounce' : ''}`} />
+            <span>{isSyncingLedger ? 'Syncing Vault...' : 'Sync Unsynced to Cloud'}</span>
+          </button>
+        )}
+
         {/* Bulk Selection Actions */}
         {selectedIds.size > 0 && (
           <div className="flex items-center gap-2 text-xs bg-stone-950 px-3 py-1.5 rounded-lg border border-stone-800">
@@ -2283,6 +2384,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                           >
                             <Eye className="w-3.5 h-3.5" />
                           </button>
+
+                          {!r.googleDriveId && r.dataUrl && googleAccessToken && (
+                            <button
+                              onClick={() => handleSyncSingleToDrive(r.id)}
+                              className="p-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 transition-colors cursor-pointer"
+                              title="Sync to Cloud Vault"
+                            >
+                              <Cloud className="w-3.5 h-3.5" />
+                            </button>
+                          )}
 
                           <button
                             onClick={() => handleToggleDuplicateStatus(r.id)}
