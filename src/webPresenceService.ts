@@ -1,7 +1,7 @@
 // Real-time Web Presence & Live IP Tracking Service
 // Broadcasts lightweight heartbeats from active Admin and Client Portal sessions
 
-import { getBackendApiUrl } from './urlUtils';
+import { CLOUDFLARE_WORKER_URL } from './licenseSyncService';
 
 export interface WebPresencePayload {
   portal: 'ADMIN' | 'CLIENT';
@@ -76,7 +76,7 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
   };
 
   try {
-    const targetUrl = `${getBackendApiUrl()}/api/presence/heartbeat`;
+    const targetUrl = `${CLOUDFLARE_WORKER_URL}/api/presence/heartbeat`;
     await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -123,7 +123,7 @@ export function startPresenceTracker(payload: WebPresencePayload): () => void {
           status: 'DISCONNECTED',
           browserInfo: sys.summary
         });
-        const targetUrl = `${getBackendApiUrl()}/api/presence/heartbeat`;
+        const targetUrl = `${CLOUDFLARE_WORKER_URL}/api/presence/heartbeat`;
         if (navigator.sendBeacon) {
           navigator.sendBeacon(targetUrl, new Blob([body], { type: 'application/json' }));
         }

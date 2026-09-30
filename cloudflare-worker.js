@@ -109,6 +109,47 @@ export default {
       });
     }
 
+    // Web Presence / Browser Heartbeat Tracking
+    if (pathname === "/api/presence/heartbeat" && request.method === "POST") {
+      try {
+        const clientIp = getClientIp(request);
+        const location = getClientLocation(request);
+        const body = await request.json().catch(() => ({}));
+        const sessionId = body.sessionId || `web_${(body.portal || 'client').toLowerCase()}_${clientIp}`;
+        const now = Date.now();
+        const kvSessionId = `SESSION:WEB_${sessionId}`;
+
+        const sessionRecord = {
+          id: kvSessionId,
+          ip: clientIp,
+          hash: body.sessionId || sessionId,
+          keyMasked: body.licenseKey ? (body.licenseKey.length > 8 ? body.licenseKey.slice(0, 4) + '...' + body.licenseKey.slice(-4) : body.licenseKey) : 'WEB-PORTAL',
+          rawKey: body.licenseKey || '',
+          hwid: `WEB-${body.portal || 'PORTAL'}`,
+          machineName: body.browserInfo || 'Browser Web Client',
+          appVersion: 'Web v2.4',
+          plan: body.plan || (body.portal === 'ADMIN' ? 'Master Administrator' : 'Client Visitor'),
+          status: body.status || 'ACTIVE',
+          lastPing: new Date().toISOString(),
+          lastPingMs: now,
+          firstSeen: new Date().toISOString(),
+          pingCount: 1,
+          sessionType: body.portal === 'ADMIN' ? 'WEB_ADMIN' : 'WEB_CLIENT',
+          portalName: body.portal === 'ADMIN' ? 'Admin Console' : 'Client Intake Portal',
+          username: body.username || '',
+          email: body.email || '',
+          displayName: body.displayName || '',
+          companyName: body.companyName || '',
+          location
+        };
+
+        await env.LICENSES.put(kvSessionId, JSON.stringify(sessionRecord), { expirationTtl: 86400 });
+        return jsonResponse({ success: true, clientIp, location });
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 400);
+      }
+    }
+
     // -------------------------------------------------------------------------
     // 2. Admin Authentication
     // -------------------------------------------------------------------------
