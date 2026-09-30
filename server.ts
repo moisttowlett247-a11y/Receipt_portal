@@ -854,7 +854,13 @@ router.get(['/api/licenses/sessions', '/api/devices/sessions'], (req, res) => {
   try {
     const sessionsObj = loadSessions();
     const now = Date.now();
-    const sessionList = Object.values(sessionsObj).map((s: any) => {
+    const maxAgeMs = 24 * 60 * 60 * 1000; // 24 hours max retention
+    const activeSessions: Record<string, any> = {};
+
+    const sessionList = Object.values(sessionsObj).filter((s: any) => {
+      const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
+      return (now - lastPingMs) < maxAgeMs;
+    }).map((s: any) => {
       const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
       const diffMs = now - lastPingMs;
       let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
@@ -869,6 +875,11 @@ router.get(['/api/licenses/sessions', '/api/devices/sessions'], (req, res) => {
         secondsSinceLastPing: Math.floor(diffMs / 1000)
       };
     });
+
+    for (const s of sessionList) {
+      activeSessions[s.id] = s;
+    }
+    saveSessions(activeSessions);
 
     sessionList.sort((a, b) => {
       if (a.onlineState === 'ONLINE' && b.onlineState !== 'ONLINE') return -1;
