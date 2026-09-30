@@ -1232,3 +1232,37 @@ export function grantPlanByAdmin(
 
   return { success: true, account: accounts[idx] };
 }
+
+/**
+ * Synchronizes client account plan status whenever a license key's status changes (e.g. deactivated, revoked, or reactivated).
+ */
+export function setClientAccountLicenseStatus(
+  keyString: string,
+  status: 'ACTIVE' | 'NOT ACTIVE' | 'REVOKED' | 'EXPIRED' | string
+): void {
+  const cleanKey = keyString.trim().toUpperCase();
+  if (!cleanKey) return;
+
+  const isActive = status === 'ACTIVE';
+  const accounts = getStoredClientAccounts();
+  let modified = false;
+
+  for (const acc of accounts) {
+    if (acc.licenseKey && acc.licenseKey.trim().toUpperCase() === cleanKey) {
+      acc.planStatus = isActive ? 'ACTIVE' : 'EXPIRED';
+      modified = true;
+    }
+  }
+
+  if (modified) {
+    saveStoredClientAccounts(accounts);
+    notifyAccountsChanged(accounts);
+  }
+
+  // Also update active session if it uses this key
+  const current = getCurrentClientSession();
+  if (current && current.licenseKey && current.licenseKey.trim().toUpperCase() === cleanKey) {
+    current.planStatus = isActive ? 'ACTIVE' : 'EXPIRED';
+    saveClientSession(current);
+  }
+}

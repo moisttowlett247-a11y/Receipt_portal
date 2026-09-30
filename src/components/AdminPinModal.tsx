@@ -118,7 +118,7 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
                 licenseKey: existing.licenseKey || k.key,
                 plan: existing.plan || k.plan || 'Standard Plan',
                 planTier: existing.planTier || k.plan || 'MONTHLY',
-                planStatus: (k.status === 'ACTIVE' || existing.planStatus === 'ACTIVE') ? 'ACTIVE' : existing.planStatus,
+                planStatus: k.status === 'ACTIVE' ? 'ACTIVE' : (existing.licenseKey ? 'EXPIRED' : existing.planStatus),
                 planExpiresAt: existing.planExpiresAt || k.expiresDate || '',
                 planPurchasedAt: existing.planPurchasedAt || k.issuedDate || existing.createdAt,
                 companyName: existing.companyName || k.clientName || 'License Holder',

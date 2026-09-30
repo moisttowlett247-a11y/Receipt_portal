@@ -60,7 +60,7 @@ import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncServic
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
 import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 import { getClientSubmissions, subscribeToClientSubmissions } from './clientSubmissionService';
-import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted, unrecordAccountDeleted } from './clientAccountService';
+import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted, unrecordAccountDeleted, setClientAccountLicenseStatus } from './clientAccountService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -582,6 +582,9 @@ export default function App() {
       const updatedKey: LicenseKeyRecord = { ...target, status: nextStatus };
       showToast(`Key ${target.key} status updated to: ${nextStatus}`);
 
+      // Real-time sync to client accounts & session
+      setClientAccountLicenseStatus(target.key, nextStatus);
+
       // Real-time sync to website API server (active registers as active, revoke registers as inactive)
       syncKeyToServer(updatedKey, 'UPSERT');
 
@@ -608,6 +611,9 @@ export default function App() {
       if (!target) return prev;
       const updatedKey: LicenseKeyRecord = { ...target, status: 'NOT ACTIVE' };
       showToast(`Key ${target.key} status revoked (NOT ACTIVE)`);
+
+      // Real-time sync to client accounts & session
+      setClientAccountLicenseStatus(target.key, 'NOT ACTIVE');
 
       syncKeyToServer(updatedKey, 'UPSERT');
 

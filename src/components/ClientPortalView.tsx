@@ -125,12 +125,35 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [copiedIntakeEmail, setCopiedIntakeEmail] = useState(false);
 
   const isLoggedIn = Boolean(clientSession);
+
+  // Find linked license in licenseKeys registry
+  const linkedKeyRecord = clientSession?.licenseKey
+    ? licenseKeys.find(k => k.key.trim().toUpperCase() === clientSession.licenseKey?.trim().toUpperCase())
+    : null;
+
+  // Plan is only active if planStatus is ACTIVE AND linked license key (if present) is ACTIVE
+  const isLicenseKeyActive = linkedKeyRecord
+    ? linkedKeyRecord.status === 'ACTIVE'
+    : (clientSession?.licenseKey ? clientSession.planStatus === 'ACTIVE' : true);
+
   const hasActivePlan = Boolean(
-    clientSession && (
-      clientSession.planStatus === 'ACTIVE' ||
-      (clientSession.licenseKey && clientSession.licenseKey.trim().length > 0)
-    )
+    clientSession &&
+    clientSession.planStatus === 'ACTIVE' &&
+    (clientSession.licenseKey ? isLicenseKeyActive : true)
   );
+
+  useEffect(() => {
+    const handleAccountsUpdate = () => {
+      const refreshed = getCurrentClientSession();
+      setClientSession(refreshed);
+    };
+    window.addEventListener('client_accounts_updated', handleAccountsUpdate);
+    window.addEventListener('storage', handleAccountsUpdate);
+    return () => {
+      window.removeEventListener('client_accounts_updated', handleAccountsUpdate);
+      window.removeEventListener('storage', handleAccountsUpdate);
+    };
+  }, []);
 
   useEffect(() => {
     if (clientSession) {
@@ -770,15 +793,26 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 {isLoggedIn && !hasActivePlan && (
                   <div className="p-6 rounded-2xl bg-stone-900/90 border border-amber-500/40 space-y-6 shadow-xl">
                     <div className="p-5 rounded-xl bg-gradient-to-r from-amber-950/40 via-stone-950 to-stone-950 border border-amber-500/30 space-y-2">
-                      <div className="flex items-center gap-2 text-xs font-bold text-amber-400 uppercase tracking-wider font-mono">
-                        <Sparkles className="w-4 h-4 text-amber-400" />
-                        <span>Step 2: Choose Your Bookkeeping Plan</span>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-xs font-bold text-amber-400 uppercase tracking-wider font-mono">
+                          <Sparkles className="w-4 h-4 text-amber-400" />
+                          <span>{clientSession?.licenseKey && !isLicenseKeyActive ? 'License Inactive / Deactivated' : 'Step 2: Choose Your Bookkeeping Plan'}</span>
+                        </div>
+                        {clientSession?.licenseKey && !isLicenseKeyActive && (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                            ACCESS REVOKED
+                          </span>
+                        )}
                       </div>
                       <h3 className="text-base sm:text-lg font-bold text-white">
-                        Welcome, {clientSession?.displayName}! Select a plan to start uploading receipts.
+                        {clientSession?.licenseKey && !isLicenseKeyActive
+                          ? `License Key ${clientSession.licenseKey} is Currently Inactive`
+                          : `Welcome, ${clientSession?.displayName}! Select a plan to start uploading receipts.`}
                       </h3>
                       <p className="text-xs text-stone-300 leading-relaxed">
-                        Your client account is set up. To enable multi-receipt scanning, automated OCR line item breakdown, and QuickBooks Online synchronization, select an accounting package below or activate an accountant voucher key.
+                        {clientSession?.licenseKey && !isLicenseKeyActive
+                          ? 'This license key has been deactivated by the system administrator. Receipt intake and OCR processing are paused. You can activate an alternate key below or choose a bookkeeping plan to restore instant access.'
+                          : 'Your client account is set up. To enable multi-receipt scanning, automated OCR line item breakdown, and QuickBooks Online synchronization, select an accounting package below or activate an accountant voucher key.'}
                       </p>
                     </div>
 

@@ -86,6 +86,8 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
     ? availableKeys.find(k => k.key.toUpperCase() === session.licenseKey?.toUpperCase())
     : null;
 
+  const isKeyActive = linkedKeyRecord ? linkedKeyRecord.status === 'ACTIVE' : session.planStatus === 'ACTIVE';
+
   // Calculate days left for countdown
   const getDaysLeft = (): number | null => {
     if (!linkedKeyRecord || !linkedKeyRecord.expiresDate) return null;
@@ -98,8 +100,7 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
 
   const daysLeft = getDaysLeft();
   const hasSubscribedPlanOrLicense = Boolean(
-    session.planStatus === 'ACTIVE' || 
-    (session.licenseKey && session.licenseKey.trim().length > 0)
+    session.licenseKey ? isKeyActive : session.planStatus === 'ACTIVE'
   );
 
   const handleSaveProfile = (e: React.FormEvent) => {
@@ -334,11 +335,11 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                     <span>Bookkeeping Plan & Receipt Quota</span>
                   </span>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
-                    session.planStatus === 'ACTIVE' || session.licenseKey
+                    hasSubscribedPlanOrLicense
                       ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                      : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                      : 'bg-rose-500/10 text-rose-400 border-rose-500/20'
                   }`}>
-                    {session.planStatus === 'ACTIVE' || session.licenseKey ? 'ACTIVE PLAN' : 'NO PLAN ACTIVE'}
+                    {hasSubscribedPlanOrLicense ? 'ACTIVE PLAN' : (session.licenseKey ? 'KEY INACTIVE / REVOKED' : 'NO PLAN ACTIVE')}
                   </span>
                 </div>
 
@@ -357,9 +358,9 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                     </div>
                   </div>
 
-                  {session.planStatus !== 'ACTIVE' && !session.licenseKey && (
+                  {!hasSubscribedPlanOrLicense && (
                     <div className="text-xs text-amber-300/90 font-medium">
-                      Select a plan in the portal to unlock receipt uploads.
+                      {session.licenseKey ? 'License key is inactive. Please activate an active plan or key.' : 'Select a plan in the portal to unlock receipt uploads.'}
                     </div>
                   )}
                 </div>
@@ -373,8 +374,12 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                     <span>Connected License Key</span>
                   </span>
                   {session.licenseKey ? (
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                      {linkedKeyRecord?.status || 'Active'}
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+                      isKeyActive
+                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                        : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                    }`}>
+                      {linkedKeyRecord?.status || (isKeyActive ? 'ACTIVE' : 'NOT ACTIVE')}
                     </span>
                   ) : (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-stone-800 text-stone-400 border border-stone-700">
