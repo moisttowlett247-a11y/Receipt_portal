@@ -181,7 +181,68 @@ function recordSessionPing(data: any) {
     lastPing: now.toISOString(),
     lastPingMs: now.getTime(),
     firstSeen: existing.firstSeen || now.toISOString(),
-    pingCount: (existing.pingCount || 0) + 1
+    pingCount: (existing.pingCount || 0) + 1,
+    sessionType: 'DESKTOP',
+    portalName: 'Desktop Python Engine',
+    deviceCategory: 'Desktop Python Engine'
+  };
+
+  saveSessions(sessions);
+}
+
+function recordWebPresenceSession(data: {
+  sessionId?: string;
+  portal: 'ADMIN' | 'CLIENT';
+  ip: string;
+  userId?: string;
+  username?: string;
+  email?: string;
+  displayName?: string;
+  companyName?: string;
+  plan?: string;
+  licenseKey?: string;
+  browserInfo?: string;
+  deviceCategory?: string;
+  status?: string;
+}) {
+  const sessions = loadSessions();
+  const rawId = data.sessionId || `web_${data.portal.toLowerCase()}_${data.ip}`;
+  const now = new Date();
+  const existing = sessions[rawId] || {};
+
+  const isAdmin = data.portal === 'ADMIN';
+  const sessionType = isAdmin ? 'WEB_ADMIN' : 'WEB_CLIENT';
+  const portalName = isAdmin ? 'Admin Console / Dashboard' : 'Client Intake Portal';
+  const machineName = data.browserInfo || (isAdmin ? 'Admin Web Browser' : 'Client Web Browser');
+  const userTag = (data.username || data.userId || (isAdmin ? 'ADMIN' : 'GUEST')).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+  const hwid = `WEB-${userTag || 'PORTAL'}-${data.portal}`;
+  const key = data.licenseKey || (isAdmin ? 'ADMIN-ACTIVE-CONSOLE' : (existing.rawKey || ''));
+  const keyMasked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : (key || 'WEB-SESSION');
+  const hash = crypto.createHash('sha256').update(rawId).digest('hex');
+
+  sessions[rawId] = {
+    id: rawId,
+    ip: data.ip,
+    hash,
+    keyMasked,
+    rawKey: key,
+    hwid,
+    machineName,
+    appVersion: 'Web v2.4',
+    plan: data.plan || (isAdmin ? 'Master Administrator' : 'Client Visitor'),
+    status: data.status || 'ACTIVE',
+    lastPing: now.toISOString(),
+    lastPingMs: now.getTime(),
+    firstSeen: existing.firstSeen || now.toISOString(),
+    pingCount: (existing.pingCount || 0) + 1,
+    sessionType,
+    username: data.username || (isAdmin ? 'admin' : undefined),
+    email: data.email || undefined,
+    displayName: data.displayName || (isAdmin ? 'Administrator' : undefined),
+    companyName: data.companyName || undefined,
+    portalName,
+    browserInfo: data.browserInfo,
+    deviceCategory: data.deviceCategory || 'Browser / Web Client'
   };
 
   saveSessions(sessions);
@@ -706,6 +767,48 @@ router.post('/api/licenses/heartbeat', (req, res) => {
       clientIp,
       recordedAt: new Date().toISOString(),
       status
+    });
+  } catch (err: any) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post(['/api/presence/heartbeat', '/api/presence/ping'], (req, res) => {
+  try {
+    const body = req.body || {};
+    const clientIp = getClientIp(req);
+    const portal = (body.portal === 'ADMIN' ? 'ADMIN' : 'CLIENT') as 'ADMIN' | 'CLIENT';
+    
+    if (body.status === 'DISCONNECTED') {
+      const sessions = loadSessions();
+      const rawId = body.sessionId || `web_${portal.toLowerCase()}_${clientIp}`;
+      if (sessions[rawId]) {
+        sessions[rawId].lastPingMs = Date.now() - 700000; // mark offline immediately
+        saveSessions(sessions);
+      }
+      return res.json({ success: true, message: 'Presence session marked offline' });
+    }
+
+    recordWebPresenceSession({
+      sessionId: body.sessionId,
+      portal,
+      ip: clientIp,
+      userId: body.userId,
+      username: body.username,
+      email: body.email,
+      displayName: body.displayName,
+      companyName: body.companyName,
+      plan: body.plan,
+      licenseKey: body.licenseKey,
+      browserInfo: body.browserInfo,
+      deviceCategory: body.deviceCategory,
+      status: body.status || 'ACTIVE'
+    });
+
+    return res.json({
+      success: true,
+      clientIp,
+      recordedAt: new Date().toISOString()
     });
   } catch (err: any) {
     return res.status(400).json({ success: false, error: err.message });

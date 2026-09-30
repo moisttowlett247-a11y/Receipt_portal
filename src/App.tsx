@@ -61,6 +61,7 @@ import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCl
 import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 import { getClientSubmissions, subscribeToClientSubmissions } from './clientSubmissionService';
 import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted, unrecordAccountDeleted, setClientAccountLicenseStatus } from './clientAccountService';
+import { startPresenceTracker } from './webPresenceService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -281,6 +282,18 @@ export default function App() {
   };
 
   const [isAdminRoute, setIsAdminRoute] = useState<boolean>(checkIsAdminPath);
+
+  useEffect(() => {
+    if (isAdminRoute) {
+      const cleanupPresence = startPresenceTracker({
+        portal: 'ADMIN',
+        username: 'admin',
+        displayName: 'Master Administrator',
+        plan: 'Master Administrator Console'
+      });
+      return () => cleanupPresence();
+    }
+  }, [isAdminRoute]);
 
   useEffect(() => {
     const handleLocationChange = () => {

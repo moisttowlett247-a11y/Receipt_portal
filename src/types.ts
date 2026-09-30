@@ -166,6 +166,14 @@ export interface ActiveDeviceSession {
   secondsSinceLastPing: number;
   location?: string;
   isCloudflare?: boolean;
+  sessionType?: 'WEB_ADMIN' | 'WEB_CLIENT' | 'DESKTOP';
+  username?: string;
+  email?: string;
+  displayName?: string;
+  companyName?: string;
+  portalName?: string;
+  browserInfo?: string;
+  deviceCategory?: 'Browser / Web Client' | 'Desktop Python Engine' | 'Mobile Web';
 }
 
 export interface ClientUserAccount {

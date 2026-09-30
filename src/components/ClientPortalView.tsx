@@ -61,6 +61,7 @@ import { ClientAuthModal } from './ClientAuthModal';
 import { ClientAccountModal } from './ClientAccountModal';
 import { ClientTaxSchedulesView } from './ClientTaxSchedulesView';
 import { classifyReceiptTaxSchedule } from '../taxScheduleService';
+import { startPresenceTracker } from '../webPresenceService';
 
 interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
@@ -141,6 +142,20 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     clientSession.planStatus === 'ACTIVE' &&
     (clientSession.licenseKey ? isLicenseKeyActive : true)
   );
+
+  useEffect(() => {
+    const cleanupPresence = startPresenceTracker({
+      portal: 'CLIENT',
+      userId: clientSession?.userId,
+      username: clientSession?.username || 'visitor',
+      email: clientSession?.email,
+      displayName: clientSession?.displayName || 'Client Visitor',
+      companyName: clientSession?.companyName,
+      plan: clientSession?.plan || (hasActivePlan ? 'Subscribed Client' : 'Visitor / Free Tier'),
+      licenseKey: clientSession?.licenseKey
+    });
+    return () => cleanupPresence();
+  }, [clientSession, hasActivePlan]);
 
   useEffect(() => {
     const handleAccountsUpdate = () => {
