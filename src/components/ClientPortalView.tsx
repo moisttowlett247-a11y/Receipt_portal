@@ -132,7 +132,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     ? licenseKeys.find(k => k.key.trim().toUpperCase() === clientSession.licenseKey?.trim().toUpperCase())
     : null;
 
-  // Plan is only active if planStatus is ACTIVE AND linked license key (if present) is ACTIVE
+  // Plan is only active if planStatus is ACTIVE AND linked license key (if present) is ACTIVE and NOT revoked/deactivated
   const isLicenseKeyActive = linkedKeyRecord
     ? linkedKeyRecord.status === 'ACTIVE'
     : (clientSession?.licenseKey ? clientSession.planStatus === 'ACTIVE' : true);
@@ -140,7 +140,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const hasActivePlan = Boolean(
     clientSession &&
     clientSession.planStatus === 'ACTIVE' &&
-    (clientSession.licenseKey ? isLicenseKeyActive : true)
+    isLicenseKeyActive &&
+    (!linkedKeyRecord || linkedKeyRecord.status === 'ACTIVE')
   );
 
   useEffect(() => {
@@ -360,6 +361,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
 
     if (!hasActivePlan) {
+      setVoucherError('Your license key or plan is inactive, expired, or revoked. Receipt upload and scanning is locked. Please activate an active plan or key.');
       return;
     }
 

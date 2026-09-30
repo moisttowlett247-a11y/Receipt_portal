@@ -136,7 +136,19 @@ function saveCompanies(companies: any) {
 function loadSessions() {
   if (fs.existsSync(SESSIONS_FILE)) {
     try {
-      return JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf-8'));
+      if (parsed && typeof parsed === 'object') {
+        const now = Date.now();
+        const active: any = {};
+        for (const [k, v] of Object.entries(parsed) as [string, any][]) {
+          const lastPing = v.lastPingMs || (v.lastPing ? new Date(v.lastPing).getTime() : 0);
+          // Keep if within 24 hours or if it's explicitly web presence
+          if (now - lastPing < 24 * 60 * 60 * 1000 || v.sessionType?.startsWith('WEB')) {
+            active[k] = v;
+          }
+        }
+        return active;
+      }
     } catch {}
   }
   return {};
@@ -344,6 +356,53 @@ router.get([
     }
   }
   res.sendStatus(404);
+});
+
+// Presence & Active Devices Endpoints
+router.post('/api/presence/heartbeat', (req, res) => {
+  const clientIp = getClientIp(req);
+  const { portal, userId, username, email, displayName, companyName, plan, licenseKey, browserInfo, deviceCategory, status } = req.body || {};
+  recordWebPresenceSession({
+    portal: portal || 'CLIENT',
+    ip: clientIp,
+    userId,
+    username,
+    email,
+    displayName,
+    companyName,
+    plan,
+    licenseKey,
+    browserInfo,
+    deviceCategory,
+    status
+  });
+  return res.json({ success: true });
+});
+
+router.get('/api/licenses/sessions', (req, res) => {
+  const sessionsMap = loadSessions();
+  const sessions = Object.values(sessionsMap);
+  return res.json({ success: true, sessions });
+});
+
+router.post('/api/licenses/sessions/clear', (req, res) => {
+  const { clearAll } = req.body || {};
+  if (clearAll) {
+    saveSessions({});
+    return res.json({ success: true, message: 'All sessions cleared' });
+  } else {
+    const sessions = loadSessions();
+    const now = Date.now();
+    const active: any = {};
+    for (const [k, v] of Object.entries(sessions) as [string, any][]) {
+      const lastPing = v.lastPingMs || new Date(v.lastPing || 0).getTime();
+      if (now - lastPing < 15 * 60 * 1000) {
+        active[k] = v;
+      }
+    }
+    saveSessions(active);
+    return res.json({ success: true, message: 'Inactive sessions pruned' });
+  }
 });
 
 // POST /api/scan/receipt - High-accuracy AI OCR Receipt extraction via Gemini
