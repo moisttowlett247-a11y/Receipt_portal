@@ -99,12 +99,12 @@ export function startPresenceTracker(payload: WebPresencePayload): () => void {
     clearInterval(activeInterval);
   }
 
-  // Ping every 15 seconds while tab is active
+  // Ping every 5 seconds while tab is active
   activeInterval = setInterval(() => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
       sendPresenceHeartbeat(payload);
     }
-  }, 15000);
+  }, 5000);
 
   const handleVisibilityChange = () => {
     if (document.visibilityState === 'visible') {

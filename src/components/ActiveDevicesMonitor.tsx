@@ -85,7 +85,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
 
       if (Array.isArray(cfLicenses) && cfLicenses.length > 0) {
         for (const cf of cfLicenses) {
-          if (!cf.key) continue;
+          if (!cf.key || !cf.last_seen_at) continue;
           const lastPingMs = cf.last_seen_at ? new Date(cf.last_seen_at).getTime() : 0;
           const diffMs = lastPingMs > 0 ? Math.max(0, now - lastPingMs) : 999999999;
           const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
