@@ -110,7 +110,33 @@ export async function lookupLicenseByEmailAsync(
   const local = findLicenseRecordByEmail(clean, availableKeys);
   if (local) return local;
 
-  // 2. Check Cloudflare KV backend
+  // 2. Check local server /api/licenses/all
+  try {
+    const sResp = await fetch('/api/licenses/all', { cache: 'no-store' });
+    if (sResp.ok) {
+      const sData = await sResp.json();
+      if (sData && sData.success && Array.isArray(sData.licenses)) {
+        const found = sData.licenses.find(
+          (k: any) => k.clientEmail && String(k.clientEmail).trim().toLowerCase() === clean && k.status !== 'EXPIRED'
+        );
+        if (found) {
+          return {
+            id: found.id || `key-${found.key}`,
+            key: found.key,
+            plan: (found.plan as any) || 'MONTHLY',
+            status: (found.status as any) || 'ACTIVE',
+            clientName: found.clientName || '',
+            clientEmail: found.clientEmail || clean,
+            expiresDate: found.expiresDate || 'Never (Lifetime / Non-Expiring)',
+            issuedDate: found.issuedDate || new Date().toISOString(),
+            inUse: true
+          };
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Check Cloudflare KV backend
   try {
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/licenses/by-email?email=${encodeURIComponent(clean)}`, {
       method: 'GET',
@@ -764,11 +790,47 @@ export function updateClientAccountProfile(
     displayName?: string;
     companyName?: string;
     licenseKey?: string | null;
+    availableKeys?: LicenseKeyRecord[];
   }
 ): { success: boolean; account?: ClientUserAccount } {
   const accounts = getStoredClientAccounts();
-  const idx = accounts.findIndex(a => a.id === userId);
-  if (idx === -1) return { success: false };
+  const cleanId = String(userId || '').trim().toLowerCase();
+  let idx = accounts.findIndex(
+    a => a.id === userId || 
+         a.id.toLowerCase() === cleanId || 
+         a.username.toLowerCase() === cleanId || 
+         a.email.toLowerCase() === cleanId
+  );
+
+  // If missing from local accounts array, recover from current active session
+  if (idx === -1) {
+    const current = getCurrentClientSession();
+    if (current && (current.userId === userId || current.userId.toLowerCase() === cleanId || current.email.toLowerCase() === cleanId)) {
+      const restored: ClientUserAccount = {
+        id: current.userId || userId,
+        username: current.username || 'client',
+        displayName: updates.displayName || current.displayName || 'Client User',
+        email: current.email || '',
+        companyName: updates.companyName || current.companyName,
+        licenseKey: updates.licenseKey || current.licenseKey,
+        plan: current.plan || 'Monthly Bookkeeping',
+        planTier: current.planTier || 'MONTHLY',
+        planStatus: current.planStatus || 'ACTIVE',
+        planPurchasedAt: current.planPurchasedAt || new Date().toISOString(),
+        planExpiresAt: current.planExpiresAt,
+        receiptQuota: -1,
+        receiptsSubmittedCount: current.receiptsSubmittedCount || 0,
+        passwordHash: '',
+        salt: '',
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString()
+      };
+      accounts.push(restored);
+      idx = accounts.length - 1;
+    } else {
+      return { success: false };
+    }
+  }
 
   if (updates.displayName !== undefined) {
     accounts[idx].displayName = updates.displayName.trim();
@@ -777,17 +839,80 @@ export function updateClientAccountProfile(
     accounts[idx].companyName = updates.companyName.trim() || undefined;
   }
   if (updates.licenseKey !== undefined) {
-    accounts[idx].licenseKey = updates.licenseKey ? updates.licenseKey.trim().toUpperCase() : undefined;
+    if (updates.licenseKey && updates.licenseKey.trim().length > 0) {
+      const cleanKey = updates.licenseKey.trim().toUpperCase();
+      accounts[idx].licenseKey = cleanKey;
+      accounts[idx].planStatus = 'ACTIVE';
+      
+      let planTier: PlanTier = 'MONTHLY';
+      let planName = 'Monthly Bookkeeping';
+      let planExpires = calculateExpirationDate(new Date().toISOString(), 'MONTHLY');
+      
+      if (cleanKey.startsWith('ADMIN-')) {
+        planTier = 'ADMIN';
+        planName = 'Admin Master (Never Expires)';
+        planExpires = 'Never (Lifetime / Non-Expiring)';
+      } else if (cleanKey.startsWith('ANNUAL-')) {
+        planTier = 'ANNUAL';
+        planName = 'Annual Farm & Business Package';
+        planExpires = calculateExpirationDate(new Date().toISOString(), 'ANNUAL');
+      } else if (cleanKey.startsWith('3MONTH-') || cleanKey.startsWith('PRO-')) {
+        planTier = '3MONTH';
+        planName = 'Quarterly Tax & Expense Prep';
+        planExpires = calculateExpirationDate(new Date().toISOString(), '3MONTH');
+      } else if (cleanKey.startsWith('6MONTH-')) {
+        planTier = '6MONTH';
+        planName = 'Semi-Annual Bookkeeping';
+        planExpires = calculateExpirationDate(new Date().toISOString(), '6MONTH');
+      } else if (cleanKey.startsWith('DEMO-')) {
+        planTier = 'DEMO';
+        planName = 'Trial Demo (7 Days)';
+        planExpires = calculateExpirationDate(new Date().toISOString(), 'DEMO');
+      }
+
+      // Check available keys passed in or in localStorage
+      let matchedRecord = updates.availableKeys?.find(k => k.key.toUpperCase() === cleanKey);
+      if (!matchedRecord) {
+        try {
+          const raw = localStorage.getItem('receipt_processor_keys_v4') || localStorage.getItem('receipt_processor_keys_v3');
+          if (raw) {
+            const keys: LicenseKeyRecord[] = JSON.parse(raw);
+            matchedRecord = keys.find(k => k.key.toUpperCase() === cleanKey);
+          }
+        } catch {}
+      }
+
+      if (matchedRecord) {
+        planTier = matchedRecord.plan;
+        planName = getPlanLabel(matchedRecord.plan);
+        planExpires = matchedRecord.expiresDate || planExpires;
+      }
+
+      accounts[idx].plan = planName;
+      accounts[idx].planTier = planTier;
+      accounts[idx].planExpiresAt = planExpires;
+      accounts[idx].planPurchasedAt = accounts[idx].planPurchasedAt || new Date().toISOString();
+      accounts[idx].receiptQuota = -1;
+    } else {
+      accounts[idx].licenseKey = undefined;
+    }
   }
 
   saveStoredClientAccounts(accounts);
+  notifyAccountsChanged(accounts);
 
   // Update current session if matching
   const current = getCurrentClientSession();
-  if (current && current.userId === userId) {
+  if (current && (current.userId === userId || current.userId === accounts[idx].id)) {
     current.displayName = accounts[idx].displayName;
     current.companyName = accounts[idx].companyName;
     current.licenseKey = accounts[idx].licenseKey;
+    current.plan = accounts[idx].plan;
+    current.planTier = accounts[idx].planTier;
+    current.planStatus = accounts[idx].planStatus;
+    current.planPurchasedAt = accounts[idx].planPurchasedAt;
+    current.planExpiresAt = accounts[idx].planExpiresAt;
+    current.receiptQuota = accounts[idx].receiptQuota;
     saveClientSession(current);
   }
 
@@ -915,9 +1040,41 @@ export function activateClientLicenseKey(
   }
 
   const accounts = getStoredClientAccounts();
-  const idx = accounts.findIndex(a => a.id === userId);
+  const cleanId = String(userId || '').trim().toLowerCase();
+  let idx = accounts.findIndex(
+    a => a.id === userId || 
+         a.id.toLowerCase() === cleanId || 
+         a.username.toLowerCase() === cleanId || 
+         a.email.toLowerCase() === cleanId
+  );
+
+  // If account not found in list, recover from current active session
   if (idx === -1) {
-    return { success: false, error: 'Account not found.' };
+    const current = getCurrentClientSession();
+    if (current && (current.userId === userId || current.userId.toLowerCase() === cleanId || current.email.toLowerCase() === cleanId)) {
+      const restored: ClientUserAccount = {
+        id: current.userId || userId,
+        username: current.username || 'client',
+        displayName: current.displayName || 'Client User',
+        email: current.email || '',
+        companyName: current.companyName,
+        licenseKey: cleanKey,
+        plan: 'Monthly Bookkeeping',
+        planTier: 'MONTHLY',
+        planStatus: 'ACTIVE',
+        planPurchasedAt: new Date().toISOString(),
+        receiptQuota: -1,
+        receiptsSubmittedCount: current.receiptsSubmittedCount || 0,
+        passwordHash: '',
+        salt: '',
+        createdAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString()
+      };
+      accounts.push(restored);
+      idx = accounts.length - 1;
+    } else {
+      return { success: false, error: 'Account not found.' };
+    }
   }
 
   // Find record in availableKeys or localStorage
@@ -978,10 +1135,11 @@ export function activateClientLicenseKey(
   accounts[idx].receiptQuota = quota;
 
   saveStoredClientAccounts(accounts);
+  notifyAccountsChanged(accounts);
 
   const current = getCurrentClientSession();
   let updatedSession: ClientAccountSession;
-  if (current && current.userId === userId) {
+  if (current && (current.userId === userId || current.userId === accounts[idx].id)) {
     updatedSession = {
       ...current,
       licenseKey: cleanKey,

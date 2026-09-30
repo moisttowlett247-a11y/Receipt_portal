@@ -17,13 +17,14 @@ import {
   Layers,
   Sparkles,
   Clock,
-  Lock
+  Lock,
+  AlertCircle
 } from 'lucide-react';
 import { ClientAccountSession, LicenseKeyRecord, getPlanLabel } from '../types';
 import { 
   updateClientAccountProfile, 
   deleteClientAccountAndData,
-  findLicenseRecordByEmail
+  lookupLicenseByEmailAsync
 } from '../clientAccountService';
 
 interface ClientAccountModalProps {
@@ -67,6 +68,9 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
   const [licenseKeyInput, setLicenseKeyInput] = useState(session.licenseKey || '');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [isSyncingLicense, setIsSyncingLicense] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedEmail, setCopiedEmail] = useState(false);
 
@@ -102,42 +106,91 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
     e.preventDefault();
     setIsSaving(true);
     setSaveSuccess(false);
+    setSaveMessage(null);
 
-    const cleanKey = licenseKeyInput.trim().toUpperCase() || null;
-    const res = updateClientAccountProfile(session.userId, {
-      displayName,
-      companyName,
-      licenseKey: cleanKey
-    });
-
-    if (res.success && res.account) {
-      handleSessionUpdateTrigger({
-        ...session,
-        displayName: res.account.displayName,
-        companyName: res.account.companyName,
-        licenseKey: res.account.licenseKey
+    try {
+      const cleanKey = licenseKeyInput.trim().toUpperCase() || null;
+      const res = updateClientAccountProfile(session.userId, {
+        displayName,
+        companyName,
+        licenseKey: cleanKey,
+        availableKeys
       });
-      setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 3000);
+
+      if (res.success && res.account) {
+        const updatedSession: ClientAccountSession = {
+          ...session,
+          displayName: res.account.displayName,
+          companyName: res.account.companyName,
+          licenseKey: res.account.licenseKey,
+          plan: res.account.plan,
+          planTier: res.account.planTier,
+          planStatus: res.account.planStatus,
+          planPurchasedAt: res.account.planPurchasedAt,
+          planExpiresAt: res.account.planExpiresAt,
+          receiptQuota: res.account.receiptQuota
+        };
+        handleSessionUpdateTrigger(updatedSession);
+        setSaveSuccess(true);
+        setSaveMessage(cleanKey ? `License ${cleanKey} activated! Plan: ${res.account.plan || 'Active'}` : 'Profile saved successfully!');
+        setTimeout(() => {
+          setSaveSuccess(false);
+          setSaveMessage(null);
+        }, 5000);
+      } else {
+        setSaveSuccess(false);
+        setSaveMessage('Unable to update profile. Please verify your account credentials.');
+        setTimeout(() => setSaveMessage(null), 5000);
+      }
+    } catch (err: any) {
+      setSaveSuccess(false);
+      setSaveMessage(err?.message || 'Failed to save changes.');
+      setTimeout(() => setSaveMessage(null), 5000);
+    } finally {
+      setIsSaving(false);
     }
-    setIsSaving(false);
   };
 
-  const handleAutoSyncEmailLicense = () => {
-    const match = findLicenseRecordByEmail(session.email, availableKeys);
-    if (match) {
-      const res = updateClientAccountProfile(session.userId, {
-        licenseKey: match.key.toUpperCase()
-      });
-      if (res.success && res.account) {
-        setLicenseKeyInput(match.key.toUpperCase());
-        handleSessionUpdateTrigger({
-          ...session,
-          licenseKey: match.key.toUpperCase()
+  const handleAutoSyncEmailLicense = async () => {
+    setIsSyncingLicense(true);
+    setSyncNotice(null);
+    try {
+      const match = await lookupLicenseByEmailAsync(session.email, availableKeys);
+      if (match && match.key) {
+        const cleanKey = match.key.toUpperCase();
+        const res = updateClientAccountProfile(session.userId, {
+          licenseKey: cleanKey,
+          availableKeys
         });
-        setSaveSuccess(true);
-        setTimeout(() => setSaveSuccess(false), 3000);
+        if (res.success && res.account) {
+          setLicenseKeyInput(cleanKey);
+          const updatedSession: ClientAccountSession = {
+            ...session,
+            licenseKey: res.account.licenseKey,
+            plan: res.account.plan,
+            planTier: res.account.planTier,
+            planStatus: res.account.planStatus,
+            planPurchasedAt: res.account.planPurchasedAt,
+            planExpiresAt: res.account.planExpiresAt,
+            receiptQuota: res.account.receiptQuota
+          };
+          handleSessionUpdateTrigger(updatedSession);
+          setSaveSuccess(true);
+          setSyncNotice(`✅ Found license ${cleanKey}! Plan active: ${res.account.plan || 'Active'}`);
+          setTimeout(() => {
+            setSaveSuccess(false);
+            setSyncNotice(null);
+          }, 5000);
+        }
+      } else {
+        setSyncNotice(`No issued license found registered to ${session.email}. You can enter a key in Settings or request access below.`);
+        setTimeout(() => setSyncNotice(null), 5000);
       }
+    } catch (err: any) {
+      setSyncNotice('Unable to reach license server. Please verify connection.');
+      setTimeout(() => setSyncNotice(null), 5000);
+    } finally {
+      setIsSyncingLicense(false);
     }
   };
 
@@ -367,16 +420,43 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-300/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <span>No active license linked yet. We can automatically search for licenses registered to <strong className="text-amber-200">{session.email}</strong>.</span>
-                    <button
-                      type="button"
-                      onClick={handleAutoSyncEmailLicense}
-                      className="px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 text-white rounded-lg cursor-pointer whitespace-nowrap flex items-center gap-1.5 self-start sm:self-auto"
-                    >
-                      <Sparkles className="w-3.5 h-3.5" />
-                      <span>Auto-Sync from Email</span>
-                    </button>
+                  <div className="space-y-2">
+                    <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 text-xs text-amber-300/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <span>No active license linked yet. We can automatically search for licenses registered to <strong className="text-amber-200">{session.email}</strong>.</span>
+                      <button
+                        type="button"
+                        disabled={isSyncingLicense}
+                        onClick={handleAutoSyncEmailLicense}
+                        className="px-3 py-1.5 text-xs font-semibold bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white rounded-lg cursor-pointer whitespace-nowrap flex items-center gap-1.5 self-start sm:self-auto transition-all"
+                      >
+                        {isSyncingLicense ? (
+                          <>
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                            <span>Searching...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Auto-Sync from Email</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {syncNotice && (
+                      <div className={`p-2.5 rounded-lg text-xs flex items-center gap-2 border ${
+                        syncNotice.startsWith('✅')
+                          ? 'bg-emerald-950/60 border-emerald-800 text-emerald-300'
+                          : 'bg-stone-900 border-stone-800 text-stone-300'
+                      }`}>
+                        {syncNotice.startsWith('✅') ? (
+                          <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                        )}
+                        <span>{syncNotice}</span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -470,8 +550,8 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
             <form onSubmit={handleSaveProfile} className="space-y-4">
               {saveSuccess && (
                 <div className="p-3 rounded-xl bg-emerald-950/60 border border-emerald-800 text-emerald-200 text-xs flex items-center gap-2">
-                  <Check className="w-4 h-4 text-emerald-400" />
-                  <span>Profile updated successfully!</span>
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>{saveMessage || 'Profile & License updated successfully!'}</span>
                 </div>
               )}
 
