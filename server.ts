@@ -273,6 +273,41 @@ router.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
+
+  // Automatically record presence for any API request to track client and admin IPs in real time
+  try {
+    const path = req.path || '';
+    if (path.startsWith('/api/') && !path.includes('/presence') && !path.includes('/sessions') && !path.includes('/heartbeat')) {
+      const clientIp = getClientIp(req);
+      const isAd = path.includes('/admin') || req.headers['referer']?.includes('/admin') || req.headers['x-portal'] === 'admin';
+      const portal = isAd ? 'ADMIN' : 'CLIENT';
+      const userAgent = req.headers['user-agent'] || 'Browser';
+      
+      let browser = 'Browser';
+      if (userAgent.includes('Firefox')) browser = 'Firefox';
+      else if (userAgent.includes('Edg/')) browser = 'Edge';
+      else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) browser = 'Safari';
+      else if (userAgent.includes('Chrome')) browser = 'Chrome';
+
+      let os = 'Desktop OS';
+      if (userAgent.includes('Macintosh')) os = 'macOS';
+      else if (userAgent.includes('Windows')) os = 'Windows';
+      else if (userAgent.includes('Linux')) os = 'Linux';
+      else if (userAgent.includes('iPhone') || userAgent.includes('iPad')) os = 'iOS';
+      else if (userAgent.includes('Android')) os = 'Android';
+
+      const browserInfo = `${browser} on ${os}`;
+      
+      recordWebPresenceSession({
+        sessionId: `req_${portal.toLowerCase()}_${clientIp}_${crypto.createHash('md5').update(userAgent).digest('hex').slice(0, 6)}`,
+        portal,
+        ip: clientIp,
+        browserInfo,
+        status: 'ACTIVE'
+      });
+    }
+  } catch {}
+
   next();
 });
 
