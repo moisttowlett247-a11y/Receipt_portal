@@ -27,7 +27,7 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const CONFIG_FILE = path.join(DATA_DIR, 'qbo_config.json');
 const COMPANIES_FILE = path.join(DATA_DIR, 'qbo_companies.json');
-const SESSIONS_FILE = path.join(LICENSES_DIR, 'active_sessions.json');
+const SESSIONS_FILE = path.join(DATA_DIR, 'active_sessions.json');
 const INQUIRIES_FILE = path.join(LICENSES_DIR, 'inquiries.json');
 const SUBMISSIONS_FILE = path.join(DATA_DIR, 'client_submissions.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'client_accounts.json');
@@ -142,8 +142,8 @@ function loadSessions() {
         const active: any = {};
         for (const [k, v] of Object.entries(parsed) as [string, any][]) {
           const lastPing = v.lastPingMs || (v.lastPing ? new Date(v.lastPing).getTime() : 0);
-          // Keep if within 24 hours or if it's explicitly web presence
-          if (now - lastPing < 24 * 60 * 60 * 1000 || v.sessionType?.startsWith('WEB')) {
+          // Keep only if within 24 hours (including web presence)
+          if (now - lastPing < 24 * 60 * 60 * 1000) {
             active[k] = v;
           }
         }

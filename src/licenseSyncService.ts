@@ -1,4 +1,4 @@
-import { LicenseKeyRecord } from './types';
+import { LicenseKeyRecord, ActiveDeviceSession } from './types';
 import { computeSha256Hex } from './hashUtils';
 import { getEffectiveStatus } from './githubSyncService';
 import { getBackendApiUrl } from './urlUtils';
@@ -416,6 +416,29 @@ export async function fetchCloudflareHealth(): Promise<{ online: boolean; ip?: s
     console.warn('Cloudflare health check failed:', err);
   }
   return { online: false };
+}
+
+/**
+ * Fetches all active sessions (heartbeats) from Cloudflare KV Edge API
+ */
+export async function fetchCloudflareSessions(): Promise<ActiveDeviceSession[]> {
+  try {
+    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/devices/sessions`, {
+      headers: {
+        'Cache-Control': 'no-cache',
+        ...getAuthHeaders()
+      }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && Array.isArray(data.sessions)) {
+        return data.sessions;
+      }
+    }
+  } catch (err) {
+    console.warn('Error fetching sessions from Cloudflare:', err);
+  }
+  return [];
 }
 
 /**

@@ -31,12 +31,14 @@ import { getStoredGitHubConfig } from '../githubSyncService';
 import { getBackendApiUrl } from '../urlUtils';
 import {
   fetchCloudflareLicenses,
+  fetchCloudflareSessions,
   fetchCloudflareHealth,
   unlockHwidOnCloudflare,
   revokeLicenseOnCloudflare,
   pruneCloudflareSessions,
   CLOUDFLARE_WORKER_URL
 } from '../licenseSyncService';
+import { sendPresenceHeartbeat } from '../webPresenceService';
 
 interface ActiveDevicesMonitorProps {
   licenseKeys: LicenseKeyRecord[];
@@ -62,66 +64,108 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const [isPruning, setIsPruning] = useState<boolean>(false);
   const [isRevokingKey, setIsRevokingKey] = useState<string | null>(null);
   const [isUnlockingHwid, setIsUnlockingHwid] = useState<string | null>(null);
+  const [isRunningProbe, setIsRunningProbe] = useState<boolean>(false);
   const [showGuide, setShowGuide] = useState<boolean>(false);
   const [cfHealth, setCfHealth] = useState<{ online: boolean; ip?: string; location?: string; hasDb?: boolean }>({
     online: true,
     hasDb: true
   });
 
+  const [isTestingCf, setIsTestingCf] = useState<boolean>(false);
+  const [cfError, setCfError] = useState<string | null>(null);
+
   // Fetch active sessions from Cloudflare KV Edge API, server, and fallback
   const fetchSessions = useCallback(async (silent = false) => {
-    if (!silent) setIsLoading(true);
+    if (!silent) {
+      setIsLoading(true);
+      setCfError(null);
+    }
     let loadedSessions: ActiveDeviceSession[] = [];
     const now = Date.now();
     const sessionMap = new Map<string, ActiveDeviceSession>();
 
     // 1. Fetch from Cloudflare KV Edge API (Zero-latency global IP & machine tracker)
     try {
-      const [cfLicenses, health] = await Promise.all([
-        fetchCloudflareLicenses(),
-        fetchCloudflareHealth()
+      const [cfLicenses, cfSessions, health] = await Promise.all([
+        fetchCloudflareLicenses().catch(() => []),
+        fetchCloudflareSessions().catch(() => []),
+        fetchCloudflareHealth().catch(() => ({ online: false, hasDb: false }))
       ]);
-      if (health) setCfHealth(health);
+      
+      if (health) setCfHealth(health as any);
+      if (!health.online && !silent) {
+        setCfError('Cloudflare Edge API unreachable. Verify worker deployment and URL.');
+      } else if (health.online && !(health as any).hasDb && !silent) {
+        setCfError('Cloudflare Worker active but KV database not bound. Check "LICENSES" KV binding.');
+      }
 
+      // Add actual live heartbeats first (highest priority)
+      if (Array.isArray(cfSessions) && cfSessions.length > 0) {
+        for (const s of cfSessions) {
+          const lastPingMs = s.lastPingMs || (s.lastPing ? new Date(s.lastPing).getTime() : 0);
+          const diffMs = Math.max(0, now - lastPingMs);
+          if (diffMs > 24 * 60 * 60 * 1000) continue; // Skip stale
+
+          const secondsSinceLastPing = Math.floor(diffMs / 1000);
+          let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
+          if (secondsSinceLastPing < 90) onlineState = 'ONLINE';
+          else if (secondsSinceLastPing < 600) onlineState = 'IDLE';
+
+          sessionMap.set(s.id, {
+            ...s,
+            ip: (s.ip && s.ip !== 'Pending Connection' && s.ip !== '127.0.0.1') ? s.ip : 'Detecting...',
+            onlineState,
+            secondsSinceLastPing,
+            isCloudflare: true
+          });
+        }
+      }
+
+      // Add license-linked sessions (can overlap)
       if (Array.isArray(cfLicenses) && cfLicenses.length > 0) {
         for (const cf of cfLicenses) {
           if (!cf.key || !cf.last_seen_at) continue;
-          const lastPingMs = cf.last_seen_at ? new Date(cf.last_seen_at).getTime() : 0;
-          const diffMs = lastPingMs > 0 ? Math.max(0, now - lastPingMs) : 999999999;
-          const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
+          const lastPingMs = new Date(cf.last_seen_at).getTime();
+          const diffMs = Math.max(0, now - lastPingMs);
+          if (diffMs > 24 * 60 * 60 * 1000) continue; // Skip stale
+
+          const secondsSinceLastPing = Math.floor(diffMs / 1000);
           let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
-          if (secondsSinceLastPing < 90) {
-            onlineState = 'ONLINE';
-          } else if (secondsSinceLastPing < 600) {
-            onlineState = 'IDLE';
-          }
+          if (secondsSinceLastPing < 90) onlineState = 'ONLINE';
+          else if (secondsSinceLastPing < 600) onlineState = 'IDLE';
 
           const rawKey = cf.key;
-          const keyMasked = rawKey.length > 8 ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}` : rawKey;
-          const machineName = cf.last_machine || cf.first_activated_machine || 'Workstation';
-          const ip = cf.last_ip || 'Pending Connection';
           const id = `cf_${rawKey}`;
-
-          sessionMap.set(rawKey, {
-            id,
-            ip,
-            hash: '',
-            keyMasked,
-            rawKey,
-            hwid: cf.hwid || 'Pending First Activation',
-            machineName,
-            appVersion: '2.4.0',
-            plan: cf.plan || 'Pro',
-            status: cf.status || 'ACTIVE',
-            lastPing: cf.last_seen_at || cf.created_at || new Date().toISOString(),
-            lastPingMs: lastPingMs || now,
-            firstSeen: cf.first_activated_at || cf.created_at || new Date().toISOString(),
-            pingCount: cf.last_seen_at ? 5 : 1,
-            secondsSinceLastPing,
-            onlineState,
-            location: cf.last_location || undefined,
-            isCloudflare: true
-          });
+          
+          if (!sessionMap.has(id)) {
+            sessionMap.set(id, {
+              id,
+              ip: cf.last_ip && cf.last_ip !== 'Pending Connection' ? cf.last_ip : 'Pending Connection',
+              hash: '',
+              keyMasked: rawKey.length > 8 ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}` : rawKey,
+              rawKey,
+              hwid: cf.hwid || 'Pending HWID',
+              machineName: cf.last_machine || cf.first_activated_machine || 'Workstation',
+              appVersion: '2.4.0',
+              plan: cf.plan || 'Pro',
+              status: cf.status || 'ACTIVE',
+              lastPing: cf.last_seen_at,
+              lastPingMs,
+              firstSeen: cf.first_activated_at || cf.created_at || cf.last_seen_at,
+              pingCount: 5,
+              secondsSinceLastPing,
+              onlineState,
+              location: cf.last_location || undefined,
+              isCloudflare: true
+            });
+          } else {
+            // Merge IP if missing in session but present in license record
+            const existing = sessionMap.get(id)!;
+            if ((!existing.ip || existing.ip.includes('Pending') || existing.ip.includes('Detecting')) && cf.last_ip) {
+              existing.ip = cf.last_ip;
+              existing.location = cf.last_location || existing.location;
+            }
+          }
         }
       }
     } catch (cfErr) {
@@ -149,15 +193,15 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
               onlineState = 'IDLE';
             }
 
-            const k = s.rawKey || s.keyMasked;
+            const k = s.rawKey || s.keyMasked || s.id;
             if (sessionMap.has(k)) {
               // Merge details
               const existing = sessionMap.get(k)!;
               sessionMap.set(k, {
                 ...existing,
-                ip: s.ip && s.ip !== '127.0.0.1' ? s.ip : existing.ip,
+                ip: (s.ip && s.ip !== '127.0.0.1' && s.ip !== 'Pending Connection' && s.ip !== 'Detecting...') ? s.ip : existing.ip,
                 machineName: s.machineName || existing.machineName,
-                hwid: s.hwid && s.hwid !== 'Pending HWID' ? s.hwid : existing.hwid,
+                hwid: (s.hwid && s.hwid !== 'Pending HWID' && !s.hwid.includes('PORTAL')) ? s.hwid : existing.hwid,
                 pingCount: Math.max(existing.pingCount, s.pingCount || 1),
                 secondsSinceLastPing: Math.min(existing.secondsSinceLastPing, secondsSinceLastPing),
                 onlineState: existing.onlineState === 'ONLINE' ? 'ONLINE' : onlineState
@@ -165,6 +209,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
             } else {
               sessionMap.set(s.id || `${s.ip}_${s.hash}`, {
                 ...s,
+                ip: (s.ip && s.ip !== '127.0.0.1' && s.ip !== 'Pending Connection') ? s.ip : 'Detecting...',
                 onlineState: s.onlineState || onlineState,
                 secondsSinceLastPing
               });
@@ -315,6 +360,27 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
     }
   };
 
+  // Manual probe helper
+  const handleRunProbe = async () => {
+    setIsRunningProbe(true);
+    try {
+      await sendPresenceHeartbeat({
+        portal: 'ADMIN',
+        userId: 'admin_diagnostic',
+        username: 'admin',
+        displayName: 'Manual IP Probe',
+        plan: 'Master Administrator',
+        role: 'SUPER_ADMIN'
+      });
+      if (showToast) showToast('✅ Manual IP heartbeat sent to Edge KV! Refreshing list...');
+      setTimeout(() => fetchSessions(true), 1500);
+    } catch (err) {
+      if (showToast) showToast('❌ Failed to send probe.');
+    } finally {
+      setIsRunningProbe(false);
+    }
+  };
+
   // Filtered session list
   const filteredSessions = useMemo(() => {
     return sessions.filter(s => {
@@ -454,6 +520,17 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
               <span>Refresh</span>
             </button>
 
+            {/* Run Manual Probe */}
+            <button
+              onClick={handleRunProbe}
+              disabled={isRunningProbe}
+              className="flex items-center gap-1.5 px-3 py-2 bg-stone-800/80 hover:bg-stone-700 text-amber-400 hover:text-amber-300 text-xs font-semibold rounded-xl border border-stone-700 transition-colors shadow-sm cursor-pointer"
+              title="Instantly send a diagnostic IP heartbeat from your current browser to verify tracking"
+            >
+              <Zap className={`w-3.5 h-3.5 ${isRunningProbe ? 'animate-bounce' : ''}`} />
+              <span>{isRunningProbe ? 'Probing...' : 'Run Probe'}</span>
+            </button>
+
             {/* Prune Offline Records (Super Admin only) */}
             {isSuperAdmin && (
               <button
@@ -477,6 +554,22 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Error / Status Bar */}
+        {cfError && (
+          <div className="mt-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-[11px] flex items-center gap-2 animate-in slide-in-from-top-1">
+            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+            <div className="flex-1">
+              <strong>Cloudflare Diagnostic Warning:</strong> {cfError}
+            </div>
+            <button 
+              onClick={() => fetchSessions()}
+              className="px-2 py-0.5 bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 rounded text-[10px] font-bold transition-colors"
+            >
+              Retry Connection
+            </button>
+          </div>
+        )}
 
         {/* Aggregate KPI Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6">
