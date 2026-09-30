@@ -93,7 +93,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 # Version & Remote Update Manifest Configuration
 # -----------------------------------------------------------------------------
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
+MAX_WORKER_THREADS = 32  # Optimized for high-concurrency I/O bound API tasks
+DEFAULT_MAX_DIM = 1800   # Optimized for low RAM while maintaining high OCR accuracy
+JPEG_QUALITY = 80        # Reduced memory footprint for base64 payloads
 
 # You can host this version.json on GitHub (Raw), an S3 bucket, or your website.
 UPDATE_MANIFEST_URL = os.getenv(
@@ -2054,9 +2057,15 @@ def prepare_receipt_image(pil_img, max_dim=2400):
 
     enhanced = enhance_thermal_image(pil_img)
     io_buffer = io.BytesIO()
-    enhanced.save(io_buffer, format="JPEG", quality=95, optimize=True)
-    full_b64 = base64.b64encode(io_buffer.getvalue()).decode("utf-8")
-    return full_b64
+    try:
+        enhanced.save(io_buffer, format="JPEG", quality=JPEG_QUALITY, optimize=True)
+        full_b64 = base64.b64encode(io_buffer.getvalue()).decode("utf-8")
+        return full_b64
+    finally:
+        io_buffer.close()
+        if enhanced != pil_img:
+            enhanced.close()
+        pil_img.close()
 
 def is_file_ready(filepath, timeout=2.0):
     if not os.path.exists(filepath):
@@ -2382,7 +2391,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         self.key_index = 0
 
         # Multi-Client Worker Pool & Thread Concurrency Controls
-        self.worker_pool = concurrent.futures.ThreadPoolExecutor(max_workers=6, thread_name_prefix="MultiClientWorker")
+        self.worker_pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKER_THREADS, thread_name_prefix="MultiClientWorker")
         self.active_jobs_lock = threading.Lock()
         self.active_jobs = set()
         self.file_write_lock = threading.Lock()
@@ -5102,7 +5111,7 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Run in headless worker node mode for VMs/servers (no GUI/Tkinter required)")
     parser.add_argument("--worker-id", type=str, default=None, help="Identifier for this worker node (e.g. vm-worker-1)")
     parser.add_argument("--folder", type=str, default="inbox", help="Path to the inbox root folder")
-    parser.add_argument("--workers", type=int, default=6, help="Number of concurrent worker threads")
+    parser.add_argument("--workers", type=int, default=MAX_WORKER_THREADS, help="Number of concurrent worker threads")
     parser.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds")
     args, unknown = parser.parse_known_args()
 

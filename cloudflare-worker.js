@@ -112,9 +112,9 @@ export default {
     // Web Presence / Browser Heartbeat Tracking
     if (pathname === "/api/presence/heartbeat" && request.method === "POST") {
       try {
-        const clientIp = getClientIp(request);
-        const location = getClientLocation(request);
         const body = await request.json().catch(() => ({}));
+        const clientIp = getClientIp(request, body.ip);
+        const location = getClientLocation(request);
         const sessionId = body.sessionId || `web_${(body.portal || 'client').toLowerCase()}_${clientIp}`;
         const now = Date.now();
         const kvSessionId = `SESSION:WEB_${sessionId}`;

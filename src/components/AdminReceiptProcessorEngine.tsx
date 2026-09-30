@@ -33,7 +33,8 @@ import {
   AlertCircle,
   User,
   Plus,
-  Key
+  Key,
+  Cloud
 } from 'lucide-react';
 import {
   ProcessedReceipt,
@@ -62,6 +63,8 @@ import {
   deleteSubmission,
   ClientSubmission 
 } from '../clientSubmissionService';
+import { googleSignIn, logoutGoogle, initAuth } from '../firebaseAuthService';
+import { User as FirebaseUser } from 'firebase/auth';
 import { getStoredClientAccounts } from '../clientAccountService';
 import { IRS_SCHEDULE_F_LINES, IRS_SCHEDULE_C_LINES } from '../taxScheduleService';
 
@@ -107,6 +110,48 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [selectedClientTarget, setSelectedClientTarget] = useState<string>('Administrator (Internal Operations)');
   const [customClientInput, setCustomClientInput] = useState<string>('');
   const [isAddingCustomClient, setIsAddingCustomClient] = useState<boolean>(false);
+
+  // Google Drive Cloud Vault Integration State
+  const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user, token) => {
+        setGoogleUser(user);
+        setGoogleAccessToken(token);
+      },
+      () => {
+        setGoogleUser(null);
+        setGoogleAccessToken(null);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  const handleConnectDrive = async () => {
+    setIsConnectingDrive(true);
+    try {
+      const res = await googleSignIn();
+      if (res) {
+        setGoogleUser(res.user);
+        setGoogleAccessToken(res.accessToken);
+        if (onToast) onToast(`Connected to Google Drive: ${res.user.email}`);
+      }
+    } catch (err) {
+      if (onToast) onToast('Failed to connect to Google Drive.');
+    } finally {
+      setIsConnectingDrive(false);
+    }
+  };
+
+  const handleDisconnectDrive = async () => {
+    await logoutGoogle();
+    setGoogleUser(null);
+    setGoogleAccessToken(null);
+    if (onToast) onToast('Disconnected from Google Drive.');
+  };
 
   // Real-time client submissions intake state & Auto-sync
   const [clientSubmissions, setClientSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
@@ -788,12 +833,20 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         concurrency,
         defaultClientName: selectedClientTarget,
         existingLedger: receipts,
+        googleAccessToken: googleAccessToken || undefined,
         onWorkerUpdate: updatedWorkers => {
           setWorkers(updatedWorkers);
         },
         onItemProcessed: (processed, current, total) => {
           setScanProgress({ current, total });
-          setReceipts(prev => [processed, ...prev]);
+
+          // Optimization: If uploaded to Drive, clear heavy dataUrl from memory ledger
+          const ledgerRecord = { ...processed };
+          if (ledgerRecord.googleDriveId) {
+            delete ledgerRecord.dataUrl;
+          }
+          
+          setReceipts(prev => [ledgerRecord, ...prev]);
 
           // Record in processed IDs ref so subscriber never re-queues it
           if (processed.id) processedSubmissionIdsRef.current.add(processed.id);
@@ -887,9 +940,17 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         concurrency: 1,
         defaultClientName: item.clientName || selectedClientTarget,
         existingLedger: receipts,
+        googleAccessToken: googleAccessToken || undefined,
         onWorkerUpdate: () => {},
         onItemProcessed: (processed) => {
-          setReceipts(prev => [processed, ...prev]);
+          // Optimization: If uploaded to Drive, clear heavy dataUrl from memory ledger
+          const ledgerRecord = { ...processed };
+          if (ledgerRecord.googleDriveId) {
+            delete ledgerRecord.dataUrl;
+          }
+          
+          setReceipts(prev => [ledgerRecord, ...prev]);
+
           if (processed.id) processedSubmissionIdsRef.current.add(processed.id);
           if (processed.submissionId) processedSubmissionIdsRef.current.add(processed.submissionId);
           if (processed.fileName && processed.clientName) {
@@ -1152,6 +1213,22 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   {configuredKeys.length > 0
                     ? `Gemini AI OCR: Active (${configuredKeys.length} ${configuredKeys.length === 1 ? 'Key' : 'Keys'})`
                     : 'Gemini AI OCR: Configure Key'}
+                </span>
+              </button>
+              <span className="text-xs text-stone-500">•</span>
+              <button
+                onClick={googleUser ? handleDisconnectDrive : handleConnectDrive}
+                disabled={isConnectingDrive}
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  googleUser
+                    ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 hover:bg-blue-500/25'
+                    : 'bg-stone-500/15 border-stone-500/40 text-stone-300 hover:bg-stone-500/25'
+                }`}
+                title={googleUser ? `Connected as ${googleUser.email}` : 'Connect Google Drive for cloud backup and RAM optimization'}
+              >
+                <Cloud className={`w-3 h-3 ${isConnectingDrive ? 'animate-spin' : ''}`} />
+                <span>
+                  {googleUser ? `Vault: Active (${googleUser.email})` : 'Connect Google Drive Vault'}
                 </span>
               </button>
             </div>
@@ -2461,7 +2538,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             ) : (
               <>
                 {/* Receipt Source Image / Document Preview */}
-                {inspectingReceipt.dataUrl && (
+                {(inspectingReceipt.dataUrl || inspectingReceipt.googleDriveId) && (
                   <div className="p-3 bg-stone-950 rounded-xl border border-stone-800 space-y-2">
                     <div className="text-[10px] text-stone-400 font-semibold uppercase tracking-wider flex items-center justify-between">
                       <span className="flex items-center gap-1.5">
@@ -2473,17 +2550,42 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       </span>
                     </div>
                     <div className="flex items-center justify-center bg-black/60 rounded-lg p-2 max-h-56 overflow-hidden border border-stone-800/80">
-                      {inspectingReceipt.dataUrl.startsWith('data:image/') || inspectingReceipt.fileType.startsWith('image/') ? (
-                        <img
-                          src={inspectingReceipt.dataUrl}
-                          alt={inspectingReceipt.fileName}
-                          className="max-h-52 max-w-full object-contain rounded"
-                        />
+                      {inspectingReceipt.dataUrl ? (
+                        (inspectingReceipt.dataUrl.startsWith('data:image/') || inspectingReceipt.fileType.startsWith('image/')) ? (
+                          <img
+                            src={inspectingReceipt.dataUrl}
+                            alt={inspectingReceipt.fileName}
+                            className="max-h-52 max-w-full object-contain rounded"
+                          />
+                        ) : (
+                          <div className="text-center py-5 space-y-1">
+                            <FileText className="w-8 h-8 text-stone-500 mx-auto" />
+                            <div className="text-xs text-stone-300 font-mono">{inspectingReceipt.fileName}</div>
+                            <div className="text-[10px] text-stone-500">PDF / Binary Source Document attached to vault</div>
+                          </div>
+                        )
                       ) : (
-                        <div className="text-center py-5 space-y-1">
-                          <FileText className="w-8 h-8 text-stone-500 mx-auto" />
-                          <div className="text-xs text-stone-300 font-mono">{inspectingReceipt.fileName}</div>
-                          <div className="text-[10px] text-stone-500">PDF / Binary Source Document attached to vault</div>
+                        <div className="text-center py-8 space-y-4">
+                          <div className="w-12 h-12 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center mx-auto">
+                            <Cloud className="w-6 h-6 text-blue-400" />
+                          </div>
+                          <div>
+                            <div className="text-xs text-stone-300 font-semibold">Local Image Purged (RAM Optimization)</div>
+                            <div className="text-[10px] text-stone-500 max-w-xs mx-auto">
+                              This document has been securely offloaded to your Google Drive Cloud Vault to maintain peak portal performance.
+                            </div>
+                          </div>
+                          {inspectingReceipt.googleDriveLink && (
+                            <a
+                              href={inspectingReceipt.googleDriveLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-[11px] font-bold transition-colors shadow-lg"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                              <span>Open in Google Drive</span>
+                            </a>
+                          )}
                         </div>
                       )}
                     </div>

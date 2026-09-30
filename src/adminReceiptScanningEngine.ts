@@ -11,6 +11,7 @@ import {
   ClientSubmission 
 } from './clientSubmissionService';
 import { getBackendApiUrl } from './urlUtils';
+import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata } from './googleDriveService';
 
 export interface ExtractedLineItem {
   description: string;
@@ -66,6 +67,8 @@ export interface ProcessedReceipt {
   processedAt: string;
   ocrFailed?: boolean;
   ocrError?: string;
+  googleDriveId?: string;
+  googleDriveLink?: string;
 }
 
 export interface ParallelWorkerState {
@@ -1292,6 +1295,7 @@ export async function runParallelBatchScan(
     concurrency: number;
     defaultClientName?: string;
     existingLedger: ProcessedReceipt[];
+    googleAccessToken?: string;
     onWorkerUpdate: (workers: ParallelWorkerState[]) => void;
     onItemProcessed: (processed: ProcessedReceipt, index: number, total: number) => void;
   }
@@ -1470,6 +1474,36 @@ export async function runParallelBatchScan(
       const initialStatus: ProcessedReceipt['status'] = 
         dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
 
+      // 5. Optional Google Drive Cloud Backup (Forensic Blob Storage)
+      let googleDriveId: string | undefined = undefined;
+      let googleDriveLink: string | undefined = undefined;
+
+      if (options.googleAccessToken && dataUrl && initialStatus !== 'REJECTED') {
+        try {
+          worker.currentStep = 'Syncing to Google Drive Cloud Vault...';
+          worker.progressPercent = 98;
+          options.onWorkerUpdate([...workers]);
+
+          // Structure: Receipt Vault > 2026 > Client Name
+          const year = extracted.date ? extracted.date.split('-')[0] : new Date().getFullYear().toString();
+          const folderId = await ensureFolderPath(options.googleAccessToken, ['Receipt Vault', year, clientName]);
+          
+          if (folderId) {
+            const driveRes = await uploadReceiptToDrive(options.googleAccessToken, folderId, item.fileName, dataUrl);
+            if (driveRes) {
+              googleDriveId = driveRes.id;
+              googleDriveLink = driveRes.webViewLink;
+
+              // Attach forensic metadata to Drive description
+              const description = `Vendor: ${extracted.vendor}\nTotal: $${extracted.total}\nDate: ${extracted.date}\nSchedule: ${taxCls.schedule}\nIRS Line: ${taxCls.lineNumber} (${taxCls.lineTitle})\nSHA-256: ${fileHash}`;
+              await updateFileMetadata(options.googleAccessToken, driveRes.id, description);
+            }
+          }
+        } catch (driveErr) {
+          console.warn('Google Drive Sync Warning:', driveErr);
+        }
+      }
+
       const submitterName = item.submittedBy || (item.clientEmail ? `${clientName} (${item.clientEmail})` : (clientName.toLowerCase().includes('admin') ? 'Administrator (moisttowlett247@gmail.com)' : clientName));
       const submitterRole = item.submittedByRole || (clientName.toLowerCase().includes('admin') ? 'ADMIN' : 'CLIENT');
       const uploadTimestamp = item.uploadedAt || new Date().toISOString();
@@ -1515,7 +1549,9 @@ export async function runParallelBatchScan(
         memo: item.memo || extracted.memo,
         processedAt: new Date().toISOString(),
         ocrFailed: !aiScanSuccess,
-        ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined
+        ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined,
+        googleDriveId,
+        googleDriveLink
       };
 
       currentLedger.push(processedRecord);

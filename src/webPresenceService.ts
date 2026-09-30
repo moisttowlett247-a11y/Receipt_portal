@@ -54,10 +54,36 @@ function getOrCreateWebSessionId(): string {
 let activeInterval: any = null;
 let lastPayload: WebPresencePayload | null = null;
 
+let cachedIp: string | null = null;
+
+async function fetchPublicIp(): Promise<string | null> {
+  if (cachedIp) return cachedIp;
+  try {
+    const res = await fetch('https://api.ipify.org?format=json');
+    if (res.ok) {
+      const data = await res.json();
+      cachedIp = data.ip;
+      return data.ip;
+    }
+  } catch (err) {
+    // Fallback to second service
+    try {
+      const res = await fetch('https://ipapi.co/json/');
+      if (res.ok) {
+        const data = await res.json();
+        cachedIp = data.ip;
+        return data.ip;
+      }
+    } catch {}
+  }
+  return null;
+}
+
 export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promise<void> {
   lastPayload = payload;
   const sys = getBrowserAndOsInfo();
   const sessionId = getOrCreateWebSessionId();
+  const clientIp = await fetchPublicIp();
 
   const body = {
     sessionId,
@@ -69,6 +95,7 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
     companyName: payload.companyName || '',
     plan: payload.plan || (payload.portal === 'ADMIN' ? 'System Administrator' : 'Guest / Visitor'),
     licenseKey: payload.licenseKey || '',
+    ip: clientIp || '', // Pass detected IP to worker
     browserInfo: sys.summary,
     isMobile: sys.isMobile,
     deviceCategory: sys.isMobile ? 'Mobile Web' : 'Browser / Web Client',
