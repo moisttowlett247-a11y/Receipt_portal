@@ -49,6 +49,7 @@ import {
 import { 
   getClientSubmissions, 
   addClientSubmission, 
+  addClientSubmissionsBatch,
   ClientSubmission, 
   deleteSubmission,
   subscribeToClientSubmissions
@@ -225,6 +226,53 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }
   };
 
+  const compressFileForPreview = async (file: File): Promise<string> => {
+    if (file.type.startsWith('image/')) {
+      return new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const maxDim = 1200;
+            let width = img.width;
+            let height = img.height;
+            if (width > maxDim || height > maxDim) {
+              if (width > height) {
+                height = Math.round((height * maxDim) / width);
+                width = maxDim;
+              } else {
+                width = Math.round((width * maxDim) / height);
+                height = maxDim;
+              }
+            }
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, width, height);
+              resolve(canvas.toDataURL('image/jpeg', 0.75));
+            } else {
+              resolve((e.target?.result as string) || '');
+            }
+          };
+          img.onerror = () => resolve((e.target?.result as string) || '');
+          img.src = e.target?.result as string;
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+    } else if (file.type === 'application/pdf') {
+      return new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+    }
+    return '';
+  };
+
   const handleSubmitFiles = async (e: React.FormEvent) => {
     e.preventDefault();
     if (selectedFiles.length === 0) return;
@@ -244,41 +292,34 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     setUploadProgress({ current: 0, total: selectedFiles.length });
 
     try {
-      let count = 0;
-      for (const file of selectedFiles) {
-        setUploadProgress({ current: count + 1, total: selectedFiles.length });
-        let dataUrl: string | undefined = undefined;
-        // Read data URL for both images and PDFs to allow remote OCR processing
-        if (file.type.startsWith('image/') || file.type === 'application/pdf') {
+      const payloads = await Promise.all(
+        selectedFiles.map(async (file, idx) => {
+          let dataUrl: string | undefined = undefined;
           try {
-            dataUrl = await new Promise<string>((resolve) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(reader.result as string);
-              reader.onerror = () => resolve('');
-              reader.readAsDataURL(file);
-            });
+            dataUrl = await compressFileForPreview(file);
           } catch {
             dataUrl = undefined;
           }
-        }
+          setUploadProgress({ current: idx + 1, total: selectedFiles.length });
+          return {
+            clientId: clientSession.userId,
+            clientName: clientEntityName.trim() || clientSession.displayName || 'Client Business',
+            clientEmail: clientEntityEmail.trim() || clientSession.email || 'client@example.com',
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || 'application/octet-stream',
+            dataUrl: dataUrl || undefined,
+            categoryHint: selectedCategoryHint !== 'Auto-Detect (AI)' ? selectedCategoryHint : undefined,
+            memo: submissionMemo.trim() || undefined
+          };
+        })
+      );
 
-        addClientSubmission({
-          clientId: clientSession.userId,
-          clientName: clientEntityName.trim() || clientSession.displayName || 'Client Business',
-          clientEmail: clientEntityEmail.trim() || clientSession.email || 'client@example.com',
-          fileName: file.name,
-          fileSize: file.size,
-          fileType: file.type || 'application/octet-stream',
-          dataUrl,
-          categoryHint: selectedCategoryHint !== 'Auto-Detect (AI)' ? selectedCategoryHint : undefined,
-          memo: submissionMemo.trim() || undefined
-        });
-        count++;
-      }
+      addClientSubmissionsBatch(payloads);
+      const count = payloads.length;
 
       recordReceiptSubmitted(clientSession.userId, count);
       setClientSession(getCurrentClientSession());
-      // refreshSubmissions(); // Removed - subscription handles updates
       setSelectedFiles([]);
       setSubmissionMemo('');
       setUploadSuccessCount(count);
@@ -1305,8 +1346,8 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                             <button
                               type="button"
                               onClick={() => {
+                                setSubmissions(prev => prev.filter(item => item.id !== sub.id));
                                 deleteSubmission(sub.id);
-                                // manual refresh removed - subscription handles it seamlessly
                               }}
                               className="text-stone-500 hover:text-rose-400 p-1 transition-colors cursor-pointer"
                               title="Delete submission record"

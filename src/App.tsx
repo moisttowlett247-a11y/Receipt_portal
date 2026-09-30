@@ -60,6 +60,7 @@ import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncServic
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
 import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 import { getClientSubmissions, subscribeToClientSubmissions } from './clientSubmissionService';
+import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted } from './clientAccountService';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -116,6 +117,8 @@ export default function App() {
   // Bidirectional sync: Fetch authoritative licenses from Cloudflare KV and server on mount and merge
   useEffect(() => {
     async function loadServerLicenses() {
+      const deleted = getDeletedAccountKeys();
+
       // 1. Fetch from Cloudflare KV Edge API
       try {
         const cfItems = await fetchCloudflareLicenses();
@@ -123,11 +126,22 @@ export default function App() {
           setLicenseKeys(prev => {
             const map = new Map<string, LicenseKeyRecord>();
             for (const k of prev) {
-              map.set(k.key.trim().toUpperCase(), k);
+              const kKey = k.key.trim().toUpperCase();
+              const kId = (k.id || '').trim().toLowerCase();
+              const kEm = (k.clientEmail || '').trim().toLowerCase();
+              if (!deleted.has(kKey.toLowerCase()) && !deleted.has(kId) && (!kEm || !deleted.has(kEm))) {
+                map.set(kKey, k);
+              }
             }
             for (const cf of cfItems) {
               const effectiveKey = (cf.key || '').trim().toUpperCase();
               if (!effectiveKey) continue;
+              const cfId = `cf-${effectiveKey}`.toLowerCase();
+              const cfEmail = (cf.user_email || '').trim().toLowerCase();
+              if (deleted.has(effectiveKey.toLowerCase()) || deleted.has(cfId) || (cfEmail && deleted.has(cfEmail))) {
+                continue;
+              }
+
               const status: LicenseStatus = (cf.status === 'REVOKED' || cf.status === 'NOT ACTIVE' || cf.status === 'INACTIVE' || cf.status === 'SUSPENDED')
                 ? 'NOT ACTIVE'
                 : (cf.status === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE');
@@ -173,44 +187,53 @@ export default function App() {
           setLicenseKeys(prev => {
             const map = new Map<string, LicenseKeyRecord>();
             for (const k of prev) {
-              map.set(k.key.trim().toUpperCase(), k);
+              const kKey = k.key.trim().toUpperCase();
+              const kId = (k.id || '').trim().toLowerCase();
+              const kEm = (k.clientEmail || '').trim().toLowerCase();
+              if (!deleted.has(kKey.toLowerCase()) && !deleted.has(kId) && (!kEm || !deleted.has(kEm))) {
+                map.set(kKey, k);
+              }
             }
 
             for (const s of serverItems) {
               const effectiveKey = (s.key || '').trim().toUpperCase();
+              if (!effectiveKey) continue;
+              const sEmail = (s.clientEmail || '').trim().toLowerCase();
+              if (deleted.has(effectiveKey.toLowerCase()) || (sEmail && deleted.has(sEmail))) {
+                continue;
+              }
+
               const status: LicenseStatus = (s.status === 'REVOKED' || s.status === 'NOT ACTIVE' || s.status === 'INACTIVE' || s.status === 'SUSPENDED')
                 ? 'NOT ACTIVE'
                 : (s.status === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE');
 
-              if (effectiveKey) {
-                const existing = map.get(effectiveKey);
-                if (existing) {
-                  map.set(effectiveKey, {
-                    ...existing,
-                    status,
-                    plan: (s.plan as PlanTier) || existing.plan,
-                    expiresDate: s.expires || existing.expiresDate,
-                    issuedDate: s.issued || existing.issuedDate,
-                    hardwareId: s.hwid || existing.hardwareId,
-                    clientName: s.clientName || existing.clientName,
-                    clientEmail: s.clientEmail || existing.clientEmail,
-                  });
-                } else {
-                  map.set(effectiveKey, {
-                    id: `server-${s.hash.slice(0, 10)}`,
-                    key: effectiveKey,
-                    clientName: s.clientName || (effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`),
-                    clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : ''),
-                    plan: (s.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
-                    status,
-                    inUse: s.inUse ?? true,
-                    issuedDate: s.issued || new Date().toISOString().split('T')[0],
-                    activatedDate: s.issued || new Date().toISOString().split('T')[0],
-                    expiresDate: s.expires || (effectiveKey.includes('ADMIN') ? 'Never (Lifetime / Non-Expiring)' : ''),
-                    hardwareId: s.hwid || undefined,
-                    notes: `Synced from Server Database (${s.hash.slice(0, 8)}...)`
-                  });
-                }
+              const existing = map.get(effectiveKey);
+              if (existing) {
+                map.set(effectiveKey, {
+                  ...existing,
+                  status,
+                  plan: (s.plan as PlanTier) || existing.plan,
+                  expiresDate: s.expires || existing.expiresDate,
+                  issuedDate: s.issued || existing.issuedDate,
+                  hardwareId: s.hwid || existing.hardwareId,
+                  clientName: s.clientName || existing.clientName,
+                  clientEmail: s.clientEmail || existing.clientEmail,
+                });
+              } else {
+                map.set(effectiveKey, {
+                  id: `server-${s.hash.slice(0, 10)}`,
+                  key: effectiveKey,
+                  clientName: s.clientName || (effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`),
+                  clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : ''),
+                  plan: (s.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
+                  status,
+                  inUse: s.inUse ?? true,
+                  issuedDate: s.issued || new Date().toISOString().split('T')[0],
+                  activatedDate: s.issued || new Date().toISOString().split('T')[0],
+                  expiresDate: s.expires || (effectiveKey.includes('ADMIN') ? 'Never (Lifetime / Non-Expiring)' : ''),
+                  hardwareId: s.hwid || undefined,
+                  notes: `Synced from Server Database (${s.hash.slice(0, 8)}...)`
+                });
               }
             }
             return Array.from(map.values());
@@ -630,11 +653,22 @@ export default function App() {
 
   const handleDeleteKey = (id: string) => {
     setLicenseKeys(prev => {
-      const target = prev.find(k => k.id === id);
+      const cleanId = String(id || '').trim();
+      const target = prev.find(k => 
+        k.id === cleanId || 
+        k.key.toUpperCase() === cleanId.toUpperCase() ||
+        k.id.replace('key-', '').toUpperCase() === cleanId.toUpperCase()
+      );
       if (target) {
         showToast(`Key ${target.key} removed from registry.`);
 
-        // Delete from website API server so local application removes it
+        // Record tombstones so it cannot repopulate on refresh
+        recordAccountDeleted(target.key);
+        recordAccountDeleted(target.id);
+        recordAccountDeleted(`key-${target.key}`);
+        if (target.clientEmail) recordAccountDeleted(target.clientEmail);
+
+        // Delete from website API server and Cloudflare KV
         syncKeyToServer(target, 'DELETE');
 
         // Auto-delete from GitHub if configured
@@ -647,7 +681,11 @@ export default function App() {
           });
         }
       }
-      return prev.filter(k => k.id !== id);
+      return prev.filter(k => 
+        k.id !== cleanId && 
+        k.key.toUpperCase() !== cleanId.toUpperCase() && 
+        k.id.replace('key-', '').toUpperCase() !== cleanId.toUpperCase()
+      );
     });
   };
 
@@ -2273,6 +2311,8 @@ class UpdateManager:
         onUpdateCredentials={handleUpdateCredentials}
         availableKeys={licenseKeys}
         onToast={showToast}
+        onDeleteKey={handleDeleteKey}
+        onLicenseRevoked={handleRevokeKey}
       />
 
       {/* Download Desktop Bundle Modal */}

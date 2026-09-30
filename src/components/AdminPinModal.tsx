@@ -25,7 +25,7 @@ import {
   RefreshCw
 } from 'lucide-react';
 import { computeCredentialsHash } from '../hashUtils';
-import { updateCloudflareAdminCredentials } from '../licenseSyncService';
+import { updateCloudflareAdminCredentials, getAdminToken, syncKeyToServer } from '../licenseSyncService';
 import { 
   getStoredClientAccounts, 
   subscribeToClientAccounts, 
@@ -33,7 +33,9 @@ import {
   updateClientAccount, 
   grantPlanByAdmin,
   fetchAllAccountsFromServer,
-  deleteAccountFromServer
+  deleteAccountFromServer,
+  getDeletedAccountKeys,
+  recordAccountDeleted
 } from '../clientAccountService';
 import { ClientUserAccount, LicenseKeyRecord, PlanTier } from '../types';
 
@@ -46,6 +48,8 @@ interface AdminCredentialsModalProps {
   onUpdateCredentials: (username: string, passwordHash: string) => void;
   availableKeys?: LicenseKeyRecord[];
   onToast?: (msg: string) => void;
+  onDeleteKey?: (keyId: string) => void;
+  onLicenseRevoked?: (key: string) => void;
 }
 
 export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
@@ -55,20 +59,31 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   savedUsername,
   onUpdateCredentials,
   availableKeys = [],
-  onToast
+  onToast,
+  onDeleteKey,
+  onLicenseRevoked
 }) => {
   // Navigation tabs: 'users' or 'credentials'
   const [activeTab, setActiveTab] = useState<'users' | 'credentials'>('users');
 
   const loadAllSystemAccounts = (): ClientUserAccount[] => {
     const map = new Map<string, ClientUserAccount>();
+    const deleted = getDeletedAccountKeys();
 
     // 1. Client accounts
     try {
       const clients = getStoredClientAccounts();
       if (Array.isArray(clients)) {
         clients.forEach(c => {
-          if (c && c.id) map.set(c.id, c);
+          if (c && c.id) {
+            const id = String(c.id).toLowerCase();
+            const u = String(c.username || '').toLowerCase();
+            const em = String(c.email || '').toLowerCase();
+            const k = String(c.licenseKey || '').toLowerCase();
+            if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
+              map.set(c.id, c);
+            }
+          }
         });
       }
     } catch (err) {
@@ -83,6 +98,11 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         if (Array.isArray(keys)) {
           keys.forEach((k: any) => {
             const kId = k.id || `key-${k.key}`;
+            const kKey = String(k.key || '').trim().toLowerCase();
+            const kEm = String(k.clientEmail || '').trim().toLowerCase();
+            if (deleted.has(String(kId).toLowerCase()) || (kKey && deleted.has(kKey)) || (kEm && deleted.has(kEm))) {
+              return;
+            }
             if (!map.has(kId) && k.clientEmail && k.clientEmail.includes('@')) {
               map.set(kId, {
                 id: kId,
@@ -118,6 +138,10 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
         if (Array.isArray(inqs)) {
           inqs.forEach((i: any) => {
             const iId = i.id || `inq-${i.email}`;
+            const iEm = String(i.email || '').trim().toLowerCase();
+            if (deleted.has(String(iId).toLowerCase()) || (iEm && deleted.has(iEm))) {
+              return;
+            }
             if (!map.has(iId) && i.email && i.email.includes('@')) {
               map.set(iId, {
                 id: iId,
@@ -235,14 +259,10 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
       const unsubscribe = subscribeToClientAccounts(() => {
         const freshList = loadAllSystemAccounts();
         setAccounts(freshList);
-        if (selectedUser) {
-          const fresh = freshList.find(a => a.id === selectedUser.id);
-          if (fresh) setSelectedUser(fresh);
-        }
       });
       return () => unsubscribe();
     }
-  }, [isOpen, selectedUser, availableKeys, savedUsername]);
+  }, [isOpen, availableKeys, savedUsername]);
 
   useEffect(() => {
     if (isOpen) {
@@ -334,41 +354,56 @@ export const AdminPinModal: React.FC<AdminCredentialsModalProps> = ({
   };
 
   const handleDeleteUser = async (user: ClientUserAccount) => {
-    const token = localStorage.getItem('receipt_processor_admin_token') || undefined;
-    setLoading(true);
+    // 1. Record tombstones for all identifiers
+    recordAccountDeleted(user.id);
+    recordAccountDeleted(user.username);
+    if (user.email) recordAccountDeleted(user.email);
+    if (user.licenseKey) recordAccountDeleted(user.licenseKey);
 
-    try {
-      // 1. Delete from server and local (one call is enough now as server handles lookup by id/email/user)
-      await deleteAccountFromServer(user.id, token);
-      
-      // 2. Delete license key if present locally
-      if (user.licenseKey) {
-        try {
-          const raw = localStorage.getItem('receipt_processor_keys_v4');
-          if (raw) {
-            const keys = JSON.parse(raw);
-            const filteredKeys = keys.filter((k: any) => k.key !== user.licenseKey && k.id !== user.id);
-            localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(filteredKeys));
-          }
-        } catch {}
-      }
-
-      // 3. Delete access inquiry if present
+    // 2. Delete from server and local storage
+    const token = getAdminToken() || undefined;
+    deleteAccountFromServer(user.id, user.email, user.username, user.licenseKey, token).catch(() => {});
+    
+    // 3. Delete license key if present locally and notify App state & server
+    const keyStr = user.licenseKey || (user.id.startsWith('key-') ? user.id.replace('key-', '') : '');
+    if (keyStr) {
+      recordAccountDeleted(keyStr);
+      recordAccountDeleted(`key-${keyStr}`);
+      syncKeyToServer({ key: keyStr } as any, 'DELETE').catch(() => {});
       try {
-        const rawInq = localStorage.getItem('receipt_processor_inquiries');
-        if (rawInq) {
-          const inqs = JSON.parse(rawInq);
-          const filteredInq = inqs.filter((i: any) => i.id !== user.id && i.email !== user.email);
-          localStorage.setItem('receipt_processor_inquiries', JSON.stringify(filteredInq));
+        const raw = localStorage.getItem('receipt_processor_keys_v4');
+        if (raw) {
+          const keys = JSON.parse(raw);
+          const filteredKeys = keys.filter((k: any) => 
+            k.key?.toUpperCase() !== keyStr.toUpperCase() && 
+            k.id !== user.id && 
+            k.id !== `key-${keyStr}`
+          );
+          localStorage.setItem('receipt_processor_keys_v4', JSON.stringify(filteredKeys));
         }
       } catch {}
-
-      setConfirmDeleteUser(null);
-      setSelectedUser(null);
-      if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
-    } finally {
-      setLoading(false);
+      if (onLicenseRevoked) onLicenseRevoked(keyStr);
+      if (onDeleteKey) {
+        onDeleteKey(keyStr);
+        onDeleteKey(user.id);
+      }
     }
+
+    // 4. Delete access inquiry if present
+    try {
+      const rawInq = localStorage.getItem('receipt_processor_inquiries');
+      if (rawInq) {
+        const inqs = JSON.parse(rawInq);
+        const filteredInq = inqs.filter((i: any) => i.id !== user.id && i.email !== user.email);
+        localStorage.setItem('receipt_processor_inquiries', JSON.stringify(filteredInq));
+      }
+    } catch {}
+
+    // Immediately update modal state without any delay or vanishing
+    setAccounts(loadAllSystemAccounts());
+    setConfirmDeleteUser(null);
+    setSelectedUser(null);
+    if (onToast) onToast(`Permanently deleted account for ${user.displayName} (@${user.username})`);
   };
 
   const handleGrantPlan = (user: ClientUserAccount, tier: PlanTier, planName: string) => {

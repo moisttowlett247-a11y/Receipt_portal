@@ -1,9 +1,34 @@
 import { ClientUserAccount, ClientAccountSession, LicenseKeyRecord, PlanTier, calculateExpirationDate, getPlanLabel } from './types';
 import { computeClientPasswordHash, generateCryptographicSalt } from './hashUtils';
-import { CLOUDFLARE_WORKER_URL } from './licenseSyncService';
+import { CLOUDFLARE_WORKER_URL, getAdminToken } from './licenseSyncService';
+import { getBackendApiUrl } from './urlUtils';
 
 const CLIENT_ACCOUNTS_STORAGE_KEY = 'receipt_processor_client_accounts_v1';
+const DELETED_ACCOUNTS_STORAGE_KEY = 'receipt_processor_deleted_accounts_v1';
 const CLIENT_CURRENT_SESSION_KEY = 'receipt_processor_client_session_v1';
+
+export function getDeletedAccountKeys(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_ACCOUNTS_STORAGE_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return new Set(arr.map(k => String(k).trim().toLowerCase()).filter(Boolean));
+      }
+    }
+  } catch {}
+  return new Set();
+}
+
+export function recordAccountDeleted(idOrEmailOrUser: string): void {
+  const clean = String(idOrEmailOrUser || '').trim().toLowerCase();
+  if (!clean) return;
+  const current = getDeletedAccountKeys();
+  current.add(clean);
+  try {
+    localStorage.setItem(DELETED_ACCOUNTS_STORAGE_KEY, JSON.stringify(Array.from(current)));
+  } catch {}
+}
 const RESERVED_ADMIN_USERNAMES = [
   'admin',
   'administrator',
@@ -117,7 +142,15 @@ export function getStoredClientAccounts(): ClientUserAccount[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed;
+        const deleted = getDeletedAccountKeys();
+        return parsed.filter(a => {
+          if (!a || !a.id) return false;
+          const id = String(a.id).trim().toLowerCase();
+          const username = String(a.username || '').trim().toLowerCase();
+          const email = String(a.email || '').trim().toLowerCase();
+          const key = String(a.licenseKey || '').trim().toLowerCase();
+          return !deleted.has(id) && !deleted.has(username) && (!email || !deleted.has(email)) && (!key || !deleted.has(key));
+        });
       }
     }
   } catch (err) {
@@ -128,8 +161,16 @@ export function getStoredClientAccounts(): ClientUserAccount[] {
 
 export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
   try {
-    localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(accounts));
-    notifyAccountsChanged(accounts);
+    const deleted = getDeletedAccountKeys();
+    const clean = accounts.filter(a => {
+      if (!a || !a.id) return false;
+      const id = String(a.id).trim().toLowerCase();
+      const username = String(a.username || '').trim().toLowerCase();
+      const email = String(a.email || '').trim().toLowerCase();
+      return !deleted.has(id) && !deleted.has(username) && (!email || !deleted.has(email));
+    });
+    localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(clean));
+    notifyAccountsChanged(clean);
     
     // Auto-sync with server in background
     syncClientAccountsWithServer().catch(() => {});
@@ -139,40 +180,68 @@ export function saveStoredClientAccounts(accounts: ClientUserAccount[]): void {
 }
 
 /**
- * Synchronizes local client accounts with the centralized Cloudflare KV database.
- * Merges local and server data to ensure no accounts are lost in either direction.
+ * Synchronizes local client accounts with the backend server and Cloudflare database.
+ * Merges local and server data while strictly respecting deletions.
  */
 export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[]> {
   try {
     const localAccounts = getStoredClientAccounts();
-    
-    // Pull first to merge
-    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/sync`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accounts: localAccounts })
-    });
-    
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.success && Array.isArray(data.accounts)) {
-        const serverAccounts = data.accounts as ClientUserAccount[];
-        
-        // Merge bidirectional
-        const map = new Map<string, ClientUserAccount>();
-        serverAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
-        localAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
-        
-        const merged = Array.from(map.values());
-        
-        // Update local if different
-        if (merged.length !== localAccounts.length) {
-          localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
-          notifyAccountsChanged(merged);
-        }
-        return merged;
+    const deleted = getDeletedAccountKeys();
+
+    // 1. Sync to local backend server
+    try {
+      const base = getBackendApiUrl();
+      const endpoints = base ? [`${base}/api/admin/accounts/sync`, '/api/admin/accounts/sync'] : ['/api/admin/accounts/sync'];
+      for (const url of endpoints) {
+        await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accounts: localAccounts }),
+          signal: AbortSignal.timeout(2000)
+        }).catch(() => {});
       }
-    }
+    } catch {}
+    
+    // 2. Sync to Cloudflare Worker
+    try {
+      const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts: localAccounts }),
+        signal: AbortSignal.timeout(2500)
+      });
+      
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.success && Array.isArray(data.accounts)) {
+          const serverAccounts = data.accounts as ClientUserAccount[];
+          
+          const map = new Map<string, ClientUserAccount>();
+          serverAccounts.forEach(a => {
+            if (a && a.id) {
+              const id = String(a.id).toLowerCase();
+              const u = String(a.username || '').toLowerCase();
+              const em = String(a.email || '').toLowerCase();
+              if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em))) {
+                map.set(a.id, a);
+              }
+            }
+          });
+          localAccounts.forEach(a => {
+            if (a && a.id) {
+              map.set(a.id, a);
+            }
+          });
+          
+          const merged = Array.from(map.values());
+          if (merged.length !== localAccounts.length) {
+            localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
+            notifyAccountsChanged(merged);
+          }
+          return merged;
+        }
+      }
+    } catch {}
   } catch (err) {
     console.warn('Notice: Background account sync failed:', err);
   }
@@ -184,14 +253,61 @@ export async function syncClientAccountsWithServer(): Promise<ClientUserAccount[
  */
 export async function fetchAllAccountsFromServer(adminToken?: string): Promise<ClientUserAccount[]> {
   try {
+    const deleted = getDeletedAccountKeys();
+    const token = adminToken || getAdminToken() || undefined;
     const headers: Record<string, string> = { 'Accept': 'application/json' };
-    if (adminToken) {
-      headers['Authorization'] = `Bearer ${adminToken}`;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
     }
 
+    // 1. Try local backend server first
+    try {
+      const base = getBackendApiUrl();
+      const endpoints = base ? [`${base}/api/admin/accounts`, '/api/admin/accounts'] : ['/api/admin/accounts'];
+      for (const url of endpoints) {
+        const resp = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(1500) });
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data && data.success && Array.isArray(data.accounts)) {
+            const serverAccounts = data.accounts as ClientUserAccount[];
+            const localAccounts = getStoredClientAccounts();
+            const map = new Map<string, ClientUserAccount>();
+            localAccounts.forEach(a => {
+              if (a && a.id) {
+                const id = String(a.id).trim().toLowerCase();
+                const u = String(a.username || '').trim().toLowerCase();
+                const em = String(a.email || '').trim().toLowerCase();
+                const k = String(a.licenseKey || '').trim().toLowerCase();
+                if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
+                  map.set(a.id, a);
+                }
+              }
+            });
+            serverAccounts.forEach(a => {
+              if (a && a.id) {
+                const id = String(a.id).trim().toLowerCase();
+                const u = String(a.username || '').trim().toLowerCase();
+                const em = String(a.email || '').trim().toLowerCase();
+                const k = String(a.licenseKey || '').trim().toLowerCase();
+                if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
+                  map.set(a.id, a);
+                }
+              }
+            });
+            const merged = Array.from(map.values());
+            localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
+            notifyAccountsChanged(merged);
+            return merged;
+          }
+        }
+      }
+    } catch {}
+
+    // 2. Try Cloudflare Worker
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts`, {
       method: 'GET',
-      headers
+      headers,
+      signal: AbortSignal.timeout(2500)
     });
 
     if (resp.ok) {
@@ -200,55 +316,100 @@ export async function fetchAllAccountsFromServer(adminToken?: string): Promise<C
         const serverAccounts = data.accounts as ClientUserAccount[];
         const localAccounts = getStoredClientAccounts();
         
-        // Merge server and local accounts by ID
         const map = new Map<string, ClientUserAccount>();
-        // Add local ones first
-        localAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
-        // Server ones are authoritative
-        serverAccounts.forEach(a => { if (a && a.id) map.set(a.id, a); });
+        localAccounts.forEach(a => {
+          if (a && a.id) {
+            const id = String(a.id).trim().toLowerCase();
+            const u = String(a.username || '').trim().toLowerCase();
+            const em = String(a.email || '').trim().toLowerCase();
+            const k = String(a.licenseKey || '').trim().toLowerCase();
+            if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
+              map.set(a.id, a);
+            }
+          }
+        });
+        serverAccounts.forEach(a => {
+          if (a && a.id) {
+            const id = String(a.id).trim().toLowerCase();
+            const u = String(a.username || '').trim().toLowerCase();
+            const em = String(a.email || '').trim().toLowerCase();
+            const k = String(a.licenseKey || '').trim().toLowerCase();
+            if (!deleted.has(id) && !deleted.has(u) && (!em || !deleted.has(em)) && (!k || !deleted.has(k))) {
+              map.set(a.id, a);
+            }
+          }
+        });
         
         const merged = Array.from(map.values());
-        
-        // Prevent accidental wipe-out: if we have local accounts but server returned empty (and we're sure it succeeded)
-        // we should keep local. But here success is true.
-        // Usually server is authority for Admin.
-        
         localStorage.setItem(CLIENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(merged));
         notifyAccountsChanged(merged);
         return merged;
       }
     }
   } catch (err) {
-    console.warn('Error fetching all accounts from server:', err);
+    console.warn('Notice: Remote account fetch failed:', err);
   }
   return getStoredClientAccounts();
 }
 
 /**
- * Specifically for Admin: Deletes an account from the server.
+ * Specifically for Admin: Deletes an account from both local state and servers.
  */
-export async function deleteAccountFromServer(userId: string, adminToken?: string): Promise<boolean> {
-  try {
-    // 1. Local delete (immediate UI update)
-    deleteClientAccount(userId);
+export async function deleteAccountFromServer(
+  userId: string,
+  email?: string,
+  username?: string,
+  licenseKey?: string,
+  adminToken?: string
+): Promise<boolean> {
+  const token = adminToken || getAdminToken() || undefined;
+  
+  // 1. Record tombstones and delete locally immediately
+  recordAccountDeleted(userId);
+  if (email) recordAccountDeleted(email);
+  if (username) recordAccountDeleted(username);
+  if (licenseKey) recordAccountDeleted(licenseKey);
 
-    // 2. Server delete (one call only)
-    if (!adminToken) return true; // Can't delete on server without token, but local is gone
-    
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${adminToken}`
-    };
+  deleteClientAccount(userId);
+  if (email) deleteClientAccount(email);
+  if (username) deleteClientAccount(username);
 
-    const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/${encodeURIComponent(userId)}`, {
-      method: 'DELETE',
-      headers
-    });
-    
-    return resp.ok;
-  } catch (err) {
-    console.error('Error deleting account from server:', err);
-    return false;
+  // 2. Server delete in background with query parameters
+  const qParams = new URLSearchParams();
+  if (email) qParams.set('email', email);
+  if (username) qParams.set('username', username);
+  if (licenseKey) qParams.set('licenseKey', licenseKey);
+  const qStr = qParams.toString() ? `?${qParams.toString()}` : '';
+
+  const base = getBackendApiUrl();
+  const serverEndpoints = base 
+    ? [`${base}/api/admin/accounts/${encodeURIComponent(userId)}${qStr}`, `/api/admin/accounts/${encodeURIComponent(userId)}${qStr}`] 
+    : [`/api/admin/accounts/${encodeURIComponent(userId)}${qStr}`];
+
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
   }
+
+  // Delete from backend server
+  for (const url of serverEndpoints) {
+    fetch(url, {
+      method: 'DELETE',
+      headers,
+      signal: AbortSignal.timeout(2000)
+    }).catch(() => {});
+  }
+
+  // Delete from Cloudflare Worker if token exists
+  if (token) {
+    fetch(`${CLOUDFLARE_WORKER_URL}/api/admin/accounts/${encodeURIComponent(userId)}${qStr}`, {
+      method: 'DELETE',
+      headers,
+      signal: AbortSignal.timeout(2500)
+    }).catch(() => {});
+  }
+
+  return true;
 }
 
 export function subscribeToClientAccounts(callback: (accounts: ClientUserAccount[]) => void): () => void {
@@ -285,11 +446,28 @@ export function subscribeToClientAccounts(callback: (accounts: ClientUserAccount
  * Permanently deletes a registered client account by userId.
  */
 export function deleteClientAccount(userId: string): boolean {
+  recordAccountDeleted(userId);
   const accounts = getStoredClientAccounts();
   const cleanId = userId.trim();
-  const filtered = accounts.filter(a => a.id !== cleanId && a.username !== cleanId && a.email !== cleanId);
+  const target = accounts.find(a => 
+    a.id.toLowerCase() === cleanId.toLowerCase() || 
+    a.username.toLowerCase() === cleanId.toLowerCase() || 
+    (a.email && a.email.toLowerCase() === cleanId.toLowerCase())
+  );
+  if (target) {
+    recordAccountDeleted(target.id);
+    recordAccountDeleted(target.username);
+    if (target.email) recordAccountDeleted(target.email);
+    if (target.licenseKey) recordAccountDeleted(target.licenseKey);
+  }
+
+  const filtered = accounts.filter(a => 
+    a.id.toLowerCase() !== cleanId.toLowerCase() && 
+    a.username.toLowerCase() !== cleanId.toLowerCase() && 
+    (a.email ? a.email.toLowerCase() !== cleanId.toLowerCase() : true)
+  );
   
-  // Always save filtered accounts and notify (even if length matched or didn't match perfectly, force remove)
+  // Always save filtered accounts and notify
   saveStoredClientAccounts(filtered);
 
   // If current logged-in session was the deleted account, log them out

@@ -2,7 +2,7 @@
 // Provides real-time synchronization between the Client Portal and the Admin Portal Queue.
 // Stores submissions in localStorage and syncs with backend server & Cloudflare KV.
 
-import { getBackendApiUrl, getEffectiveCloudflareApiUrl } from './urlUtils';
+import { getBackendApiUrl } from './urlUtils';
 
 export interface ClientSubmission {
   id: string;
@@ -24,9 +24,33 @@ export interface ClientSubmission {
 }
 
 const STORAGE_KEY = 'receipt_processor_client_submissions_v1';
+const DELETED_SUBMISSIONS_KEY = 'receipt_processor_deleted_submissions_v1';
 const BROADCAST_CHANNEL_NAME = 'receipt_portal_submissions_broadcast';
 
 const INITIAL_DEMO_SUBMISSIONS: ClientSubmission[] = [];
+
+export function getDeletedSubmissionIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(DELETED_SUBMISSIONS_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) {
+        return new Set(arr.map(String).filter(Boolean));
+      }
+    }
+  } catch {}
+  return new Set();
+}
+
+export function recordSubmissionDeleted(id: string): void {
+  const cleanId = String(id || '').trim();
+  if (!cleanId) return;
+  const current = getDeletedSubmissionIds();
+  current.add(cleanId);
+  try {
+    localStorage.setItem(DELETED_SUBMISSIONS_KEY, JSON.stringify(Array.from(current)));
+  } catch {}
+}
 
 // Broadcast channel for multi-tab/window real-time sync
 let broadcastChannel: BroadcastChannel | null = null;
@@ -36,7 +60,7 @@ try {
   }
 } catch {}
 
-function notifySubmissionsChanged(submissions: ClientSubmission[], meta?: { action: string; item?: any }) {
+function notifySubmissionsChanged(submissions: ClientSubmission[], meta?: { action: string; item?: any; items?: any[] }) {
   if (typeof window === 'undefined') return;
 
   // 1. Dispatch custom DOM event
@@ -66,7 +90,8 @@ export function getClientSubmissions(): ClientSubmission[] {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed;
+        const deleted = getDeletedSubmissionIds();
+        return parsed.filter(s => s && s.id && !deleted.has(s.id));
       }
     }
   } catch (err) {
@@ -77,9 +102,11 @@ export function getClientSubmissions(): ClientSubmission[] {
 
 export function saveClientSubmissions(submissions: ClientSubmission[], skipBroadcast = false): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(submissions));
+    const deleted = getDeletedSubmissionIds();
+    const clean = submissions.filter(s => s && s.id && !deleted.has(s.id));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
     if (!skipBroadcast) {
-      notifySubmissionsChanged(submissions, { action: 'SAVE' });
+      notifySubmissionsChanged(clean, { action: 'SAVE' });
     }
   } catch (err) {
     console.warn('Failed to save submissions to localStorage:', err);
@@ -102,6 +129,27 @@ export function addClientSubmission(item: Omit<ClientSubmission, 'id' | 'uploade
   syncSubmissionToServer(newSubmission).catch(() => {});
 
   return newSubmission;
+}
+
+export function addClientSubmissionsBatch(items: Array<Omit<ClientSubmission, 'id' | 'uploadedAt' | 'status'>>): ClientSubmission[] {
+  if (!items || items.length === 0) return [];
+  const submissions = getClientSubmissions();
+  const now = new Date().toISOString();
+  const newItems: ClientSubmission[] = items.map((item, idx) => ({
+    ...item,
+    id: `sub-${Date.now()}-${idx}-${Math.floor(Math.random() * 10000)}`,
+    uploadedAt: now,
+    status: 'QUEUED'
+  }));
+
+  const updated = [...newItems, ...submissions];
+  saveClientSubmissions(updated, true);
+  notifySubmissionsChanged(updated, { action: 'BATCH_ADD', items: newItems });
+
+  // Sync batch to server in background
+  batchSyncSubmissionsToServer(updated).catch(() => {});
+
+  return newItems;
 }
 
 export function updateSubmissionStatus(
@@ -138,12 +186,15 @@ export function updateSubmissionStatus(
 }
 
 export function deleteSubmission(id: string): void {
+  const cleanId = String(id || '').trim();
+  if (!cleanId) return;
+  recordSubmissionDeleted(cleanId);
   const submissions = getClientSubmissions();
-  const updated = submissions.filter(sub => sub.id !== id);
-  saveClientSubmissions(updated);
-  notifySubmissionsChanged(updated, { action: 'DELETE', item: { id } });
+  const updated = submissions.filter(sub => sub.id !== cleanId && sub.fileName !== cleanId);
+  saveClientSubmissions(updated, true);
+  notifySubmissionsChanged(updated, { action: 'DELETE', item: { id: cleanId } });
 
-  deleteSubmissionOnServer(id).catch(() => {});
+  deleteSubmissionOnServer(cleanId).catch(() => {});
 }
 
 export function purgeDuplicateSubmissions(): number {
@@ -243,23 +294,27 @@ export function subscribeToClientSubmissions(callback: (submissions: ClientSubmi
 }
 
 // ---------------------------------------------------------------------------
-// Server / Cloudflare KV Backend Synchronization
+// Server Backend Synchronization
 // ---------------------------------------------------------------------------
 
-export async function fetchServerSubmissions(): Promise<ClientSubmission[] | null> {
-  const endpoints = [
-    getBackendApiUrl() + '/api/client/submissions',
-    getEffectiveCloudflareApiUrl() + '/api/client/submissions',
-    '/api/client/submissions'
-  ];
+function getSubmissionEndpoints(path: string = ''): string[] {
+  const base = getBackendApiUrl();
+  const fullPath = `/api/client/submissions${path}`;
+  if (base) {
+    return [`${base}${fullPath}`, fullPath];
+  }
+  return [fullPath];
+}
 
-  let lastError: any = null;
+export async function fetchServerSubmissions(): Promise<ClientSubmission[] | null> {
+  const endpoints = getSubmissionEndpoints();
+
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'GET',
         headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(4000)
+        signal: AbortSignal.timeout(2000)
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -267,70 +322,43 @@ export async function fetchServerSubmissions(): Promise<ClientSubmission[] | nul
           return data.submissions;
         }
       }
-    } catch (err) {
-      lastError = err;
-    }
+    } catch {}
   }
-  // If we had an error and no success, return null to indicate failure (not empty)
-  if (lastError) return null;
-  return [];
+  return null;
 }
 
 export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmission[] | null> {
   try {
     const serverSubs = await fetchServerSubmissions();
-    // If fetch failed (null), don't sync/overwrite
-    if (serverSubs === null) {
+    if (!serverSubs) {
       return null;
     }
 
     const localSubs = getClientSubmissions();
+    const deletedIds = getDeletedSubmissionIds();
     const map = new Map<string, ClientSubmission>();
 
-    // Index server subs
+    // Index server subs (strictly ignoring any deleted locally)
     for (const s of serverSubs) {
-      if (s && s.id) map.set(s.id, s);
-    }
-
-    // Merge local subs (local is authoritative for new/recent deletions)
-    let needsPushToServer = false;
-    
-    // We want to keep local items that are NOT on the server yet (new uploads)
-    // BUT we want to respect local deletions (items on server but NOT in local)
-    // UNLESS the item on server was JUST added there and we don't have it yet.
-    
-    // To handle this properly without a complex tombstone system:
-    // If an item is in serverSubs but NOT in localSubs, we check its age.
-    // If it was uploaded more than 30 seconds ago and it's missing locally, it was likely deleted locally.
-    const now = Date.now();
-    const thirtySeconds = 30 * 1000;
-
-    for (const loc of localSubs) {
-      if (!loc || !loc.id) continue;
-      const existing = map.get(loc.id);
-      if (!existing) {
-        // New local item not on server yet
-        map.set(loc.id, loc);
-        needsPushToServer = true;
-      } else {
-        // Exists in both, check for updates
-        if (loc.status !== existing.status || loc.extractedVendor !== existing.extractedVendor || loc.extractedAmount !== existing.extractedAmount) {
-          // If local has more data (e.g. status was updated locally), keep local
-          // Actually, server is usually authoritative for status/OCR
-          map.set(loc.id, { ...loc, ...existing }); 
-        }
+      if (s && s.id && !deletedIds.has(s.id) && (!s.fileName || !deletedIds.has(s.fileName))) {
+        map.set(s.id, s);
       }
     }
 
-    // Now, filter the map: remove items that were likely deleted locally
-    // If item is in map (from server) but NOT in localSubs, and it's "old", remove it.
-    const localIds = new Set(localSubs.map(l => l.id));
-    for (const [id, item] of map.entries()) {
-      if (!localIds.has(id)) {
-        const uploadTime = new Date(item.uploadedAt).getTime();
-        if (now - uploadTime > thirtySeconds) {
-          // It's old and missing locally -> it was deleted locally.
-          map.delete(id);
+    // Merge local subs
+    let needsPushToServer = false;
+    for (const loc of localSubs) {
+      if (!loc || !loc.id || deletedIds.has(loc.id) || (loc.fileName && deletedIds.has(loc.fileName))) continue;
+      const existing = map.get(loc.id);
+      if (!existing) {
+        map.set(loc.id, loc);
+        needsPushToServer = true;
+      } else {
+        // If local has advanced status (SYNCED_QBO, PROCESSING) or recent OCR, keep local
+        if (loc.status === 'SYNCED_QBO' || loc.status === 'PROCESSING') {
+          map.set(loc.id, { ...existing, ...loc });
+        } else {
+          map.set(loc.id, { ...loc, ...existing });
         }
       }
     }
@@ -341,12 +369,11 @@ export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmissi
       return tb - ta;
     });
 
-    // Check if changed compared to current localStorage
     const currentJson = JSON.stringify(localSubs);
     const mergedJson = JSON.stringify(merged);
     if (currentJson !== mergedJson) {
       saveClientSubmissions(merged, false);
-      if (needsPushToServer) {
+      if (needsPushToServer && merged.length > 0) {
         batchSyncSubmissionsToServer(merged).catch(() => {});
       }
       return merged;
@@ -358,11 +385,7 @@ export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmissi
 }
 
 async function syncSubmissionToServer(item: ClientSubmission): Promise<boolean> {
-  const endpoints = [
-    getBackendApiUrl() + '/api/client/submissions',
-    getEffectiveCloudflareApiUrl() + '/api/client/submissions',
-    '/api/client/submissions'
-  ];
+  const endpoints = getSubmissionEndpoints();
 
   for (const url of endpoints) {
     try {
@@ -370,7 +393,7 @@ async function syncSubmissionToServer(item: ClientSubmission): Promise<boolean> 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ submission: item }),
-        signal: AbortSignal.timeout(5000)
+        signal: AbortSignal.timeout(3000)
       });
       if (resp.ok) return true;
     } catch {}
@@ -379,11 +402,7 @@ async function syncSubmissionToServer(item: ClientSubmission): Promise<boolean> 
 }
 
 async function updateSubmissionOnServer(id: string, status: string, details?: any): Promise<boolean> {
-  const endpoints = [
-    `${getBackendApiUrl()}/api/client/submissions/${encodeURIComponent(id)}`,
-    `${getEffectiveCloudflareApiUrl()}/api/client/submissions/${encodeURIComponent(id)}`,
-    `/api/client/submissions/${encodeURIComponent(id)}`
-  ];
+  const endpoints = getSubmissionEndpoints(`/${encodeURIComponent(id)}`);
 
   for (const url of endpoints) {
     try {
@@ -391,7 +410,7 @@ async function updateSubmissionOnServer(id: string, status: string, details?: an
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status, details }),
-        signal: AbortSignal.timeout(4000)
+        signal: AbortSignal.timeout(2000)
       });
       if (resp.ok) return true;
     } catch {}
@@ -400,17 +419,13 @@ async function updateSubmissionOnServer(id: string, status: string, details?: an
 }
 
 async function deleteSubmissionOnServer(id: string): Promise<boolean> {
-  const endpoints = [
-    `${getBackendApiUrl()}/api/client/submissions/${encodeURIComponent(id)}`,
-    `${getEffectiveCloudflareApiUrl()}/api/client/submissions/${encodeURIComponent(id)}`,
-    `/api/client/submissions/${encodeURIComponent(id)}`
-  ];
+  const endpoints = getSubmissionEndpoints(`/${encodeURIComponent(id)}`);
 
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'DELETE',
-        signal: AbortSignal.timeout(4000)
+        signal: AbortSignal.timeout(1500)
       });
       if (resp.ok) return true;
     } catch {}
@@ -419,11 +434,7 @@ async function deleteSubmissionOnServer(id: string): Promise<boolean> {
 }
 
 async function batchSyncSubmissionsToServer(submissions: ClientSubmission[]): Promise<boolean> {
-  const endpoints = [
-    getBackendApiUrl() + '/api/client/submissions/batch-sync',
-    getEffectiveCloudflareApiUrl() + '/api/client/submissions/batch-sync',
-    '/api/client/submissions/batch-sync'
-  ];
+  const endpoints = getSubmissionEndpoints('/batch-sync');
 
   for (const url of endpoints) {
     try {
@@ -431,7 +442,7 @@ async function batchSyncSubmissionsToServer(submissions: ClientSubmission[]): Pr
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ submissions }),
-        signal: AbortSignal.timeout(6000)
+        signal: AbortSignal.timeout(3000)
       });
       if (resp.ok) return true;
     } catch {}

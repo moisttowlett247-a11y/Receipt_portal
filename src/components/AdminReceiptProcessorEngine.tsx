@@ -59,6 +59,7 @@ import {
   purgeDuplicateSubmissions, 
   subscribeToClientSubmissions, 
   updateSubmissionStatus, 
+  deleteSubmission,
   ClientSubmission 
 } from '../clientSubmissionService';
 import { getStoredClientAccounts } from '../clientAccountService';
@@ -111,9 +112,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [clientSubmissions, setClientSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
   const [autoEnqueueClientSubmissions, setAutoEnqueueClientSubmissions] = useState<boolean>(true);
   const processedSubmissionIdsRef = useRef<Set<string>>(new Set());
+  const receiptsRef = useRef(receipts);
 
-  // Populate processed submission IDs from initial ledger
+  // Keep receiptsRef in sync
   useEffect(() => {
+    receiptsRef.current = receipts;
     receipts.forEach(r => {
       if (r.id) processedSubmissionIdsRef.current.add(r.id);
       if (r.submissionId) processedSubmissionIdsRef.current.add(r.submissionId);
@@ -133,17 +136,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         }
       });
 
-      // 1. Build authoritative set of processed IDs
+      // 1. Build authoritative set of processed IDs using current ref
       const processedIds = new Set<string>(processedSubmissionIdsRef.current);
-      receipts.forEach(r => {
+      (receiptsRef.current || []).forEach(r => {
         if (r.id) processedIds.add(r.id);
         if (r.submissionId) processedIds.add(r.submissionId);
-        if (r.fileName && r.clientName) processedIds.add(`${r.clientName}__${r.fileName}`);
       });
       (updatedSubs || []).forEach(s => {
         if (s.status !== 'QUEUED') {
           processedIds.add(s.id);
-          if (s.fileName && s.clientName) processedIds.add(`${s.clientName}__${s.fileName}`);
         }
       });
 
@@ -157,9 +158,6 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               return false;
             }
           }
-          if (p.fileName && p.clientName && processedIds.has(`${p.clientName}__${p.fileName}`)) {
-            return false;
-          }
           return true;
         });
 
@@ -167,13 +165,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           return validExisting;
         }
 
-        // 2. Add any newly queued client items
+        // 2. Add any newly queued client items (all at once)
         const existingIds = new Set(validExisting.map(p => p.id).filter(Boolean));
         const newToAdd: ReceiptInputItem[] = [];
 
         for (const s of queuedMap.values()) {
-          const fileClientKey = `${s.clientName}__${s.fileName}`;
-          if (!existingIds.has(s.id) && !processedIds.has(s.id) && !processedIds.has(fileClientKey)) {
+          if (!existingIds.has(s.id) && !processedIds.has(s.id)) {
             newToAdd.push({
               id: s.id,
               clientId: s.clientId,
@@ -201,7 +198,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     });
 
     return () => unsubscribe();
-  }, [autoEnqueueClientSubmissions, receipts]);
+  }, [autoEnqueueClientSubmissions]);
 
   // Search & Filter controls
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -394,11 +391,17 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     });
 
     subs.forEach(s => {
-      const c = s.clientName || 'Unassigned';
+      const c = (s.clientName || 'Unassigned').trim();
       if (!map[c]) {
         map[c] = { clientName: c, pendingIntake: 0, scannedCount: 0, verifiedCount: 0, totalDeductions: 0, duplicateCount: 0 };
       }
-      if (s.status === 'QUEUED') {
+      const isAlreadyScanned = receipts.some(r => 
+        (r.submissionId && r.submissionId === s.id) || 
+        r.id === s.id || 
+        (r.fileName === s.fileName && (r.clientName || '').trim().toLowerCase() === c.toLowerCase())
+      ) || processedSubmissionIdsRef.current.has(s.id) || s.status !== 'QUEUED';
+
+      if (s.status === 'QUEUED' && !isAlreadyScanned) {
         map[c].pendingIntake++;
       }
     });
@@ -618,8 +621,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
   const handleScanSpecificClientQueue = (clientName: string) => {
     try {
+      const cleanTarget = clientName.trim().toLowerCase();
       const subs = getClientSubmissions();
-      const queued = subs.filter(s => s.status === 'QUEUED' && s.clientName === clientName);
+      const queued = subs.filter(s => 
+        s.status === 'QUEUED' && 
+        (s.clientName || '').trim().toLowerCase() === cleanTarget
+      );
       if (queued.length === 0) {
         if (onToast) onToast(`No pending queued receipts for ${clientName}.`);
         return;
@@ -646,7 +653,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       setSelectedClientTarget(clientName);
       setFilterClient(clientName);
-      setQueuedFiles(prev => [...prev, ...inputItems]);
+      setQueuedFiles(prev => {
+        const existingIds = new Set(prev.map(p => p.id).filter(Boolean));
+        const toAdd = inputItems.filter(item => !existingIds.has(item.id));
+        if (toAdd.length === 0) return prev;
+        return [...prev, ...toAdd];
+      });
       if (onToast) onToast(`Queued ${queued.length} receipt(s) for ${clientName}. Ready to scan!`);
     } catch (err) {
       console.error(err);
@@ -666,7 +678,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const role = isAdm ? 'ADMIN' as const : 'CLIENT' as const;
     const now = new Date().toISOString();
 
-    const newItems: ReceiptInputItem[] = files.map(f => ({
+    const newItems: ReceiptInputItem[] = files.map((f, idx) => ({
+      id: `admin-upload-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
       file: f,
       fileName: f.name,
       fileSize: f.size,
@@ -690,7 +703,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const role = isAdm ? 'ADMIN' as const : 'CLIENT' as const;
     const now = new Date().toISOString();
 
-    const newItems: ReceiptInputItem[] = files.map(f => ({
+    const newItems: ReceiptInputItem[] = files.map((f, idx) => ({
+      id: `admin-drop-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
       file: f,
       fileName: f.name,
       fileSize: f.size,
@@ -830,6 +844,21 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         } catch {}
       }
 
+      // Update clientSubmissions state locally immediately so pendingIntake and scan buttons update instantly
+      setClientSubmissions(prev => 
+        prev.map(sub => {
+          const wasScanned = scannedResults.some(res => 
+            (res.submissionId && res.submissionId === sub.id) || 
+            res.id === sub.id || 
+            (res.fileName === sub.fileName && (res.clientName || '').trim().toLowerCase() === (sub.clientName || '').trim().toLowerCase())
+          );
+          if (wasScanned) {
+            return { ...sub, status: 'SYNCED_QBO' as const };
+          }
+          return sub;
+        })
+      );
+
       // Clear the queued files after successful batch
       setQueuedFiles([]);
 
@@ -879,6 +908,22 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           } catch {}
         }
       });
+
+      // Update clientSubmissions state locally immediately
+      if (scanned && scanned.length > 0) {
+        const processed = scanned[0];
+        setClientSubmissions(prev =>
+          prev.map(sub => {
+            const wasScanned = (processed.submissionId && processed.submissionId === sub.id) ||
+              processed.id === sub.id ||
+              (processed.fileName === sub.fileName && (processed.clientName || '').trim().toLowerCase() === (sub.clientName || '').trim().toLowerCase());
+            if (wasScanned) {
+              return { ...sub, status: 'SYNCED_QBO' as const };
+            }
+            return sub;
+          })
+        );
+      }
 
       // Remove item from queuedFiles
       setQueuedFiles(prev => prev.filter((_, i) => i !== index));
@@ -957,9 +1002,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   };
 
   const handleBulkDelete = () => {
+    const toDelete = receipts.filter(r => selectedIds.has(r.id));
+    toDelete.forEach(r => {
+      const subId = r.submissionId || (r.id && r.id.startsWith('sub-') ? r.id : null);
+      if (subId) {
+        deleteSubmission(subId);
+      }
+    });
     setReceipts(prev => prev.filter(r => !selectedIds.has(r.id)));
     setSelectedIds(new Set());
-    if (onToast) onToast(`Deleted selected receipt records.`);
+    if (onToast) onToast(`Deleted selected receipt record(s).`);
   };
 
   const handleClearAll = () => {
@@ -2153,6 +2205,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
                           <button
                             onClick={() => {
+                              const subId = r.submissionId || (r.id && r.id.startsWith('sub-') ? r.id : null);
+                              if (subId) {
+                                deleteSubmission(subId);
+                              }
                               setReceipts(prev => prev.filter(x => x.id !== r.id));
                               if (onToast) onToast('Removed record.');
                             }}

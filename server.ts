@@ -30,6 +30,23 @@ const COMPANIES_FILE = path.join(DATA_DIR, 'qbo_companies.json');
 const SESSIONS_FILE = path.join(LICENSES_DIR, 'active_sessions.json');
 const INQUIRIES_FILE = path.join(LICENSES_DIR, 'inquiries.json');
 const SUBMISSIONS_FILE = path.join(DATA_DIR, 'client_submissions.json');
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'client_accounts.json');
+
+function loadAccounts(): any[] {
+  if (fs.existsSync(ACCOUNTS_FILE)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8'));
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return [];
+}
+
+function saveAccounts(accounts: any[]) {
+  try {
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf-8');
+  } catch {}
+}
 
 function loadSubmissions(): any[] {
   if (fs.existsSync(SUBMISSIONS_FILE)) {
@@ -836,7 +853,12 @@ router.post('/api/licenses/sync', (req, res) => {
       return res.status(400).json({ success: false, error: 'Key or hash is required' });
     }
 
-    const targetFile = path.join(LICENSES_DIR, `${hash}.json`);
+    const safeHash = String(hash).replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!safeHash) {
+      return res.status(400).json({ success: false, error: 'Invalid key or hash characters' });
+    }
+
+    const targetFile = path.join(LICENSES_DIR, `${safeHash}.json`);
 
     if (action === 'DELETE') {
       if (fs.existsSync(targetFile)) {
@@ -957,11 +979,18 @@ router.put('/api/client/submissions/:id', (req, res) => {
 
 router.delete('/api/client/submissions/:id', (req, res) => {
   try {
-    const id = req.params.id;
+    const rawId = req.params.id;
+    const cleanId = decodeURIComponent(String(rawId || '').trim());
+    const cleanIdLower = cleanId.toLowerCase();
     const current = loadSubmissions();
-    const updated = current.filter((s: any) => s.id !== id);
+    const updated = current.filter((s: any) => {
+      if (!s) return false;
+      const sId = String(s.id || '').trim();
+      const sFileName = String(s.fileName || '').trim();
+      return sId !== cleanId && sId.toLowerCase() !== cleanIdLower && sFileName !== cleanId;
+    });
     saveSubmissions(updated);
-    return res.json({ success: true, message: `Submission ${id} deleted` });
+    return res.json({ success: true, message: `Submission ${cleanId} deleted`, remaining: updated.length });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -996,6 +1025,77 @@ router.post('/api/client/submissions/batch-sync', (req, res) => {
 
     saveSubmissions(merged);
     return res.json({ success: true, count: merged.length, submissions: merged });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Admin & Client Accounts Persistence Endpoints
+router.get('/api/admin/accounts', (req, res) => {
+  try {
+    const accounts = loadAccounts();
+    return res.json({ success: true, count: accounts.length, accounts });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/api/admin/accounts/sync', (req, res) => {
+  try {
+    const body = req.body || {};
+    const incoming = Array.isArray(body.accounts) ? body.accounts : [];
+    const serverAccounts = loadAccounts();
+
+    const map = new Map<string, any>();
+    for (const a of serverAccounts) {
+      if (a && a.id) map.set(a.id, a);
+    }
+    for (const a of incoming) {
+      if (a && a.id) {
+        const existing = map.get(a.id);
+        if (!existing) {
+          map.set(a.id, a);
+        } else {
+          map.set(a.id, { ...existing, ...a });
+        }
+      }
+    }
+
+    const merged = Array.from(map.values());
+    saveAccounts(merged);
+    return res.json({ success: true, count: merged.length, accounts: merged });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete('/api/admin/accounts/:id', (req, res) => {
+  try {
+    const rawId = req.params.id;
+    const decodedId = decodeURIComponent(String(rawId || '').trim()).toLowerCase();
+    const qEmail = req.query.email ? decodeURIComponent(String(req.query.email)).trim().toLowerCase() : '';
+    const qUser = req.query.username ? decodeURIComponent(String(req.query.username)).trim().toLowerCase() : '';
+    const qKey = req.query.licenseKey ? decodeURIComponent(String(req.query.licenseKey)).trim().toLowerCase() : '';
+
+    if (!decodedId && !qEmail && !qUser && !qKey) {
+      return res.status(400).json({ success: false, error: 'Account identifier required' });
+    }
+    const current = loadAccounts();
+    const updated = current.filter((a: any) => {
+      if (!a) return false;
+      const id = String(a.id || '').trim().toLowerCase();
+      const u = String(a.username || '').trim().toLowerCase();
+      const em = String(a.email || '').trim().toLowerCase();
+      const k = String(a.licenseKey || '').trim().toLowerCase();
+
+      if (decodedId && (id === decodedId || u === decodedId || em === decodedId || k === decodedId)) return false;
+      if (qEmail && em === qEmail) return false;
+      if (qUser && u === qUser) return false;
+      if (qKey && k === qKey) return false;
+      return true;
+    });
+    saveAccounts(updated);
+    return res.json({ success: true, message: `Account deleted`, remaining: updated.length });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
