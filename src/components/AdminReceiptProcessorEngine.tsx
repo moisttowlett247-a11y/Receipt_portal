@@ -2075,6 +2075,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   <th className="py-3 px-4">Payment</th>
                   <th className="py-3 px-4">Duplicate Check</th>
                   <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4 text-center">Cloud Vault</th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
@@ -2243,6 +2244,21 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                           <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-stone-800 text-stone-300">
                             PROCESSED
                           </span>
+                        )}
+                      </td>
+
+                      {/* Cloud Sync Status */}
+                      <td className="py-3 px-4 text-center">
+                        {r.googleDriveId ? (
+                          <div className="flex flex-col items-center gap-1" title={`Synced to Google Drive ID: ${r.googleDriveId}`}>
+                            <Cloud className="w-4 h-4 text-blue-400" />
+                            <span className="text-[9px] font-mono text-blue-400 uppercase font-bold">Synced</span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center gap-1 opacity-20">
+                            <Cloud className="w-4 h-4 text-stone-500" />
+                            <span className="text-[9px] font-mono text-stone-500 uppercase">Local</span>
+                          </div>
                         )}
                       </td>
 
