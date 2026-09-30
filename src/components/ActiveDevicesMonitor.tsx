@@ -139,6 +139,8 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
           for (const s of data.sessions) {
             const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
             const diffMs = Math.max(0, now - lastPingMs);
+            if (diffMs > 24 * 60 * 60 * 1000) continue; // Skip stale sessions older than 24 hours
+
             const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
             let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
             if (diffMs < 90000) {
@@ -172,36 +174,6 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       }
     } catch (err) {
       console.warn('Local sessions endpoint unreachable:', err);
-    }
-
-    // 3. Fallback to GitHub raw if nothing found
-    if (sessionMap.size === 0) {
-      try {
-        const ghCfg = getStoredGitHubConfig();
-        const ghUrl = `https://raw.githubusercontent.com/${ghCfg.owner}/${ghCfg.repo}/${ghCfg.branch}/public/licenses/active_sessions.json?t=${now}`;
-        const ghRes = await fetch(ghUrl, { cache: 'no-store' });
-        if (ghRes.ok) {
-          const rawDict = await ghRes.json();
-          if (rawDict && typeof rawDict === 'object') {
-            for (const s of Object.values(rawDict) as any[]) {
-              const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
-              const diffMs = Math.max(0, now - lastPingMs);
-              const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
-              let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
-              if (diffMs < 90000) onlineState = 'ONLINE';
-              else if (diffMs < 600000) onlineState = 'IDLE';
-
-              sessionMap.set(s.id || `${s.ip}_${s.hash}`, {
-                ...s,
-                onlineState,
-                secondsSinceLastPing
-              });
-            }
-          }
-        }
-      } catch (ghErr) {
-        console.warn('Could not fetch sessions from GitHub raw fallback:', ghErr);
-      }
     }
 
     loadedSessions = Array.from(sessionMap.values());
