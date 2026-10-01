@@ -5,11 +5,15 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
+export const SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile'
+];
+
 const provider = new GoogleAuthProvider();
 // Request Workspace scopes
-provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/userinfo.email');
-provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
+SCOPES.forEach(scope => provider.addScope(scope));
 provider.setCustomParameters({
   prompt: 'select_account'
 });
@@ -70,7 +74,7 @@ export const requestGoogleTokenViaGIS = (): Promise<{ accessToken: string; email
     try {
       const client = window.google.accounts.oauth2.initTokenClient({
         client_id: firebaseConfig.oAuthClientId,
-        scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
+        scope: SCOPES.join(' '),
         prompt: 'select_account',
         callback: async (resp: any) => {
           if (resp.error) {
