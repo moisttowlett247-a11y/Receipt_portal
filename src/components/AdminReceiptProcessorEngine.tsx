@@ -98,6 +98,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     } catch {}
   }, [receipts]);
 
+  const receiptsRef = useRef(receipts);
+  useEffect(() => {
+    receiptsRef.current = receipts;
+  }, [receipts]);
+
   // Concurrency & Worker pool settings
   const [concurrency, setConcurrency] = useState<number>(4);
   const [isScanning, setIsScanning] = useState<boolean>(false);
@@ -116,32 +121,101 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
+  const [isSyncingLedger, setIsSyncingLedger] = useState<boolean>(false);
+  const [singleSyncingId, setSingleSyncingId] = useState<string | null>(null);
+  const [autoSyncToCloud, setAutoSyncToCloud] = useState<boolean>(true);
+  const [autoProcessOnUpload, setAutoProcessOnUpload] = useState<boolean>(true);
+  const googleAccessTokenRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    googleAccessTokenRef.current = googleAccessToken;
+  }, [googleAccessToken]);
 
   useEffect(() => {
     const unsubscribe = initAuth(
       (user, token) => {
         setGoogleUser(user);
         setGoogleAccessToken(token);
+        googleAccessTokenRef.current = token;
       },
       () => {
         setGoogleUser(null);
         setGoogleAccessToken(null);
+        googleAccessTokenRef.current = null;
       }
     );
     return () => unsubscribe();
   }, []);
 
-  const handleConnectDrive = async () => {
+  const syncReceiptsBatchToDrive = async (token: string, itemsToSync: ProcessedReceipt[]) => {
+    if (!token || itemsToSync.length === 0) return;
+    setIsSyncingLedger(true);
+    let successCount = 0;
+
+    for (const r of itemsToSync) {
+      if (!r.dataUrl || r.googleDriveId) continue;
+      setSingleSyncingId(r.id);
+      try {
+        const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
+        const clientFolder = r.clientName || 'General';
+        const folderId = await ensureFolderPath(token, ['Receipt Vault', year, clientFolder]);
+        
+        if (folderId && r.dataUrl) {
+          const driveRes = await uploadReceiptToDrive(token, folderId, r.fileName, r.dataUrl);
+          if (driveRes) {
+            successCount++;
+            setReceipts(prev => prev.map(item => {
+              if (item.id === r.id) {
+                const updated = {
+                  ...item,
+                  googleDriveId: driveRes.id,
+                  googleDriveLink: driveRes.webViewLink
+                };
+                delete updated.dataUrl; // RAM optimization
+                return updated;
+              }
+              return item;
+            }));
+
+            const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
+            await updateFileMetadata(token, driveRes.id, description);
+          }
+        }
+      } catch (err) {
+        console.warn('Sync failed for item:', r.fileName, err);
+      } finally {
+        setSingleSyncingId(null);
+      }
+    }
+
+    setIsSyncingLedger(false);
+    if (successCount > 0 && onToast) {
+      onToast(`✅ Cloud Sync Complete: ${successCount} receipt(s) synced to Google Drive!`);
+    }
+  };
+
+  const handleConnectDrive = async (): Promise<string | null> => {
     setIsConnectingDrive(true);
     try {
       const res = await googleSignIn();
       if (res) {
         setGoogleUser(res.user);
         setGoogleAccessToken(res.accessToken);
+        googleAccessTokenRef.current = res.accessToken;
         if (onToast) onToast(`Connected to Google Drive: ${res.user.email}`);
+
+        // Automatically sync all pending local receipts!
+        const unsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+        if (unsynced.length > 0) {
+          if (onToast) onToast(`🚀 Auto-syncing ${unsynced.length} pending receipt(s) to Google Drive...`);
+          await syncReceiptsBatchToDrive(res.accessToken, unsynced);
+        }
+        return res.accessToken;
       }
-    } catch (err) {
-      if (onToast) onToast('Failed to connect to Google Drive.');
+      return null;
+    } catch (err: any) {
+      if (onToast) onToast(`Google Drive connection error: ${err?.message || 'Cancelled'}`);
+      return null;
     } finally {
       setIsConnectingDrive(false);
     }
@@ -151,6 +225,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     await logoutGoogle();
     setGoogleUser(null);
     setGoogleAccessToken(null);
+    googleAccessTokenRef.current = null;
     if (onToast) onToast('Disconnected from Google Drive.');
   };
 
@@ -158,11 +233,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [clientSubmissions, setClientSubmissions] = useState<ClientSubmission[]>(() => getClientSubmissions());
   const [autoEnqueueClientSubmissions, setAutoEnqueueClientSubmissions] = useState<boolean>(true);
   const processedSubmissionIdsRef = useRef<Set<string>>(new Set());
-  const receiptsRef = useRef(receipts);
 
-  // Keep receiptsRef in sync
+  // Keep receiptsRef in sync and record processed IDs
   useEffect(() => {
-    receiptsRef.current = receipts;
     receipts.forEach(r => {
       if (r.id) processedSubmissionIdsRef.current.add(r.id);
       if (r.submissionId) processedSubmissionIdsRef.current.add(r.submissionId);
@@ -410,6 +483,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       duplicateCount,
       verifiedCount
     };
+  }, [receipts]);
+
+  // All receipts stored locally in memory awaiting Google Drive cloud sync
+  const unsyncedReceipts = useMemo(() => {
+    return receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
   }, [receipts]);
 
   // Detailed per-client tracking: volume of uploaded, pending, and processed receipts
@@ -736,7 +814,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       uploadedAt: now
     }));
     setQueuedFiles(prev => [...prev, ...newItems]);
-    if (onToast) onToast(`Added ${files.length} receipt file(s) assigned to ${target}`);
+    if (autoProcessOnUpload) {
+      if (onToast) onToast(`Uploaded ${files.length} receipt(s). Auto-processing & syncing to Cloud Vault...`);
+      setTimeout(() => {
+        executeBatchScan(newItems);
+      }, 50);
+    } else {
+      if (onToast) onToast(`Added ${files.length} receipt file(s) assigned to ${target}`);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -761,7 +846,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       uploadedAt: now
     }));
     setQueuedFiles(prev => [...prev, ...newItems]);
-    if (onToast) onToast(`Queued ${files.length} dropped file(s) for ${target}`);
+    if (autoProcessOnUpload) {
+      if (onToast) onToast(`Dropped ${files.length} receipt(s). Auto-processing & syncing to Cloud Vault...`);
+      setTimeout(() => {
+        executeBatchScan(newItems);
+      }, 50);
+    } else {
+      if (onToast) onToast(`Queued ${files.length} dropped file(s) for ${target}`);
+    }
   };
 
   const handleLoadSampleFarmBatch = () => {
@@ -806,6 +898,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       setQueuedFiles(prev => [...prev, ...inputItems]);
       if (onToast) onToast(`Imported ${queued.length} queued receipt(s) from Client Intake!`);
+      if (autoProcessOnUpload) {
+        setTimeout(() => {
+          executeBatchScan(inputItems);
+        }, 50);
+      }
     } catch (err) {
       console.error(err);
     }
@@ -815,8 +912,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   // EXECUTE PARALLEL SCANNING
   // -------------------------------------------------------------------------
 
-  const handleStartParallelScan = async () => {
-    if (queuedFiles.length === 0) {
+  const executeBatchScan = async (itemsOverride?: ReceiptInputItem[]) => {
+    const items = itemsOverride && itemsOverride.length > 0 ? itemsOverride : queuedFiles;
+    if (items.length === 0) {
       if (onToast) onToast('Queue is empty. Select files or load a test batch to scan.');
       return;
     }
@@ -825,16 +923,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const startTime = Date.now();
     setScanStartTime(startTime);
     setElapsedSec(0);
-    setScanProgress({ current: 0, total: queuedFiles.length });
+    setScanProgress({ current: 0, total: items.length });
 
-    if (onToast) onToast(`🚀 Launching ${concurrency} parallel worker pipelines for ${queuedFiles.length} receipts...`);
+    if (onToast) onToast(`🚀 Launching ${concurrency} parallel worker pipelines for ${items.length} receipt(s)...`);
 
     try {
-      const scannedResults = await runParallelBatchScan(queuedFiles, {
+      const scannedResults = await runParallelBatchScan(items, {
         concurrency,
         defaultClientName: selectedClientTarget,
-        existingLedger: receipts,
-        googleAccessToken: googleAccessToken || undefined,
+        existingLedger: receiptsRef.current,
+        googleAccessToken: googleAccessTokenRef.current || undefined,
         onWorkerUpdate: updatedWorkers => {
           setWorkers(updatedWorkers);
         },
@@ -914,13 +1012,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       );
 
       // Clear the queued files after successful batch
-      setQueuedFiles([]);
+      if (!itemsOverride) {
+        setQueuedFiles([]);
+      }
 
       const totalSec = Math.max(0.1, (Date.now() - startTime) / 1000);
       const speed = (scannedResults.length / totalSec).toFixed(1);
 
       if (onToast) {
-        onToast(`✅ Parallel batch finished! Processed ${scannedResults.length} receipts in ${totalSec.toFixed(1)}s (${speed} receipts/sec)`);
+        onToast(`✅ Batch finished! Processed ${scannedResults.length} receipts in ${totalSec.toFixed(1)}s (${speed} receipts/sec)`);
       }
     } catch (err: any) {
       console.error('Batch scanning failed:', err);
@@ -929,6 +1029,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       setIsScanning(false);
     }
   };
+
+  const handleStartParallelScan = () => executeBatchScan();
 
   // Scan a single item directly from the queue
   const handleScanSingleQueuedItem = async (item: ReceiptInputItem, index: number) => {
@@ -1185,12 +1287,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     if (onNavigateToIntake) onNavigateToIntake();
   };
 
-  const [isSyncingLedger, setIsSyncingLedger] = useState<boolean>(false);
-
   const handleSyncExistingToDrive = async () => {
-    if (!googleAccessToken) {
-      if (onToast) onToast('Please connect to Google Drive first.');
-      return;
+    let token = googleAccessToken;
+    if (!token) {
+      token = await handleConnectDrive();
+      if (!token) return;
     }
 
     const localReceipts = receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
@@ -1199,64 +1300,46 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       return;
     }
 
-    setIsSyncingLedger(true);
-    if (onToast) onToast(`🚀 Syncing ${localReceipts.length} unsynced receipts to Cloud Vault...`);
-
-    let successCount = 0;
-    const updatedReceipts = [...receipts];
-
-    for (const r of localReceipts) {
-      try {
-        const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
-        const folderId = await ensureFolderPath(googleAccessToken, ['Receipt Vault', year, r.clientName]);
-        
-        if (folderId && r.dataUrl) {
-          const driveRes = await uploadReceiptToDrive(googleAccessToken, folderId, r.fileName, r.dataUrl);
-          if (driveRes) {
-            const idx = updatedReceipts.findIndex(item => item.id === r.id);
-            if (idx !== -1) {
-              const updated = {
-                ...updatedReceipts[idx],
-                googleDriveId: driveRes.id,
-                googleDriveLink: driveRes.webViewLink
-              };
-              // RAM Optimization: Clear dataUrl after sync
-              delete updated.dataUrl;
-              updatedReceipts[idx] = updated;
-              successCount++;
-
-              const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
-              await updateFileMetadata(googleAccessToken, driveRes.id, description);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('Individual sync fail:', err);
-      }
-    }
-
-    setReceipts(updatedReceipts);
-    setIsSyncingLedger(false);
-    if (onToast) onToast(`✅ Cloud Sync Complete: ${successCount} receipts moved to Google Drive!`);
+    if (onToast) onToast(`🚀 Syncing ${localReceipts.length} unsynced receipt(s) to Cloud Vault...`);
+    await syncReceiptsBatchToDrive(token, localReceipts);
   };
 
   const handleSyncSingleToDrive = async (id: string) => {
-    if (!googleAccessToken) return;
-    const r = receipts.find(item => item.id === id);
-    if (!r || !r.dataUrl || r.googleDriveId) return;
+    let token = googleAccessToken;
+    if (!token) {
+      token = await handleConnectDrive();
+      if (!token) return;
+    }
 
-    if (onToast) onToast(`Syncing ${r.fileName} to Cloud Vault...`);
+    const r = receipts.find(item => item.id === id);
+    if (!r) return;
+    if (r.googleDriveId) {
+      if (onToast) onToast(`Receipt is already synced to Google Drive.`);
+      return;
+    }
+    if (!r.dataUrl) {
+      if (onToast) onToast(`Cannot sync: original image data is not available in memory.`);
+      return;
+    }
+
+    setSingleSyncingId(id);
+    if (onToast) onToast(`Syncing ${r.fileName} to Google Drive...`);
 
     try {
       const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
-      const folderId = await ensureFolderPath(googleAccessToken, ['Receipt Vault', year, r.clientName]);
+      const clientFolder = r.clientName || 'General';
+      const folderId = await ensureFolderPath(token, ['Receipt Vault', year, clientFolder]);
       
       if (folderId) {
-        const driveRes = await uploadReceiptToDrive(googleAccessToken, folderId, r.fileName, r.dataUrl);
+        const driveRes = await uploadReceiptToDrive(token, folderId, r.fileName, r.dataUrl);
         if (driveRes) {
           setReceipts(prev => prev.map(item => {
             if (item.id === id) {
-              const updated = { ...item, googleDriveId: driveRes.id, googleDriveLink: driveRes.webViewLink };
+              const updated = {
+                ...item,
+                googleDriveId: driveRes.id,
+                googleDriveLink: driveRes.webViewLink
+              };
               delete updated.dataUrl;
               return updated;
             }
@@ -1264,12 +1347,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           }));
 
           const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
-          await updateFileMetadata(googleAccessToken, driveRes.id, description);
-          if (onToast) onToast(`✅ ${r.fileName} synced to Cloud!`);
+          await updateFileMetadata(token, driveRes.id, description);
+          if (onToast) onToast(`✅ ${r.fileName} successfully synced to Google Drive!`);
+        } else {
+          if (onToast) onToast(`Failed to upload ${r.fileName} to Google Drive.`);
         }
       }
-    } catch (err) {
-      if (onToast) onToast('Sync failed for this receipt.');
+    } catch (err: any) {
+      if (onToast) onToast(`Sync error: ${err.message || String(err)}`);
+    } finally {
+      setSingleSyncingId(null);
     }
   };
 
@@ -1306,12 +1393,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </button>
               <span className="text-xs text-stone-500">•</span>
               <button
-                onClick={googleUser ? handleDisconnectDrive : handleConnectDrive}
+                onClick={googleUser ? handleDisconnectDrive : () => handleConnectDrive()}
                 disabled={isConnectingDrive}
                 className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
                   googleUser
                     ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 hover:bg-blue-500/25'
-                    : 'bg-stone-500/15 border-stone-500/40 text-stone-300 hover:bg-stone-500/25'
+                    : 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
                 }`}
                 title={googleUser ? `Connected as ${googleUser.email}` : 'Connect Google Drive for cloud backup and RAM optimization'}
               >
@@ -1319,6 +1406,38 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 <span>
                   {googleUser ? `Vault: Active (${googleUser.email})` : 'Connect Google Drive Vault'}
                 </span>
+              </button>
+              <span className="text-xs text-stone-500">•</span>
+              <button
+                onClick={() => {
+                  setAutoSyncToCloud(prev => !prev);
+                  if (onToast) onToast(!autoSyncToCloud ? 'Auto-Sync to Cloud Vault enabled.' : 'Auto-Sync to Cloud paused.');
+                }}
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  autoSyncToCloud
+                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25'
+                    : 'bg-stone-800 border-stone-700 text-stone-400 hover:bg-stone-700'
+                }`}
+                title="When enabled, receipts are automatically uploaded and backed up to Google Drive"
+              >
+                <Zap className={`w-3 h-3 ${autoSyncToCloud ? 'text-emerald-400' : 'text-stone-500'}`} />
+                <span>Auto-Sync: {autoSyncToCloud ? 'ON' : 'OFF'}</span>
+              </button>
+              <span className="text-xs text-stone-500">•</span>
+              <button
+                onClick={() => {
+                  setAutoProcessOnUpload(prev => !prev);
+                  if (onToast) onToast(!autoProcessOnUpload ? 'Auto-process on upload enabled.' : 'Auto-process on upload paused.');
+                }}
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  autoProcessOnUpload
+                    ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 hover:bg-blue-500/25'
+                    : 'bg-stone-800 border-stone-700 text-stone-400 hover:bg-stone-700'
+                }`}
+                title="When enabled, newly uploaded or dropped receipts immediately trigger parallel scanning and cloud sync"
+              >
+                <Sparkles className={`w-3 h-3 ${autoProcessOnUpload ? 'text-blue-400' : 'text-stone-500'}`} />
+                <span>Auto-Scan Uploads: {autoProcessOnUpload ? 'ON' : 'OFF'}</span>
               </button>
             </div>
             <h1 className="text-xl font-bold text-white flex items-center gap-2">
@@ -2049,14 +2168,20 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         </div>
 
         {/* Cloud Sync Tool */}
-        {googleAccessToken && receipts.some(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED') && (
+        {unsyncedReceipts.length > 0 && (
           <button
             onClick={handleSyncExistingToDrive}
             disabled={isSyncingLedger}
             className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer animate-in fade-in"
           >
             <Cloud className={`w-3.5 h-3.5 ${isSyncingLedger ? 'animate-bounce' : ''}`} />
-            <span>{isSyncingLedger ? 'Syncing Vault...' : 'Sync Unsynced to Cloud'}</span>
+            <span>
+              {isSyncingLedger
+                ? 'Syncing Vault...'
+                : googleAccessToken
+                ? `Sync Unsynced to Cloud (${unsyncedReceipts.length})`
+                : `Connect Drive & Sync (${unsyncedReceipts.length})`}
+            </span>
           </button>
         )}
 
@@ -2136,6 +2261,49 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             <span>Showing verified line-item categorizations</span>
           </div>
         </div>
+
+        {/* Cloud Sync Status / Action Notification Banner */}
+        {unsyncedReceipts.length > 0 && (
+          <div className="mx-4 my-3 p-3.5 rounded-xl bg-gradient-to-r from-blue-950/60 via-stone-900 to-blue-900/30 border border-blue-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-lg bg-blue-500/20 border border-blue-500/30 flex items-center justify-center shrink-0">
+                <Cloud className={`w-5 h-5 text-blue-400 ${isSyncingLedger ? 'animate-bounce' : ''}`} />
+              </div>
+              <div>
+                <div className="text-white font-bold flex items-center gap-2">
+                  <span>{unsyncedReceipts.length} Receipt{unsyncedReceipts.length > 1 ? 's' : ''} Stored Locally in Browser Memory</span>
+                  <span className={`px-2 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                    googleAccessToken ? 'bg-blue-500/20 text-blue-300' : 'bg-amber-500/20 text-amber-300'
+                  }`}>
+                    {googleAccessToken ? 'Ready to Sync' : 'Google Drive Disconnected'}
+                  </span>
+                </div>
+                <p className="text-stone-300 text-[11px] mt-0.5">
+                  {googleAccessToken
+                    ? 'Your receipts are ready to be uploaded to your Google Drive Vault (Receipt Vault / 2026 / Client Name). Click to sync now.'
+                    : 'Connect your Google account to automatically back up all uploaded receipts directly to Google Drive and keep browser RAM light.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={handleSyncExistingToDrive}
+                disabled={isSyncingLedger}
+                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold flex items-center gap-2 transition-colors cursor-pointer shadow-lg disabled:opacity-50 text-xs"
+              >
+                <Cloud className={`w-4 h-4 ${isSyncingLedger ? 'animate-spin' : ''}`} />
+                <span>
+                  {isSyncingLedger
+                    ? 'Syncing to Drive...'
+                    : googleAccessToken
+                    ? `Sync All (${unsyncedReceipts.length}) to Cloud Vault`
+                    : `Connect Google Drive & Sync (${unsyncedReceipts.length})`}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {filteredReceipts.length === 0 ? (
           <div className="p-12 text-center space-y-3">
@@ -2351,15 +2519,43 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       {/* Cloud Sync Status */}
                       <td className="py-3 px-4 text-center">
                         {r.googleDriveId ? (
-                          <div className="flex flex-col items-center gap-1" title={`Synced to Google Drive ID: ${r.googleDriveId}`}>
+                          <a
+                            href={r.googleDriveLink || `https://drive.google.com/file/d/${r.googleDriveId}/view`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex flex-col items-center gap-1 hover:opacity-80 transition-opacity"
+                            title={`Synced to Google Drive ID: ${r.googleDriveId} (Click to open file in Google Drive)`}
+                          >
                             <Cloud className="w-4 h-4 text-blue-400" />
-                            <span className="text-[9px] font-mono text-blue-400 uppercase font-bold">Synced</span>
+                            <span className="text-[9px] font-mono text-blue-400 uppercase font-bold flex items-center gap-0.5">
+                              Synced
+                              <ExternalLink className="w-2.5 h-2.5" />
+                            </span>
+                          </a>
+                        ) : singleSyncingId === r.id ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <Cloud className="w-4 h-4 text-blue-400 animate-spin" />
+                            <span className="text-[9px] font-mono text-blue-300 uppercase font-bold">Syncing...</span>
                           </div>
                         ) : (
-                          <div className="flex flex-col items-center gap-1 opacity-20">
-                            <Cloud className="w-4 h-4 text-stone-500" />
-                            <span className="text-[9px] font-mono text-stone-500 uppercase">Local</span>
-                          </div>
+                          <button
+                            onClick={() => handleSyncSingleToDrive(r.id)}
+                            disabled={singleSyncingId === r.id}
+                            className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded transition-colors cursor-pointer ${
+                              googleAccessToken
+                                ? 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20'
+                                : 'bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700'
+                            }`}
+                            title={googleAccessToken ? "Click to sync receipt to Google Drive" : "Connect Google Drive & sync this receipt"}
+                          >
+                            <div className="flex items-center gap-1">
+                              <Cloud className="w-3.5 h-3.5 text-blue-400" />
+                              <Upload className="w-2.5 h-2.5 text-blue-300" />
+                            </div>
+                            <span className="text-[9px] font-mono uppercase font-semibold">
+                              {googleAccessToken ? 'Sync to Cloud' : 'Connect & Sync'}
+                            </span>
+                          </button>
                         )}
                       </td>
 
@@ -2385,13 +2581,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                             <Eye className="w-3.5 h-3.5" />
                           </button>
 
-                          {!r.googleDriveId && r.dataUrl && googleAccessToken && (
+                          {!r.googleDriveId && r.dataUrl && (
                             <button
                               onClick={() => handleSyncSingleToDrive(r.id)}
+                              disabled={singleSyncingId === r.id}
                               className="p-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 transition-colors cursor-pointer"
-                              title="Sync to Cloud Vault"
+                              title={googleAccessToken ? "Sync to Google Drive Vault" : "Connect Google Drive & Sync"}
                             >
-                              <Cloud className="w-3.5 h-3.5" />
+                              <Cloud className={`w-3.5 h-3.5 ${singleSyncingId === r.id ? 'animate-spin' : ''}`} />
                             </button>
                           )}
 

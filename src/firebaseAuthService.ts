@@ -10,6 +10,9 @@ const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 provider.addScope('https://www.googleapis.com/auth/userinfo.email');
 provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
+provider.setCustomParameters({
+  prompt: 'select_account'
+});
 
 // Flag to indicate if we are in the middle of a sign-in flow.
 let isSigningIn = false;
