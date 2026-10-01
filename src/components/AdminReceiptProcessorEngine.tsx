@@ -118,7 +118,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [isAddingCustomClient, setIsAddingCustomClient] = useState<boolean>(false);
 
   // Google Drive Cloud Vault Integration State
-  const [googleUser, setGoogleUser] = useState<FirebaseUser | null>(null);
+  const [googleUser, setGoogleUser] = useState<FirebaseUser | { email?: string; displayName?: string } | null>(null);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
   const [isSyncingLedger, setIsSyncingLedger] = useState<boolean>(false);
@@ -126,6 +126,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [autoSyncToCloud, setAutoSyncToCloud] = useState<boolean>(true);
   const [autoProcessOnUpload, setAutoProcessOnUpload] = useState<boolean>(true);
   const googleAccessTokenRef = useRef<string | null>(null);
+  const autoProcessOnUploadRef = useRef<boolean>(true);
+  const executeBatchScanRef = useRef<((itemsOverride?: ReceiptInputItem[]) => Promise<void>) | null>(null);
+
+  useEffect(() => {
+    autoProcessOnUploadRef.current = autoProcessOnUpload;
+  }, [autoProcessOnUpload]);
 
   useEffect(() => {
     googleAccessTokenRef.current = googleAccessToken;
@@ -197,12 +203,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const handleConnectDrive = async (): Promise<string | null> => {
     setIsConnectingDrive(true);
     try {
+      if (onToast) onToast('Connecting to Google Drive...');
       const res = await googleSignIn();
       if (res) {
-        setGoogleUser(res.user);
+        setGoogleUser(res.user as any);
         setGoogleAccessToken(res.accessToken);
         googleAccessTokenRef.current = res.accessToken;
-        if (onToast) onToast(`Connected to Google Drive: ${res.user.email}`);
+        const email = res.email || (res.user as any)?.email || 'Authorized Account';
+        if (onToast) onToast(`✅ Connected to Google Drive: ${email}`);
 
         // Automatically sync all pending local receipts!
         const unsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
@@ -214,6 +222,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       }
       return null;
     } catch (err: any) {
+      console.error('handleConnectDrive error:', err);
       if (onToast) onToast(`Google Drive connection error: ${err?.message || 'Cancelled'}`);
       return null;
     } finally {
@@ -312,12 +321,56 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         }
 
         if (newToAdd.length === 0) return validExisting;
+        if (autoProcessOnUploadRef.current && newToAdd.length > 0) {
+          setTimeout(() => {
+            executeBatchScanRef.current?.(newToAdd);
+          }, 80);
+        }
         return [...validExisting, ...newToAdd];
       });
     });
 
     return () => unsubscribe();
   }, [autoEnqueueClientSubmissions]);
+
+  // On initial mount, automatically scan and process any queued receipts into the audit ledger if autoProcessOnUpload is true
+  useEffect(() => {
+    if (autoProcessOnUploadRef.current) {
+      const subs = getClientSubmissions();
+      const queued = subs.filter(s => s.status === 'QUEUED');
+      if (queued.length > 0) {
+        const processedIds = new Set<string>(processedSubmissionIdsRef.current);
+        (receiptsRef.current || []).forEach(r => {
+          if (r.id) processedIds.add(r.id);
+          if (r.submissionId) processedIds.add(r.submissionId);
+        });
+        const unhandled = queued.filter(s => !processedIds.has(s.id));
+        if (unhandled.length > 0) {
+          const itemsToScan: ReceiptInputItem[] = unhandled.map(s => ({
+            id: s.id,
+            clientId: s.clientId,
+            fileName: s.fileName,
+            fileSize: s.fileSize,
+            fileType: s.fileType,
+            dataUrl: s.dataUrl,
+            clientName: s.clientName,
+            clientEmail: s.clientEmail,
+            submittedBy: s.clientEmail ? `${s.clientName} (${s.clientEmail})` : s.clientName,
+            submittedByRole: 'CLIENT' as const,
+            uploadedAt: s.uploadedAt,
+            memo: s.memo,
+            categoryHint: s.categoryHint,
+            vendorHint: s.extractedVendor,
+            amountHint: s.extractedAmount,
+            dateHint: s.extractedDate
+          }));
+          setTimeout(() => {
+            executeBatchScanRef.current?.(itemsToScan);
+          }, 350);
+        }
+      }
+    }
+  }, []);
 
   // Search & Filter controls
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -1030,6 +1083,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     }
   };
 
+  useEffect(() => {
+    executeBatchScanRef.current = executeBatchScan;
+  });
+
   const handleStartParallelScan = () => executeBatchScan();
 
   // Scan a single item directly from the queue
@@ -1288,13 +1345,13 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   };
 
   const handleSyncExistingToDrive = async () => {
-    let token = googleAccessToken;
+    let token = googleAccessTokenRef.current || googleAccessToken;
     if (!token) {
       token = await handleConnectDrive();
       if (!token) return;
     }
 
-    const localReceipts = receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+    const localReceipts = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
     if (localReceipts.length === 0) {
       if (onToast) onToast('No local unsynced receipts found in ledger.');
       return;
@@ -1305,13 +1362,13 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   };
 
   const handleSyncSingleToDrive = async (id: string) => {
-    let token = googleAccessToken;
+    let token = googleAccessTokenRef.current || googleAccessToken;
     if (!token) {
       token = await handleConnectDrive();
       if (!token) return;
     }
 
-    const r = receipts.find(item => item.id === id);
+    const r = receiptsRef.current.find(item => item.id === id);
     if (!r) return;
     if (r.googleDriveId) {
       if (onToast) onToast(`Receipt is already synced to Google Drive.`);
