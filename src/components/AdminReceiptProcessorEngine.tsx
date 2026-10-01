@@ -64,7 +64,15 @@ import {
   deleteSubmission,
   ClientSubmission 
 } from '../clientSubmissionService';
-import { googleSignIn, logoutGoogle, initAuth } from '../firebaseAuthService';
+import { 
+  googleSignIn, 
+  logoutGoogle, 
+  initAuth, 
+  requestGoogleTokenViaGIS, 
+  validateGoogleAccessToken, 
+  setManualAccessToken, 
+  getCachedEmail 
+} from '../firebaseAuthService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { getStoredClientAccounts } from '../clientAccountService';
 import { IRS_SCHEDULE_F_LINES, IRS_SCHEDULE_C_LINES } from '../taxScheduleService';
@@ -125,6 +133,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [singleSyncingId, setSingleSyncingId] = useState<string | null>(null);
   const [autoSyncToCloud, setAutoSyncToCloud] = useState<boolean>(true);
   const [autoProcessOnUpload, setAutoProcessOnUpload] = useState<boolean>(true);
+  const [isDriveModalOpen, setIsDriveModalOpen] = useState<boolean>(false);
+  const [manualTokenInput, setManualTokenInput] = useState<string>('');
+  const [isValidatingManualToken, setIsValidatingManualToken] = useState<boolean>(false);
+  const [manualTokenStatus, setManualTokenStatus] = useState<{ valid?: boolean; email?: string; error?: string } | null>(null);
+  const [showAdvancedAuth, setShowAdvancedAuth] = useState<boolean>(false);
+  const [isTestingDriveConnection, setIsTestingDriveConnection] = useState<boolean>(false);
+  const [testDriveResult, setTestDriveResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [pendingSyncReceiptId, setPendingSyncReceiptId] = useState<string | null>(null);
   const googleAccessTokenRef = useRef<string | null>(null);
   const autoProcessOnUploadRef = useRef<boolean>(true);
   const executeBatchScanRef = useRef<((itemsOverride?: ReceiptInputItem[]) => Promise<void>) | null>(null);
@@ -145,9 +161,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         googleAccessTokenRef.current = token;
       },
       () => {
-        setGoogleUser(null);
-        setGoogleAccessToken(null);
-        googleAccessTokenRef.current = null;
+        if (!googleAccessTokenRef.current) {
+          setGoogleUser(null);
+          setGoogleAccessToken(null);
+        }
       }
     );
     return () => unsubscribe();
@@ -200,16 +217,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     }
   };
 
-  const handleConnectDrive = async (): Promise<string | null> => {
+  const handleConnectDrive = async (openModalOnFail: boolean = true): Promise<string | null> => {
     setIsConnectingDrive(true);
     try {
       if (onToast) onToast('Connecting to Google Drive...');
       const res = await googleSignIn();
-      if (res) {
-        setGoogleUser(res.user as any);
+      if (res?.accessToken) {
+        setGoogleUser(res.user as any || { email: res.email });
         setGoogleAccessToken(res.accessToken);
         googleAccessTokenRef.current = res.accessToken;
-        const email = res.email || (res.user as any)?.email || 'Authorized Account';
+        const email = res.email || (res.user as any)?.email || getCachedEmail() || 'Authorized Account';
         if (onToast) onToast(`✅ Connected to Google Drive: ${email}`);
 
         // Automatically sync all pending local receipts!
@@ -220,13 +237,103 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         }
         return res.accessToken;
       }
+      if (openModalOnFail) {
+        setIsDriveModalOpen(true);
+      }
       return null;
     } catch (err: any) {
       console.error('handleConnectDrive error:', err);
-      if (onToast) onToast(`Google Drive connection error: ${err?.message || 'Cancelled'}`);
+      if (onToast) onToast(`Google Drive: ${err?.message || 'Authorization prompt'}`);
+      if (openModalOnFail) {
+        setIsDriveModalOpen(true);
+      }
       return null;
     } finally {
       setIsConnectingDrive(false);
+    }
+  };
+
+  const handleDirectGISConnect = async () => {
+    setIsConnectingDrive(true);
+    try {
+      const res = await requestGoogleTokenViaGIS();
+      if (res?.accessToken) {
+        setGoogleAccessToken(res.accessToken);
+        googleAccessTokenRef.current = res.accessToken;
+        setGoogleUser({ email: res.email || 'Authorized Google Account' } as any);
+        if (onToast) onToast(`✅ Google Drive Vault Connected: ${res.email || 'Authorized Account'}`);
+        
+        const unsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+        if (unsynced.length > 0) {
+          await syncReceiptsBatchToDrive(res.accessToken, unsynced);
+        }
+      }
+    } catch (err: any) {
+      if (onToast) onToast(`Google Auth: ${err?.message || 'Cancelled'}`);
+    } finally {
+      setIsConnectingDrive(false);
+    }
+  };
+
+  const handleValidateManualToken = async () => {
+    if (!manualTokenInput.trim()) {
+      setManualTokenStatus({ valid: false, error: 'Please enter an OAuth access token.' });
+      return;
+    }
+    setIsValidatingManualToken(true);
+    setManualTokenStatus(null);
+    try {
+      const check = await validateGoogleAccessToken(manualTokenInput.trim());
+      if (check.valid) {
+        setManualTokenStatus({ valid: true, email: check.email });
+        setGoogleAccessToken(manualTokenInput.trim());
+        googleAccessTokenRef.current = manualTokenInput.trim();
+        setGoogleUser({ email: check.email || 'Authorized Google Account' } as any);
+        if (onToast) onToast(`✅ Google Drive Access Token Activated (${check.email || 'Valid'})!`);
+
+        const unsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+        if (unsynced.length > 0) {
+          await syncReceiptsBatchToDrive(manualTokenInput.trim(), unsynced);
+        }
+      } else {
+        setManualTokenStatus({ valid: false, error: check.error || 'Invalid or expired token' });
+      }
+    } catch (err: any) {
+      setManualTokenStatus({ valid: false, error: err.message || 'Validation failed' });
+    } finally {
+      setIsValidatingManualToken(false);
+    }
+  };
+
+  const handleTestDriveConnection = async () => {
+    const token = googleAccessTokenRef.current || googleAccessToken;
+    if (!token) {
+      if (onToast) onToast('Please connect to Google Drive first.');
+      return;
+    }
+    setIsTestingDriveConnection(true);
+    setTestDriveResult(null);
+    try {
+      const folderId = await ensureFolderPath(token, ['Receipt Vault', 'Verification_Check']);
+      if (folderId) {
+        setTestDriveResult({
+          success: true,
+          message: `Connection Verified! Successfully accessed folder in Google Drive (ID: ${folderId.substring(0, 12)}...).`
+        });
+        if (onToast) onToast('✅ Google Drive API connection & permissions verified!');
+      } else {
+        setTestDriveResult({
+          success: false,
+          message: 'Could not access or create folder in Google Drive. Check permissions.'
+        });
+      }
+    } catch (err: any) {
+      setTestDriveResult({
+        success: false,
+        message: `Test failed: ${err.message || String(err)}`
+      });
+    } finally {
+      setIsTestingDriveConnection(false);
     }
   };
 
@@ -235,6 +342,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     setGoogleUser(null);
     setGoogleAccessToken(null);
     googleAccessTokenRef.current = null;
+    setManualTokenStatus(null);
+    setTestDriveResult(null);
     if (onToast) onToast('Disconnected from Google Drive.');
   };
 
@@ -1347,8 +1456,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const handleSyncExistingToDrive = async () => {
     let token = googleAccessTokenRef.current || googleAccessToken;
     if (!token) {
-      token = await handleConnectDrive();
-      if (!token) return;
+      setIsDriveModalOpen(true);
+      if (onToast) onToast('Please connect your Google Account in the Drive Vault pop-out window to sync receipts.');
+      return;
     }
 
     const localReceipts = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
@@ -1364,8 +1474,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const handleSyncSingleToDrive = async (id: string) => {
     let token = googleAccessTokenRef.current || googleAccessToken;
     if (!token) {
-      token = await handleConnectDrive();
-      if (!token) return;
+      setPendingSyncReceiptId(id);
+      setIsDriveModalOpen(true);
+      if (onToast) onToast('Please authorize Google Drive in the pop-out window to sync this receipt.');
+      return;
     }
 
     const r = receiptsRef.current.find(item => item.id === id);
@@ -1450,18 +1562,22 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </button>
               <span className="text-xs text-stone-500">•</span>
               <button
-                onClick={googleUser ? handleDisconnectDrive : () => handleConnectDrive()}
+                onClick={() => setIsDriveModalOpen(true)}
                 disabled={isConnectingDrive}
                 className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  googleUser
+                  googleUser || googleAccessToken
                     ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 hover:bg-blue-500/25'
                     : 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
                 }`}
-                title={googleUser ? `Connected as ${googleUser.email}` : 'Connect Google Drive for cloud backup and RAM optimization'}
+                title={googleUser?.email ? `Google Drive Connected: ${googleUser.email}` : googleAccessToken ? 'Google Drive Connected' : 'Connect and Manage Google Drive Vault'}
               >
                 <Cloud className={`w-3 h-3 ${isConnectingDrive ? 'animate-spin' : ''}`} />
                 <span>
-                  {googleUser ? `Vault: Active (${googleUser.email})` : 'Connect Google Drive Vault'}
+                  {googleUser?.email
+                    ? `Vault: Active (${googleUser.email.split('@')[0]})`
+                    : googleAccessToken
+                    ? 'Vault: Active'
+                    : 'Google Drive Vault'}
                 </span>
               </button>
               <span className="text-xs text-stone-500">•</span>
@@ -3338,6 +3454,273 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Google Drive Cloud Vault & Sync Pop-Out Window Modal */}
+      {isDriveModalOpen && (
+        <div className="fixed inset-0 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in font-sans">
+          <div className="w-full max-w-xl rounded-2xl bg-stone-900 border border-blue-500/40 shadow-2xl p-6 space-y-5 max-h-[90vh] overflow-y-auto">
+            
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-stone-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-blue-500/15 border border-blue-500/40 flex items-center justify-center text-blue-400 shadow-inner">
+                  <Cloud className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <span>Google Drive Cloud Vault</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                      OAuth 2.0
+                    </span>
+                  </h3>
+                  <p className="text-xs text-stone-400">
+                    IRS Tax Receipt Archive Vault &amp; Real-Time Cloud Synchronization
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setIsDriveModalOpen(false);
+                  setPendingSyncReceiptId(null);
+                }}
+                className="p-1.5 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors cursor-pointer"
+                title="Close"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Connection Status Banner */}
+            <div className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+              googleAccessToken || googleUser
+                ? 'bg-blue-950/40 border-blue-500/40 text-blue-200'
+                : 'bg-amber-950/30 border-amber-500/30 text-amber-200'
+            }`}>
+              <div className="flex items-start sm:items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                  googleAccessToken || googleUser ? 'bg-blue-500/20 text-blue-300' : 'bg-amber-500/20 text-amber-400'
+                }`}>
+                  {googleAccessToken || googleUser ? <ShieldCheck className="w-5 h-5" /> : <AlertTriangle className="w-5 h-5" />}
+                </div>
+                <div>
+                  <div className="font-bold text-sm text-white flex items-center gap-2">
+                    <span>{googleAccessToken || googleUser ? 'Google Drive Connected' : 'Google Drive Not Connected'}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                      googleAccessToken || googleUser ? 'bg-emerald-500/20 text-emerald-300' : 'bg-stone-800 text-stone-400'
+                    }`}>
+                      {googleAccessToken || googleUser ? 'Active' : 'Offline'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-stone-300 mt-0.5">
+                    {googleUser?.email || getCachedEmail()
+                      ? `Authorized account: ${googleUser?.email || getCachedEmail()}`
+                      : googleAccessToken
+                      ? 'OAuth Access Token Active & Authorized for Google Drive'
+                      : 'Authorize Google Drive to store and organize scanned tax receipts in folders: Receipt Vault > [Year] > [Client Name].'}
+                  </p>
+                </div>
+              </div>
+
+              {(googleAccessToken || googleUser) && (
+                <button
+                  type="button"
+                  onClick={handleDisconnectDrive}
+                  className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-rose-900/40 hover:text-rose-300 text-stone-300 text-xs font-semibold border border-stone-700 transition-colors cursor-pointer shrink-0"
+                >
+                  Disconnect
+                </button>
+              )}
+            </div>
+
+            {/* Primary Sign-In & Authorization Actions */}
+            <div className="space-y-3">
+              <label className="text-xs font-semibold text-stone-300 block">
+                1-Click Account Authorization:
+              </label>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {/* Official Google Sign In Button */}
+                <button
+                  type="button"
+                  disabled={isConnectingDrive}
+                  onClick={async () => {
+                    const token = await handleConnectDrive(false);
+                    if (token && pendingSyncReceiptId) {
+                      await handleSyncSingleToDrive(pendingSyncReceiptId);
+                      setPendingSyncReceiptId(null);
+                    }
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-stone-100 text-stone-800 font-semibold text-xs flex items-center justify-center gap-3 transition-all shadow-md cursor-pointer disabled:opacity-50"
+                >
+                  <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+                    <path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"/>
+                    <path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"/>
+                    <path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 10.03 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/>
+                    <path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/>
+                  </svg>
+                  <span>
+                    {isConnectingDrive ? 'Connecting Google Account...' : googleAccessToken ? 'Re-Authorize Google Drive' : 'Sign in with Google'}
+                  </span>
+                </button>
+
+                {/* Direct GIS Popup Window fallback */}
+                <button
+                  type="button"
+                  disabled={isConnectingDrive}
+                  onClick={async () => {
+                    await handleDirectGISConnect();
+                    if (pendingSyncReceiptId) {
+                      await handleSyncSingleToDrive(pendingSyncReceiptId);
+                      setPendingSyncReceiptId(null);
+                    }
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 font-semibold text-xs flex items-center justify-center gap-2 border border-stone-700 transition-all cursor-pointer disabled:opacity-50"
+                  title="Direct Google Identity Services OAuth dialog"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Dedicated Auth Popup</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Sync Status & Action Banner */}
+            <div className="p-4 rounded-xl bg-stone-950 border border-stone-800 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-stone-300 flex items-center gap-1.5">
+                  <FolderArchive className="w-3.5 h-3.5 text-blue-400" />
+                  Ledger Sync Queue
+                </span>
+                <span className="text-xs font-mono text-stone-400">
+                  {receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED').length} Unsynced
+                </span>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                <div className="text-[11px] text-stone-400">
+                  Receipts will be uploaded into hierarchy: <br />
+                  <code className="text-blue-300 bg-stone-900 px-1.5 py-0.5 rounded border border-stone-800">
+                    Receipt Vault &gt; 2026 &gt; [Client Name]
+                  </code>
+                </div>
+
+                <button
+                  type="button"
+                  disabled={isSyncingLedger || !googleAccessToken || receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED').length === 0}
+                  onClick={async () => {
+                    await handleSyncExistingToDrive();
+                  }}
+                  className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-lg shrink-0"
+                >
+                  <Cloud className={`w-4 h-4 ${isSyncingLedger ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isSyncingLedger
+                      ? 'Syncing to Drive...'
+                      : `Sync All Unsynced (${receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED').length})`}
+                  </span>
+                </button>
+              </div>
+
+              {/* Connection test */}
+              {(googleAccessToken || googleUser) && (
+                <div className="pt-2 border-t border-stone-800/80 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    disabled={isTestingDriveConnection}
+                    onClick={handleTestDriveConnection}
+                    className="text-[11px] text-blue-400 hover:text-blue-300 flex items-center gap-1.5 cursor-pointer font-medium"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isTestingDriveConnection ? 'animate-spin' : ''}`} />
+                    <span>Test Google Drive Vault Permissions</span>
+                  </button>
+
+                  {testDriveResult && (
+                    <span className={`text-[11px] font-medium flex items-center gap-1 ${
+                      testDriveResult.success ? 'text-emerald-400' : 'text-rose-400'
+                    }`}>
+                      {testDriveResult.success ? <Check className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                      <span className="truncate max-w-[280px]">{testDriveResult.message}</span>
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Advanced / Manual Token Option Accordion */}
+            <div className="border-t border-stone-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedAuth(prev => !prev)}
+                className="text-xs text-stone-400 hover:text-stone-200 flex items-center gap-1.5 transition-colors cursor-pointer font-medium"
+              >
+                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showAdvancedAuth ? 'rotate-180' : ''}`} />
+                <span>Manual OAuth Access Token / Quick Connect (Fallback)</span>
+              </button>
+
+              {showAdvancedAuth && (
+                <div className="mt-3 p-3.5 rounded-xl bg-stone-950 border border-stone-800 space-y-3 animate-fade-in">
+                  <label className="text-[11px] font-semibold text-stone-300 block">
+                    Paste Google OAuth Access Token (starts with <code className="text-amber-400">ya29.</code>):
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={manualTokenInput}
+                      onChange={(e) => setManualTokenInput(e.target.value)}
+                      placeholder="ya29.a0AfH6SM..."
+                      className="flex-1 px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-800 text-stone-200 font-mono text-xs focus:outline-none focus:border-blue-500"
+                    />
+                    <button
+                      type="button"
+                      disabled={isValidatingManualToken || !manualTokenInput.trim()}
+                      onClick={handleValidateManualToken}
+                      className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs transition-colors cursor-pointer shrink-0"
+                    >
+                      {isValidatingManualToken ? 'Validating...' : 'Connect Token'}
+                    </button>
+                  </div>
+
+                  {manualTokenStatus && (
+                    <div className={`p-2 rounded-lg text-xs font-mono flex items-center gap-1.5 ${
+                      manualTokenStatus.valid ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
+                    }`}>
+                      {manualTokenStatus.valid ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <AlertCircle className="w-3.5 h-3.5 text-rose-400" />}
+                      <span>
+                        {manualTokenStatus.valid
+                          ? `Valid Token (${manualTokenStatus.email || 'Authenticated'})`
+                          : manualTokenStatus.error || 'Invalid Token'}
+                      </span>
+                    </div>
+                  )}
+
+                  <p className="text-[10px] text-stone-500 leading-relaxed">
+                    Useful for development, iframe sandbox environments, or OAuth playground tokens. Access tokens are held exclusively in volatile memory and never persisted to browser storage.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between pt-3 border-t border-stone-800">
+              <div className="text-[11px] text-stone-500 flex items-center gap-1">
+                <span>Scope:</span>
+                <code className="text-stone-400">https://www.googleapis.com/auth/drive.file</code>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDriveModalOpen(false);
+                  setPendingSyncReceiptId(null);
+                }}
+                className="px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-bold text-xs transition-colors cursor-pointer"
+              >
+                Close Window
+              </button>
+            </div>
+
           </div>
         </div>
       )}
