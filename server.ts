@@ -1841,9 +1841,20 @@ if (process.env.NODE_ENV === 'production') {
   const { createServer: createViteServer } = await import('vite');
   const vite = await createViteServer({
     server: { middlewareMode: true },
-    appType: 'custom'
+    appType: 'spa'
   });
   app.use(vite.middlewares);
+  app.get('*', async (req, res, next) => {
+    const url = req.originalUrl;
+    try {
+      let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+      template = await vite.transformIndexHtml(url, template);
+      res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+    } catch (e) {
+      if (vite.ssrFixStacktrace) vite.ssrFixStacktrace(e as Error);
+      next(e);
+    }
+  });
 }
 
 // Start Server listening on standard Port 3000
