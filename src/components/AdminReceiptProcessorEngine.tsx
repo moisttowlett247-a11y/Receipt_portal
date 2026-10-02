@@ -55,7 +55,15 @@ import {
   getActiveGeminiApiKeys,
   saveActiveGeminiApiKeys
 } from '../adminReceiptScanningEngine';
-import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata } from '../googleDriveService';
+import { 
+  ensureFolderPath, 
+  uploadReceiptToDrive, 
+  updateFileMetadata,
+  getStoredDriveWebhookUrl,
+  saveDriveWebhookUrl,
+  uploadReceiptViaWebhook
+} from '../googleDriveService';
+import { saveImageToDisk, getImageFromDisk } from '../imageStorageService';
 import { 
   getClientSubmissions, 
   purgeDuplicateSubmissions, 
@@ -161,8 +169,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     return () => unsubscribe();
   }, []);
 
-  const syncReceiptsBatchToDrive = async (token: string, itemsToSync: ProcessedReceipt[]) => {
-    if (!token || itemsToSync.length === 0) return;
+  const [driveWebhookUrl, setDriveWebhookUrl] = useState<string>(() => getStoredDriveWebhookUrl());
+
+  const syncReceiptsBatchToDrive = async (tokenOrWebhook: string | null, itemsToSync: ProcessedReceipt[]) => {
+    const webhook = driveWebhookUrl || getStoredDriveWebhookUrl();
+    const token = tokenOrWebhook || googleAccessTokenRef.current || googleAccessToken;
+    if (!token && !webhook) return;
+    if (itemsToSync.length === 0) return;
+
     setIsSyncingLedger(true);
     let successCount = 0;
 
@@ -170,30 +184,39 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       if (!r.dataUrl || r.googleDriveId) continue;
       setSingleSyncingId(r.id);
       try {
-        const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
-        const clientFolder = r.clientName || 'General';
-        const folderId = await ensureFolderPath(token, ['Receipt Vault', year, clientFolder]);
+        let driveRes: { id: string; webViewLink: string } | null = null;
         
-        if (folderId && r.dataUrl) {
-          const driveRes = await uploadReceiptToDrive(token, folderId, r.fileName, r.dataUrl);
-          if (driveRes) {
-            successCount++;
-            setReceipts(prev => prev.map(item => {
-              if (item.id === r.id) {
-                const updated = {
-                  ...item,
-                  googleDriveId: driveRes.id,
-                  googleDriveLink: driveRes.webViewLink
-                };
-                delete updated.dataUrl; // RAM optimization
-                return updated;
-              }
-              return item;
-            }));
-
-            const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
-            await updateFileMetadata(token, driveRes.id, description);
+        if (webhook) {
+          driveRes = await uploadReceiptViaWebhook(webhook, r.fileName, r.dataUrl, r);
+        } else if (token) {
+          const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
+          const clientFolder = r.clientName || 'General';
+          const folderId = await ensureFolderPath(token, ['Receipt Vault', year, clientFolder]);
+          if (folderId && r.dataUrl) {
+            driveRes = await uploadReceiptToDrive(token, folderId, r.fileName, r.dataUrl);
+            if (driveRes) {
+              const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
+              await updateFileMetadata(token, driveRes.id, description);
+            }
           }
+        }
+
+        if (driveRes) {
+          successCount++;
+          // Save image to disk as backup and purge from RAM
+          saveImageToDisk(r.id, r.dataUrl);
+          setReceipts(prev => prev.map(item => {
+            if (item.id === r.id) {
+              const updated = {
+                ...item,
+                googleDriveId: driveRes!.id,
+                googleDriveLink: driveRes!.webViewLink
+              };
+              delete updated.dataUrl; // RAM optimization: purge large Base64 string from active memory
+              return updated;
+            }
+            return item;
+          }));
         }
       } catch (err) {
         console.warn('Sync failed for item:', r.fileName, err);
@@ -204,7 +227,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
     setIsSyncingLedger(false);
     if (successCount > 0 && onToast) {
-      onToast(`✅ Cloud Sync Complete: ${successCount} receipt(s) synced to Google Drive!`);
+      onToast(`✅ Cloud Sync Complete: ${successCount} receipt(s) stored in Google Drive! RAM optimized.`);
     }
   };
 

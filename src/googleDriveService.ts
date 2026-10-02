@@ -1,10 +1,30 @@
 /**
- * Google Drive API Service
- * Handles cloud storage for receipt images and forensic metadata
+ * Google Drive API & Webhook Service
+ * Handles cloud storage for receipt images, RAM offloading, and forensic metadata.
+ * Supports both Google OAuth 2.0 REST API and direct Google Apps Script Webhooks.
  */
 
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API_BASE = 'https://www.googleapis.com/upload/drive/v3';
+const WEBHOOK_STORAGE_KEY = 'receipt_processor_google_drive_webhook_url';
+
+export function getStoredDriveWebhookUrl(): string {
+  try {
+    return localStorage.getItem(WEBHOOK_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveDriveWebhookUrl(url: string): void {
+  try {
+    if (url.trim()) {
+      localStorage.setItem(WEBHOOK_STORAGE_KEY, url.trim());
+    } else {
+      localStorage.removeItem(WEBHOOK_STORAGE_KEY);
+    }
+  } catch {}
+}
 
 /**
  * Tests if the given access token is valid and active
@@ -114,8 +134,63 @@ export async function ensureFolderPath(accessToken: string, pathSegments: string
 }
 
 /**
- * Uploads a receipt image to a specific Drive folder.
- * Uses a robust multipart/related approach with automatic fallback to two-step upload.
+ * Uploads a receipt image via Google Apps Script Webhook (Zero OAuth configuration)
+ */
+export async function uploadReceiptViaWebhook(
+  webhookUrl: string,
+  fileName: string,
+  dataUrl: string,
+  metadata: { vendor?: string; total?: number; date?: string; schedule?: string; clientName?: string }
+): Promise<{ id: string; webViewLink: string } | null> {
+  try {
+    let cleanBase64 = dataUrl;
+    let mimeType = 'image/jpeg';
+    if (dataUrl.includes('base64,')) {
+      const parts = dataUrl.split('base64,');
+      cleanBase64 = parts[1];
+      const header = parts[0];
+      if (header.includes('data:')) {
+        mimeType = header.replace('data:', '').replace(';', '').trim();
+      }
+    }
+
+    const year = metadata.date ? metadata.date.split('-')[0] : new Date().getFullYear().toString();
+    const payload = {
+      action: 'upload_receipt',
+      fileName,
+      mimeType,
+      base64: cleanBase64,
+      folderPath: ['Receipt Vault', year, metadata.clientName || 'General'],
+      vendor: metadata.vendor,
+      total: metadata.total,
+      date: metadata.date,
+      schedule: metadata.schedule
+    };
+
+    const resp = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (resp.ok) {
+      const data = await resp.json().catch(() => ({}));
+      return {
+        id: data.id || `webhook_drive_${Date.now()}`,
+        webViewLink: data.url || data.webViewLink || 'https://drive.google.com'
+      };
+    }
+    return null;
+  } catch (err) {
+    console.warn('uploadReceiptViaWebhook exception:', err);
+    return null;
+  }
+}
+
+/**
+ * Uploads a receipt image to a specific Drive folder via REST API.
  */
 export async function uploadReceiptToDrive(
   accessToken: string,
@@ -143,7 +218,7 @@ export async function uploadReceiptToDrive(
       metadata.parents = [folderId];
     }
 
-    // Convert base64 to binary byte array for clean upload
+    // Convert base64 to binary byte array
     const sanitizedBase64 = cleanBase64.replace(/\s/g, '');
     const byteCharacters = atob(sanitizedBase64);
     const byteNumbers = new Uint8Array(byteCharacters.length);
@@ -151,7 +226,7 @@ export async function uploadReceiptToDrive(
       byteNumbers[i] = byteCharacters.charCodeAt(i);
     }
 
-    // Try Multipart/Related upload with proper binary blob
+    // Try Multipart/Related upload
     const boundary = '-------314159265358979323846';
     const preHeader = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${mimeType}\r\n\r\n`;
     const postHeader = `\r\n--${boundary}--`;
@@ -177,10 +252,7 @@ export async function uploadReceiptToDrive(
       };
     }
 
-    console.warn(`Multipart upload returned ${resp.status}, trying two-step upload fallback...`);
-
-    // Fallback Method: 2-step file creation + media upload
-    // Step 1: Create file metadata
+    // Fallback Method: 2-step upload
     const createResp = await fetch(`${DRIVE_API_BASE}/files?fields=id,webViewLink`, {
       method: 'POST',
       headers: {
@@ -191,15 +263,12 @@ export async function uploadReceiptToDrive(
     });
 
     if (!createResp.ok) {
-      const err = await createResp.text().catch(() => '');
-      console.error(`Drive File Metadata Create Error (${createResp.status}):`, err);
       return null;
     }
 
     const createdData = await createResp.json();
     const fileId = createdData.id;
 
-    // Step 2: Upload raw binary content
     const blob = new Blob([byteNumbers], { type: mimeType });
 
     const mediaResp = await fetch(`${UPLOAD_API_BASE}/files/${fileId}?uploadType=media&fields=id,webViewLink`, {
