@@ -143,6 +143,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         setGoogleUser(user);
         setGoogleAccessToken(token);
         googleAccessTokenRef.current = token;
+        if (onToast && user?.email) {
+          onToast(`✅ Google Drive Connected: ${user.email}`);
+        }
+        // Auto-sync unsynced items
+        const unsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+        if (unsynced.length > 0) {
+          syncReceiptsBatchToDrive(token, unsynced);
+        }
       },
       () => {
         setGoogleUser(null);
