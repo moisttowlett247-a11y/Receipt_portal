@@ -7,12 +7,15 @@
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API_BASE = 'https://www.googleapis.com/upload/drive/v3';
 const WEBHOOK_STORAGE_KEY = 'receipt_processor_google_drive_webhook_url';
+export const DEFAULT_DRIVE_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbyvBjwxbXzL2GwOs6wbKQy_0JXYalAh3Y08c-haevKhUahh4tD-NuHQS5X-IJe4O35p/exec';
 
 export function getStoredDriveWebhookUrl(): string {
   try {
-    return localStorage.getItem(WEBHOOK_STORAGE_KEY) || '';
+    const custom = localStorage.getItem(WEBHOOK_STORAGE_KEY);
+    if (custom && custom.trim()) return custom.trim();
+    return DEFAULT_DRIVE_WEBHOOK_URL;
   } catch {
-    return '';
+    return DEFAULT_DRIVE_WEBHOOK_URL;
   }
 }
 

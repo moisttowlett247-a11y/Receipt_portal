@@ -1376,10 +1376,11 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   };
 
   const handleSyncExistingToDrive = async () => {
+    const webhook = driveWebhookUrl || getStoredDriveWebhookUrl();
     let token = googleAccessTokenRef.current || googleAccessToken;
-    if (!token) {
+    if (!token && !webhook) {
       token = await handleConnectDrive();
-      if (!token) return;
+      if (!token && !webhook) return;
     }
 
     const localReceipts = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
@@ -1388,15 +1389,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       return;
     }
 
-    if (onToast) onToast(`🚀 Syncing ${localReceipts.length} unsynced receipt(s) to Cloud Vault...`);
+    if (onToast) onToast(`🚀 Syncing ${localReceipts.length} unsynced receipt(s) to Google Drive...`);
     await syncReceiptsBatchToDrive(token, localReceipts);
   };
 
   const handleSyncSingleToDrive = async (id: string) => {
+    const webhook = driveWebhookUrl || getStoredDriveWebhookUrl();
     let token = googleAccessTokenRef.current || googleAccessToken;
-    if (!token) {
+    if (!token && !webhook) {
       token = await handleConnectDrive();
-      if (!token) return;
+      if (!token && !webhook) return;
     }
 
     const r = receiptsRef.current.find(item => item.id === id);
@@ -1414,32 +1416,39 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     if (onToast) onToast(`Syncing ${r.fileName} to Google Drive...`);
 
     try {
-      const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
-      const clientFolder = r.clientName || 'General';
-      const folderId = await ensureFolderPath(token, ['Receipt Vault', year, clientFolder]);
-      
-      if (folderId) {
-        const driveRes = await uploadReceiptToDrive(token, folderId, r.fileName, r.dataUrl);
-        if (driveRes) {
-          setReceipts(prev => prev.map(item => {
-            if (item.id === id) {
-              const updated = {
-                ...item,
-                googleDriveId: driveRes.id,
-                googleDriveLink: driveRes.webViewLink
-              };
-              delete updated.dataUrl;
-              return updated;
-            }
-            return item;
-          }));
-
-          const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
-          await updateFileMetadata(token, driveRes.id, description);
-          if (onToast) onToast(`✅ ${r.fileName} successfully synced to Google Drive!`);
-        } else {
-          if (onToast) onToast(`Failed to upload ${r.fileName} to Google Drive.`);
+      let driveRes: { id: string; webViewLink: string } | null = null;
+      if (webhook) {
+        driveRes = await uploadReceiptViaWebhook(webhook, r.fileName, r.dataUrl, r);
+      } else if (token) {
+        const year = r.date ? r.date.split('-')[0] : new Date().getFullYear().toString();
+        const clientFolder = r.clientName || 'General';
+        const folderId = await ensureFolderPath(token, ['Receipt Vault', year, clientFolder]);
+        if (folderId) {
+          driveRes = await uploadReceiptToDrive(token, folderId, r.fileName, r.dataUrl);
+          if (driveRes) {
+            const description = `Vendor: ${r.vendor}\nTotal: $${r.total}\nDate: ${r.date}\nSchedule: ${r.schedule}\nIRS Line: ${r.irsLineNumber} (${r.irsLineTitle})\nSHA-256: ${r.fileHash}`;
+            await updateFileMetadata(token, driveRes.id, description);
+          }
         }
+      }
+
+      if (driveRes) {
+        saveImageToDisk(id, r.dataUrl);
+        setReceipts(prev => prev.map(item => {
+          if (item.id === id) {
+            const updated = {
+              ...item,
+              googleDriveId: driveRes!.id,
+              googleDriveLink: driveRes!.webViewLink
+            };
+            delete updated.dataUrl; // RAM optimization
+            return updated;
+          }
+          return item;
+        }));
+        if (onToast) onToast(`✅ ${r.fileName} successfully synced to Google Drive!`);
+      } else {
+        if (onToast) onToast(`Failed to upload ${r.fileName} to Google Drive.`);
       }
     } catch (err: any) {
       if (onToast) onToast(`Sync error: ${err.message || String(err)}`);
