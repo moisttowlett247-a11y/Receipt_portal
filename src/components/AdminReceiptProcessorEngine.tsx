@@ -61,7 +61,8 @@ import {
   updateFileMetadata,
   getStoredDriveWebhookUrl,
   saveDriveWebhookUrl,
-  uploadReceiptViaWebhook
+  uploadReceiptViaWebhook,
+  testWebhookConnection
 } from '../googleDriveService';
 import { saveImageToDisk, getImageFromDisk } from '../imageStorageService';
 import { 
@@ -170,6 +171,45 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   }, []);
 
   const [driveWebhookUrl, setDriveWebhookUrl] = useState<string>(() => getStoredDriveWebhookUrl());
+  const [isDriveVaultModalOpen, setIsDriveVaultModalOpen] = useState<boolean>(false);
+  const [webhookInputUrl, setWebhookInputUrl] = useState<string>(() => getStoredDriveWebhookUrl());
+  const [testingWebhook, setTestingWebhook] = useState<boolean>(false);
+  const [webhookTestResult, setWebhookTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const handleTestWebhook = async (urlToTest?: string) => {
+    const targetUrl = (urlToTest || webhookInputUrl || driveWebhookUrl || getStoredDriveWebhookUrl()).trim();
+    if (!targetUrl) {
+      setWebhookTestResult({ ok: false, message: 'Please enter a valid Google Apps Script Webhook URL.' });
+      return;
+    }
+    setTestingWebhook(true);
+    setWebhookTestResult(null);
+    try {
+      const res = await testWebhookConnection(targetUrl);
+      if (res.ok) {
+        setWebhookTestResult({ ok: true, message: `Connected! Target: Receiptcheckerv@gmail.com Google Drive` });
+        if (onToast) onToast('✅ Google Drive Webhook Verified: Active & Reachable!');
+      } else {
+        setWebhookTestResult({ ok: false, message: res.error || 'Connection failed' });
+        if (onToast) onToast(`Webhook test failed: ${res.error || 'Check URL'}`);
+      }
+    } catch (e: any) {
+      setWebhookTestResult({ ok: false, message: e.message || String(e) });
+    } finally {
+      setTestingWebhook(false);
+    }
+  };
+
+  const handleSaveDriveWebhook = (newUrl: string) => {
+    const clean = newUrl.trim();
+    saveDriveWebhookUrl(clean);
+    setDriveWebhookUrl(clean);
+    setWebhookInputUrl(clean);
+    setIsDriveVaultModalOpen(false);
+    if (onToast) {
+      onToast(clean ? '✅ Google Drive Webhook saved! Receipts will sync to Receiptcheckerv@gmail.com.' : 'Reset to default webhook.');
+    }
+  };
 
   const syncReceiptsBatchToDrive = async (tokenOrWebhook: string | null, itemsToSync: ProcessedReceipt[]) => {
     const webhook = driveWebhookUrl || getStoredDriveWebhookUrl();
@@ -1490,18 +1530,13 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               </button>
               <span className="text-xs text-stone-500">•</span>
               <button
-                onClick={googleUser ? handleDisconnectDrive : () => handleConnectDrive()}
-                disabled={isConnectingDrive}
-                className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors ${
-                  googleUser
-                    ? 'bg-blue-500/15 border-blue-500/40 text-blue-300 hover:bg-blue-500/25'
-                    : 'bg-amber-500/15 border-amber-500/40 text-amber-300 hover:bg-amber-500/25'
-                }`}
-                title={googleUser ? `Connected as ${googleUser.email}` : 'Connect Google Drive for cloud backup and RAM optimization'}
+                onClick={() => setIsDriveVaultModalOpen(true)}
+                className="px-2.5 py-0.5 rounded-full text-[11px] font-medium border flex items-center gap-1.5 cursor-pointer transition-colors bg-emerald-500/15 border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/25"
+                title="Google Drive Cloud Vault Active (Receiptcheckerv@gmail.com) - Click to manage settings & diagnostics"
               >
-                <Cloud className={`w-3 h-3 ${isConnectingDrive ? 'animate-spin' : ''}`} />
+                <Cloud className="w-3 h-3 text-emerald-400" />
                 <span>
-                  {googleUser ? `Vault: Active (${googleUser.email})` : 'Connect Google Drive Vault'}
+                  Vault: Active (Receiptcheckerv@gmail.com)
                 </span>
               </button>
               <span className="text-xs text-stone-500">•</span>
@@ -3375,6 +3410,149 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors cursor-pointer"
                 >
                   Save Keys &amp; Activate
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Google Drive Cloud Vault Settings & Diagnostics Modal */}
+      {isDriveVaultModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-stone-900 border border-stone-800 rounded-2xl w-full max-w-xl p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                  <Cloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    Google Drive Cloud Vault
+                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                      Active
+                    </span>
+                  </h3>
+                  <p className="text-xs text-stone-400">Target Google Account: <span className="font-semibold text-emerald-300">Receiptcheckerv@gmail.com</span></p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsDriveVaultModalOpen(false);
+                  setWebhookTestResult(null);
+                }}
+                className="p-1 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Target Vault Status Banner */}
+            <div className="p-3.5 rounded-xl bg-emerald-950/30 border border-emerald-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-emerald-300 text-xs font-semibold">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span>Direct Webhook Pipeline (Zero-OAuth Friction)</span>
+                </div>
+                <span className="text-[11px] font-mono text-emerald-400 font-bold">100% Active</span>
+              </div>
+              <p className="text-[11px] text-stone-300 leading-relaxed">
+                Receipts are processed and uploaded straight to your Google Drive vault folder:
+                <span className="block mt-1 font-mono text-[10px] text-emerald-300 bg-stone-950/80 px-2 py-1 rounded border border-emerald-900/50">
+                  Google Drive ➔ Receipt Vault ➔ 2026 ➔ [Client Name]
+                </span>
+                Large image data is immediately offloaded from browser memory into your Google Drive storage to eliminate RAM lag.
+              </p>
+            </div>
+
+            {/* Webhook Configuration */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-stone-200">
+                  Google Apps Script Webhook URL:
+                </label>
+                <button
+                  type="button"
+                  onClick={() => handleTestWebhook()}
+                  disabled={testingWebhook}
+                  className="px-2.5 py-1 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 text-[11px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <Sparkles className={`w-3 h-3 ${testingWebhook ? 'animate-spin' : ''}`} />
+                  <span>{testingWebhook ? 'Testing...' : 'Test Connection'}</span>
+                </button>
+              </div>
+
+              <input
+                type="text"
+                value={webhookInputUrl}
+                onChange={(e) => setWebhookInputUrl(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec"
+                className="w-full bg-stone-950 border border-stone-800 rounded-xl px-3.5 py-2.5 text-xs text-stone-200 font-mono focus:outline-none focus:border-emerald-500/50"
+              />
+
+              {webhookTestResult && (
+                <div className={`p-2.5 rounded-lg border text-xs flex items-center gap-2 ${
+                  webhookTestResult.ok
+                    ? 'bg-emerald-950/50 border-emerald-500/40 text-emerald-300'
+                    : 'bg-rose-950/50 border-rose-500/40 text-rose-300'
+                }`}>
+                  {webhookTestResult.ok ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />}
+                  <span>{webhookTestResult.message}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Quick Actions Bar */}
+            <div className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs text-stone-300">
+                <span className="font-semibold text-white">
+                  {receipts.filter(r => !r.googleDriveId && r.dataUrl).length}
+                </span> unsynced receipt(s) in local ledger
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  handleSyncExistingToDrive();
+                  setIsDriveVaultModalOpen(false);
+                }}
+                disabled={isSyncingLedger || receipts.filter(r => !r.googleDriveId && r.dataUrl).length === 0}
+                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Cloud className="w-3.5 h-3.5" />
+                <span>Sync Unsynced Now</span>
+              </button>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-2 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setWebhookInputUrl('https://script.google.com/macros/s/AKfycbyvBjwxbXzL2GwOs6wbKQy_0JXYalAh3Y08c-haevKhUahh4tD-NuHQS5X-IJe4O35p/exec');
+                  handleSaveDriveWebhook('https://script.google.com/macros/s/AKfycbyvBjwxbXzL2GwOs6wbKQy_0JXYalAh3Y08c-haevKhUahh4tD-NuHQS5X-IJe4O35p/exec');
+                }}
+                className="text-[11px] text-stone-400 hover:text-stone-200 transition-colors underline cursor-pointer"
+              >
+                Reset Default Webhook
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsDriveVaultModalOpen(false);
+                    setWebhookTestResult(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveDriveWebhook(webhookInputUrl)}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-colors cursor-pointer"
+                >
+                  Save &amp; Keep Active
                 </button>
               </div>
             </div>

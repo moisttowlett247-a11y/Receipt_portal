@@ -29,6 +29,29 @@ export function saveDriveWebhookUrl(url: string): void {
   } catch {}
 }
 
+export async function testWebhookConnection(webhookUrl: string): Promise<{ ok: boolean; message?: string; error?: string }> {
+  try {
+    const payload = {
+      action: 'ping',
+      test: true,
+      timestamp: new Date().toISOString()
+    };
+    const resp = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'text/plain;charset=utf-8'
+      },
+      body: JSON.stringify(payload)
+    });
+    if (resp.ok) {
+      return { ok: true, message: 'Google Apps Script Webhook is active and reachable!' };
+    }
+    return { ok: false, error: `Webhook returned HTTP status ${resp.status}` };
+  } catch (e: any) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
 /**
  * Tests if the given access token is valid and active
  */
