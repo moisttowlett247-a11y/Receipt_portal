@@ -13,7 +13,7 @@ const provider = new GoogleAuthProvider();
 // Request Workspace scopes
 SCOPES.forEach(scope => provider.addScope(scope));
 provider.setCustomParameters({
-  prompt: 'select_account'
+  prompt: 'select_account consent'
 });
 
 // Flag to indicate if we are in the middle of a sign-in flow.
@@ -104,6 +104,19 @@ export const setManualAccessToken = (token: string, email?: string): { email?: s
 
 export const getAccessToken = (): string | null => {
   return cachedAccessToken;
+};
+
+export const getDirectOAuthUrl = (): string => {
+  const rootUrl = 'https://accounts.google.com/o/oauth2/v2/auth';
+  const options = {
+    redirect_uri: `https://${firebaseConfig.authDomain}/__/auth/handler`,
+    client_id: firebaseConfig.oAuthClientId,
+    response_type: 'token',
+    prompt: 'select_account consent',
+    scope: SCOPES.join(' ')
+  };
+  const qs = new URLSearchParams(options);
+  return `${rootUrl}?${qs.toString()}`;
 };
 
 export const logoutGoogle = async () => {
