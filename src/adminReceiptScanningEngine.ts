@@ -11,7 +11,7 @@ import {
   ClientSubmission 
 } from './clientSubmissionService';
 import { getBackendApiUrl } from './urlUtils';
-import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata } from './googleDriveService';
+import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata, uploadReceiptViaWebhook, getStoredDriveWebhookUrl } from './googleDriveService';
 
 export interface ExtractedLineItem {
   description: string;
@@ -1296,6 +1296,7 @@ export async function runParallelBatchScan(
     defaultClientName?: string;
     existingLedger: ProcessedReceipt[];
     googleAccessToken?: string;
+    driveWebhookUrl?: string;
     onWorkerUpdate: (workers: ParallelWorkerState[]) => void;
     onItemProcessed: (processed: ProcessedReceipt, index: number, total: number) => void;
   }
@@ -1474,29 +1475,47 @@ export async function runParallelBatchScan(
       const initialStatus: ProcessedReceipt['status'] = 
         dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
 
-      // 5. Optional Google Drive Cloud Backup (Forensic Blob Storage)
+      // 5. Google Drive Cloud Vault Backup (Forensic Blob Storage with Duplicate Protection)
       let googleDriveId: string | undefined = undefined;
       let googleDriveLink: string | undefined = undefined;
 
-      if (options.googleAccessToken && dataUrl && initialStatus !== 'REJECTED') {
+      const targetWebhook = options.driveWebhookUrl || getStoredDriveWebhookUrl();
+      const hasDriveDestination = Boolean(targetWebhook || options.googleAccessToken);
+
+      if (hasDriveDestination && dataUrl && initialStatus !== 'REJECTED' && dupCheck.status !== 'DUPLICATE_EXACT') {
         try {
-          worker.currentStep = 'Syncing to Google Drive Cloud Vault...';
+          worker.currentStep = `Syncing to Google Drive Vault (${clientName})...`;
           worker.progressPercent = 98;
           options.onWorkerUpdate([...workers]);
 
-          // Structure: Receipt Vault > 2026 > Client Name
-          const year = extracted.date ? extracted.date.split('-')[0] : new Date().getFullYear().toString();
-          const folderId = await ensureFolderPath(options.googleAccessToken, ['Receipt Vault', year, clientName]);
-          
-          if (folderId) {
-            const driveRes = await uploadReceiptToDrive(options.googleAccessToken, folderId, item.fileName, dataUrl);
+          if (targetWebhook) {
+            // High-performance Direct Webhook Upload (Receiptcheckerv@gmail.com)
+            const driveRes = await uploadReceiptViaWebhook(targetWebhook, item.fileName, dataUrl, {
+              vendor: extracted.vendor,
+              total: extracted.total,
+              date: extracted.date,
+              schedule: taxCls.schedule,
+              clientName
+            });
             if (driveRes) {
               googleDriveId = driveRes.id;
               googleDriveLink = driveRes.webViewLink;
+            }
+          } else if (options.googleAccessToken) {
+            // Google OAuth REST API Fallback
+            const year = extracted.date ? extracted.date.split('-')[0] : new Date().getFullYear().toString();
+            const folderId = await ensureFolderPath(options.googleAccessToken, ['Receipt Vault', year, clientName]);
+            
+            if (folderId) {
+              const driveRes = await uploadReceiptToDrive(options.googleAccessToken, folderId, item.fileName, dataUrl);
+              if (driveRes) {
+                googleDriveId = driveRes.id;
+                googleDriveLink = driveRes.webViewLink;
 
-              // Attach forensic metadata to Drive description
-              const description = `Vendor: ${extracted.vendor}\nTotal: $${extracted.total}\nDate: ${extracted.date}\nSchedule: ${taxCls.schedule}\nIRS Line: ${taxCls.lineNumber} (${taxCls.lineTitle})\nSHA-256: ${fileHash}`;
-              await updateFileMetadata(options.googleAccessToken, driveRes.id, description);
+                // Attach forensic metadata to Drive description
+                const description = `Vendor: ${extracted.vendor}\nTotal: $${extracted.total}\nDate: ${extracted.date}\nSchedule: ${taxCls.schedule}\nIRS Line: ${taxCls.lineNumber} (${taxCls.lineTitle})\nSHA-256: ${fileHash}`;
+                await updateFileMetadata(options.googleAccessToken, driveRes.id, description);
+              }
             }
           }
         } catch (driveErr) {

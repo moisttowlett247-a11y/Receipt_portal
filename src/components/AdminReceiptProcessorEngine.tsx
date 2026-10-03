@@ -136,11 +136,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [autoProcessOnUpload, setAutoProcessOnUpload] = useState<boolean>(true);
   const googleAccessTokenRef = useRef<string | null>(null);
   const autoProcessOnUploadRef = useRef<boolean>(true);
+  const autoSyncToCloudRef = useRef<boolean>(true);
   const executeBatchScanRef = useRef<((itemsOverride?: ReceiptInputItem[]) => Promise<void>) | null>(null);
 
   useEffect(() => {
     autoProcessOnUploadRef.current = autoProcessOnUpload;
   }, [autoProcessOnUpload]);
+
+  useEffect(() => {
+    autoSyncToCloudRef.current = autoSyncToCloud;
+  }, [autoSyncToCloud]);
 
   useEffect(() => {
     googleAccessTokenRef.current = googleAccessToken;
@@ -222,6 +227,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
     for (const r of itemsToSync) {
       if (!r.dataUrl || r.googleDriveId) continue;
+      // Duplication Prevention Guard: never sync detected duplicates to cloud
+      if (r.status === 'REJECTED' || r.duplicateStatus === 'DUPLICATE_EXACT') {
+        continue;
+      }
       setSingleSyncingId(r.id);
       try {
         let driveRes: { id: string; webViewLink: string } | null = null;
@@ -1059,6 +1068,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         defaultClientName: selectedClientTarget,
         existingLedger: receiptsRef.current,
         googleAccessToken: googleAccessTokenRef.current || undefined,
+        driveWebhookUrl: autoSyncToCloudRef.current ? (driveWebhookUrl || getStoredDriveWebhookUrl()) : undefined,
         onWorkerUpdate: updatedWorkers => {
           setWorkers(updatedWorkers);
         },
@@ -1147,6 +1157,25 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       if (onToast) {
         onToast(`✅ Batch finished! Processed ${scannedResults.length} receipts in ${totalSec.toFixed(1)}s (${speed} receipts/sec)`);
+      }
+
+      // Auto-Sync to Google Drive Cloud Vault with Duplication Prevention
+      if (autoSyncToCloudRef.current) {
+        const itemsToAutoSync = scannedResults.filter(
+          r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED' && r.duplicateStatus !== 'DUPLICATE_EXACT'
+        );
+        const dupesBlocked = scannedResults.length - itemsToAutoSync.length;
+        if (dupesBlocked > 0 && onToast) {
+          onToast(`🛡️ Duplicate Protection: ${dupesBlocked} duplicate receipt(s) blocked from Google Drive upload.`);
+        }
+        if (itemsToAutoSync.length > 0) {
+          if (onToast) {
+            onToast(`☁️ Auto-syncing ${itemsToAutoSync.length} verified non-duplicate receipt(s) to Google Drive...`);
+          }
+          setTimeout(() => {
+            syncReceiptsBatchToDrive(null, itemsToAutoSync);
+          }, 200);
+        }
       }
     } catch (err: any) {
       console.error('Batch scanning failed:', err);
@@ -1425,14 +1454,25 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       if (!token && !webhook) return;
     }
 
-    const localReceipts = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
-    if (localReceipts.length === 0) {
-      if (onToast) onToast('No local unsynced receipts found in ledger.');
+    const allUnsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl);
+    const validReceipts = allUnsynced.filter(r => r.status !== 'REJECTED' && r.duplicateStatus !== 'DUPLICATE_EXACT');
+    const blockedDuplicates = allUnsynced.length - validReceipts.length;
+
+    if (validReceipts.length === 0) {
+      if (blockedDuplicates > 0 && onToast) {
+        onToast(`🛡️ Duplicate Protection: ${blockedDuplicates} receipt(s) are flagged as duplicates and blocked from uploading.`);
+      } else if (onToast) {
+        onToast('No local unsynced receipts found in ledger.');
+      }
       return;
     }
 
-    if (onToast) onToast(`🚀 Syncing ${localReceipts.length} unsynced receipt(s) to Google Drive...`);
-    await syncReceiptsBatchToDrive(token, localReceipts);
+    if (blockedDuplicates > 0 && onToast) {
+      onToast(`🛡️ Duplicate Protection: ${blockedDuplicates} duplicate receipt(s) excluded from upload.`);
+    }
+
+    if (onToast) onToast(`🚀 Syncing ${validReceipts.length} verified receipt(s) to Google Drive...`);
+    await syncReceiptsBatchToDrive(token, validReceipts);
   };
 
   const handleSyncSingleToDrive = async (id: string) => {
@@ -1445,6 +1485,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
     const r = receiptsRef.current.find(item => item.id === id);
     if (!r) return;
+    if (r.duplicateStatus === 'DUPLICATE_EXACT' || r.status === 'REJECTED') {
+      if (onToast) onToast(`🛡️ Blocked: "${r.fileName}" is a detected duplicate. Duplicates cannot be synced to Google Drive.`);
+      return;
+    }
     if (r.googleDriveId) {
       if (onToast) onToast(`Receipt is already synced to Google Drive.`);
       return;

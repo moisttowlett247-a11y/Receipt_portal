@@ -367,21 +367,54 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
     setIsUploading(true);
     setUploadSuccessCount(null);
-    setUploadProgress({ current: 0, total: selectedFiles.length });
+
+    // 1. Client-Side Duplication Prevention Guard
+    const existingKeys = new Set(
+      submissions.map(s => `${(s.clientName || '').trim().toLowerCase()}__${s.fileName}__${s.fileSize}`)
+    );
+    const seenBatchKeys = new Set<string>();
+    const uniqueFiles: File[] = [];
+    let dupesBlocked = 0;
+
+    const currentClientName = clientEntityName.trim() || clientSession.displayName || 'Client Business';
+    const clientKeyPrefix = currentClientName.trim().toLowerCase();
+
+    for (const file of selectedFiles) {
+      const fileKey = `${clientKeyPrefix}__${file.name}__${file.size}`;
+      if (existingKeys.has(fileKey) || seenBatchKeys.has(fileKey)) {
+        dupesBlocked++;
+        continue;
+      }
+      seenBatchKeys.add(fileKey);
+      uniqueFiles.push(file);
+    }
+
+    if (uniqueFiles.length === 0) {
+      setIsUploading(false);
+      setVoucherError(`🛡️ Duplicate Protection: All ${selectedFiles.length} selected receipt(s) have already been submitted! Duplicate uploads are blocked.`);
+      return;
+    }
+
+    if (dupesBlocked > 0) {
+      setVoucherSuccess(`🛡️ Duplicate Protection: Filtered out ${dupesBlocked} duplicate receipt(s) that were already in the intake queue.`);
+      setTimeout(() => setVoucherSuccess(null), 6000);
+    }
+
+    setUploadProgress({ current: 0, total: uniqueFiles.length });
 
     try {
       const payloads = await Promise.all(
-        selectedFiles.map(async (file, idx) => {
+        uniqueFiles.map(async (file, idx) => {
           let dataUrl: string | undefined = undefined;
           try {
             dataUrl = await compressFileForPreview(file);
           } catch {
             dataUrl = undefined;
           }
-          setUploadProgress({ current: idx + 1, total: selectedFiles.length });
+          setUploadProgress({ current: idx + 1, total: uniqueFiles.length });
           return {
             clientId: clientSession.userId,
-            clientName: clientEntityName.trim() || clientSession.displayName || 'Client Business',
+            clientName: currentClientName,
             clientEmail: clientEntityEmail.trim() || clientSession.email || 'client@example.com',
             fileName: file.name,
             fileSize: file.size,
