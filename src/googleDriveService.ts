@@ -7,7 +7,7 @@
 const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API_BASE = 'https://www.googleapis.com/upload/drive/v3';
 const WEBHOOK_STORAGE_KEY = 'receipt_processor_google_drive_webhook_url';
-export const DEFAULT_DRIVE_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbyvBjwxbXzL2GwOs6wbKQy_0JXYalAh3Y08c-haevKhUahh4tD-NuHQS5X-IJe4O35p/exec';
+export const DEFAULT_DRIVE_WEBHOOK_URL = 'https://script.google.com/macros/s/AKfycbw3cCABOZOkBZiljSzOWD2eBKhpu_3Y47EalOpdmGMqKqMNk4donj-heQqdcwcNEijsEg/exec';
 
 export function getStoredDriveWebhookUrl(): string {
   try {
@@ -31,19 +31,22 @@ export function saveDriveWebhookUrl(url: string): void {
 
 export async function testWebhookConnection(webhookUrl: string): Promise<{ ok: boolean; message?: string; error?: string }> {
   try {
-    const payload = {
-      action: 'ping',
-      test: true,
-      timestamp: new Date().toISOString()
-    };
-    const resp = await fetch(webhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8'
-      },
-      body: JSON.stringify(payload)
-    });
+    const resp = await fetch(webhookUrl);
+    const text = await resp.text().catch(() => '');
+    if (text.includes('You need access') || text.includes('accounts.google.com') || text.includes('ServiceLogin')) {
+      return {
+        ok: false,
+        error: 'Google Permission Needed: In your Apps Script deployment, click Deploy ➔ Manage deployments ➔ Edit (pencil icon), and set "Who has access" to "Anyone".'
+      };
+    }
+
     if (resp.ok) {
+      try {
+        const json = JSON.parse(text);
+        if (json.status === 'ok' || json.status === 'success') {
+          return { ok: true, message: 'Google Apps Script Webhook is active and connected to Receiptcheckerv@gmail.com!' };
+        }
+      } catch {}
       return { ok: true, message: 'Google Apps Script Webhook is active and reachable!' };
     }
     return { ok: false, error: `Webhook returned HTTP status ${resp.status}` };
@@ -201,12 +204,29 @@ export async function uploadReceiptViaWebhook(
       body: JSON.stringify(payload)
     });
 
+    const text = await resp.text().catch(() => '');
+    if (text.includes('You need access') || text.includes('accounts.google.com') || text.includes('ServiceLogin')) {
+      console.warn('Webhook access denied: In your Apps Script deployment, change "Who has access" to "Anyone".');
+      return null;
+    }
+
     if (resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      return {
-        id: data.id || `webhook_drive_${Date.now()}`,
-        webViewLink: data.url || data.webViewLink || 'https://drive.google.com'
-      };
+      try {
+        const data = JSON.parse(text);
+        if (data.status === 'error') {
+          console.warn('Google Apps Script error:', data.message);
+          return null;
+        }
+        return {
+          id: data.id || `webhook_drive_${Date.now()}`,
+          webViewLink: data.url || data.webViewLink || 'https://drive.google.com'
+        };
+      } catch {
+        return {
+          id: `webhook_drive_${Date.now()}`,
+          webViewLink: 'https://drive.google.com'
+        };
+      }
     }
     return null;
   } catch (err) {

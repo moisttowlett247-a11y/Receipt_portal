@@ -609,7 +609,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     };
   }, [receipts]);
 
-  // All receipts stored locally in memory awaiting Google Drive cloud sync
+  // Google Drive cloud sync connection state & unsynced receipts
+  const isDriveConnected = Boolean(googleAccessToken || driveWebhookUrl || getStoredDriveWebhookUrl());
+
   const unsyncedReceipts = useMemo(() => {
     return receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
   }, [receipts]);
@@ -2310,7 +2312,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             <span>
               {isSyncingLedger
                 ? 'Syncing Vault...'
-                : googleAccessToken
+                : isDriveConnected
                 ? `Sync Unsynced to Cloud (${unsyncedReceipts.length})`
                 : `Connect Drive & Sync (${unsyncedReceipts.length})`}
             </span>
@@ -2405,15 +2407,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 <div className="text-white font-bold flex items-center gap-2">
                   <span>{unsyncedReceipts.length} Receipt{unsyncedReceipts.length > 1 ? 's' : ''} Stored Locally in Browser Memory</span>
                   <span className={`px-2 py-0.2 rounded-full text-[10px] font-mono font-bold ${
-                    googleAccessToken ? 'bg-blue-500/20 text-blue-300' : 'bg-amber-500/20 text-amber-300'
+                    isDriveConnected ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'
                   }`}>
-                    {googleAccessToken ? 'Ready to Sync' : 'Google Drive Disconnected'}
+                    {isDriveConnected ? 'Vault Connected & Ready to Sync' : 'Google Drive Disconnected'}
                   </span>
                 </div>
                 <p className="text-stone-300 text-[11px] mt-0.5">
-                  {googleAccessToken
-                    ? 'Your receipts are ready to be uploaded to your Google Drive Vault (Receipt Vault / 2026 / Client Name). Click to sync now.'
-                    : 'Connect your Google account to automatically back up all uploaded receipts directly to Google Drive and keep browser RAM light.'}
+                  {isDriveConnected
+                    ? 'Receipt Vault is connected (Receiptcheckerv@gmail.com). Click to upload receipts directly to Google Drive and keep browser RAM light.'
+                    : 'Connect your Google account or Webhook to automatically back up all uploaded receipts directly to Google Drive and keep browser RAM light.'}
                 </p>
               </div>
             </div>
@@ -2422,13 +2424,13 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               <button
                 onClick={handleSyncExistingToDrive}
                 disabled={isSyncingLedger}
-                className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-bold flex items-center gap-2 transition-colors cursor-pointer shadow-lg disabled:opacity-50 text-xs"
+                className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold flex items-center gap-2 transition-colors cursor-pointer shadow-lg disabled:opacity-50 text-xs"
               >
                 <Cloud className={`w-4 h-4 ${isSyncingLedger ? 'animate-spin' : ''}`} />
                 <span>
                   {isSyncingLedger
                     ? 'Syncing to Drive...'
-                    : googleAccessToken
+                    : isDriveConnected
                     ? `Sync All (${unsyncedReceipts.length}) to Cloud Vault`
                     : `Connect Google Drive & Sync (${unsyncedReceipts.length})`}
                 </span>
@@ -2674,18 +2676,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                             onClick={() => handleSyncSingleToDrive(r.id)}
                             disabled={singleSyncingId === r.id}
                             className={`flex flex-col items-center gap-0.5 px-2 py-1 rounded transition-colors cursor-pointer ${
-                              googleAccessToken
-                                ? 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20'
+                              isDriveConnected
+                                ? 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20'
                                 : 'bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700'
                             }`}
-                            title={googleAccessToken ? "Click to sync receipt to Google Drive" : "Connect Google Drive & sync this receipt"}
+                            title={isDriveConnected ? "Click to sync receipt to Google Drive Vault" : "Connect Google Drive & sync this receipt"}
                           >
                             <div className="flex items-center gap-1">
-                              <Cloud className="w-3.5 h-3.5 text-blue-400" />
-                              <Upload className="w-2.5 h-2.5 text-blue-300" />
+                              <Cloud className="w-3.5 h-3.5 text-emerald-400" />
+                              <Upload className="w-2.5 h-2.5 text-emerald-300" />
                             </div>
                             <span className="text-[9px] font-mono uppercase font-semibold">
-                              {googleAccessToken ? 'Sync to Cloud' : 'Connect & Sync'}
+                              {isDriveConnected ? 'Sync to Cloud' : 'Connect & Sync'}
                             </span>
                           </button>
                         )}
@@ -2717,8 +2719,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                             <button
                               onClick={() => handleSyncSingleToDrive(r.id)}
                               disabled={singleSyncingId === r.id}
-                              className="p-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 transition-colors cursor-pointer"
-                              title={googleAccessToken ? "Sync to Google Drive Vault" : "Connect Google Drive & Sync"}
+                              className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-colors cursor-pointer"
+                              title={isDriveConnected ? "Sync to Google Drive Vault (Receiptcheckerv@gmail.com)" : "Connect Google Drive & Sync"}
                             >
                               <Cloud className={`w-3.5 h-3.5 ${singleSyncingId === r.id ? 'animate-spin' : ''}`} />
                             </button>
@@ -3529,8 +3531,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
               <button
                 type="button"
                 onClick={() => {
-                  setWebhookInputUrl('https://script.google.com/macros/s/AKfycbyvBjwxbXzL2GwOs6wbKQy_0JXYalAh3Y08c-haevKhUahh4tD-NuHQS5X-IJe4O35p/exec');
-                  handleSaveDriveWebhook('https://script.google.com/macros/s/AKfycbyvBjwxbXzL2GwOs6wbKQy_0JXYalAh3Y08c-haevKhUahh4tD-NuHQS5X-IJe4O35p/exec');
+                  setWebhookInputUrl('https://script.google.com/macros/s/AKfycbw3cCABOZOkBZiljSzOWD2eBKhpu_3Y47EalOpdmGMqKqMNk4donj-heQqdcwcNEijsEg/exec');
+                  handleSaveDriveWebhook('https://script.google.com/macros/s/AKfycbw3cCABOZOkBZiljSzOWD2eBKhpu_3Y47EalOpdmGMqKqMNk4donj-heQqdcwcNEijsEg/exec');
                 }}
                 className="text-[11px] text-stone-400 hover:text-stone-200 transition-colors underline cursor-pointer"
               >
