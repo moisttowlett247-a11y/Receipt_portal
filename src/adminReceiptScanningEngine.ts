@@ -797,28 +797,31 @@ export interface ScanReceiptAiOptions {
   onStep?: (step: string) => void;
 }
 
+export type ExtractedReceiptMetadata = {
+  vendor: string;
+  date: string;
+  lineItems: ExtractedLineItem[];
+  subtotal: number;
+  tax: number;
+  tip: number;
+  total: number;
+  paymentMethod: string;
+  cardLast4?: string;
+  invoiceNumber?: string;
+  transactionNumber?: string;
+  referenceId?: string;
+  category?: string;
+  schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
+  irsLineNumber?: string;
+  irsLineTitle?: string;
+  confidence: number;
+  memo: string;
+};
+
 export interface ScanReceiptAiOutput {
   success: boolean;
-  data?: {
-    vendor: string;
-    date: string;
-    lineItems: ExtractedLineItem[];
-    subtotal: number;
-    tax: number;
-    tip: number;
-    total: number;
-    paymentMethod: string;
-    cardLast4?: string;
-    invoiceNumber?: string;
-    transactionNumber?: string;
-    referenceId?: string;
-    category?: string;
-    schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
-    irsLineNumber?: string;
-    irsLineTitle?: string;
-    confidence: number;
-    memo: string;
-  };
+  data?: ExtractedReceiptMetadata;
+  allReceipts?: ExtractedReceiptMetadata[];
   errorMessage?: string;
   source?: 'CLIENT_GEMINI' | 'SERVER_API';
 }
@@ -876,21 +879,22 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
   }
 
   const promptText = 
-    "Analyze this receipt with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+    "Analyze this image with forensic accounting precision. Carefully inspect the entire photo: if multiple physically distinct purchase receipts, invoices, or slips are present (side-by-side, in a grid, or stacked), you MUST extract EACH AND EVERY ONE as a separate item in the 'receipts' array! If there is 1 receipt, return 1 item. If there are 2, 3, or more receipts, extract ALL of them. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
 
   const systemInstructionText = 
     `You are a certified forensic CPA accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax (Schedule C / Schedule F) and QuickBooks Online reconciliation.\n` +
     `CRITICAL RULES:\n` +
-    `1. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'. If 2-digit year (e.g. 26), format as 2026.\n` +
-    `2. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged or paid to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n` +
-    `3. LINE ITEMS & SUBTOTAL: 'subtotal' is pre-tax. 'tax' is sales tax. Extract line items in 'items'.\n` +
-    `4. VENDOR: Extract full legal merchant name at the top of the receipt.\n` +
-    `5. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
-    `6. DISTINGUISH TRANSACTION NUMBER vs REFERENCE ID vs INVOICE NUMBER:\n` +
+    `1. MULTI-RECEIPT DETECTION: Carefully scan the ENTIRE image across all quadrants. If the photo contains multiple receipts laid out together (e.g. 2, 3, 4, or more receipts on a table or counter), YOU MUST EXTRACT EVERY SINGLE RECEIPT AS A SEPARATE ENTRY IN THE 'receipts' ARRAY! Never stop after the first receipt.\n` +
+    `2. TRANSACTION DATE: Extract the ACTUAL date the purchase occurred. Ignore coupon expiration dates or printed report dates. Format strictly as 'YYYY-MM-DD'. If 2-digit year (e.g. 26), format as 2026.\n` +
+    `3. GRAND TOTAL: 'total' MUST be the absolute FINAL amount charged or paid to the payment method. NEVER extract 'Cash Tendered', 'Subtotal', or 'Savings' as the total. If 'Balance Due' is $0.00, find the 'Amount Paid' or 'Charge' instead.\n` +
+    `4. LINE ITEMS & SUBTOTAL: 'subtotal' is pre-tax. 'tax' is sales tax. Extract line items in 'items'.\n` +
+    `5. VENDOR: Extract full legal merchant name at the top of the receipt.\n` +
+    `6. CARD LAST 4: Extract strictly the 4 digits if a credit/debit card was used.\n` +
+    `7. DISTINGUISH TRANSACTION NUMBER vs REFERENCE ID vs INVOICE NUMBER:\n` +
     `   - 'transaction_number': Strictly the register, POS, cashier, or terminal sequence transaction number (e.g. labeled 'TRANS #', 'TRAN #', 'TRANSACTION', 'TXN #', 'CHECK #', 'TICKET #', or 'SEQ #'). DO NOT put this into reference_id!\n` +
     `   - 'reference_id': Strictly the credit card processor, payment gateway, host, or terminal authorization reference code (e.g. labeled 'REF #', 'REF ID', 'REFERENCE', 'HOST REF #', 'ACQ REF', 'TRACE #', or 'AUTH/REF'). NEVER confuse with Trans #!\n` +
     `   - 'invoice_number': The formal billing invoice number or master receipt number (e.g. labeled 'INVOICE #', 'INV #', 'RECEIPT #', or 'ORDER #'). If none, leave empty string.\n` +
-    `7. Return strictly valid JSON conforming to the schema.`;
+    `8. Return strictly valid JSON conforming to the schema.`;
 
   const receiptSchema = {
     type: "OBJECT",
@@ -1139,6 +1143,7 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
         "gemini-flash-latest"
       ];
       let rawResult: any = null;
+      let rawReceiptsList: any[] = [];
       const MAX_CYCLES = 4;
 
       cycleLoop:
@@ -1192,9 +1197,11 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
 
                   if (parsed) {
                     if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
+                      rawReceiptsList = parsed.receipts;
                       rawResult = parsed.receipts[0];
                       break cycleLoop;
                     } else if (parsed.vendor && parsed.total !== undefined) {
+                      rawReceiptsList = [parsed];
                       rawResult = parsed;
                       break cycleLoop;
                     }
@@ -1229,8 +1236,24 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
         }
       }
 
-      if (rawResult) {
-        return normalizeOcrResult(rawResult, 'CLIENT_GEMINI');
+      if (rawReceiptsList.length > 0) {
+        const normalizedList = rawReceiptsList
+          .map(r => normalizeOcrResult(r, 'CLIENT_GEMINI').data)
+          .filter((d): d is NonNullable<typeof d> => Boolean(d));
+        if (normalizedList.length > 0) {
+          return {
+            success: true,
+            source: 'CLIENT_GEMINI',
+            data: normalizedList[0],
+            allReceipts: normalizedList
+          };
+        }
+      } else if (rawResult) {
+        const res = normalizeOcrResult(rawResult, 'CLIENT_GEMINI');
+        return {
+          ...res,
+          allReceipts: res.data ? [res.data] : []
+        };
       }
     } else {
       clientLastError = 'No local Gemini API keys configured. (Click "Configure Gemini Key" in the header or add GEMINI_API_KEY to GitHub Secrets)';
@@ -1255,7 +1278,22 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     if (scanResp.ok) {
       const scanJson = await scanResp.json();
       if (scanJson.success && scanJson.data) {
-        return normalizeOcrResult(scanJson.data, 'SERVER_API');
+        if (Array.isArray(scanJson.data.receipts) && scanJson.data.receipts.length > 0) {
+          const list = scanJson.data.receipts
+            .map((r: any) => normalizeOcrResult(r, 'SERVER_API').data)
+            .filter((d: any): d is NonNullable<typeof d> => Boolean(d));
+          return {
+            success: true,
+            source: 'SERVER_API',
+            data: list[0],
+            allReceipts: list
+          };
+        }
+        const res = normalizeOcrResult(scanJson.data, 'SERVER_API');
+        return {
+          ...res,
+          allReceipts: res.data ? [res.data] : []
+        };
       } else {
         serverLastError = scanJson.error || 'Server scan logic failed';
         if (scanJson.details) serverLastError += ` (${scanJson.details})`;
@@ -1476,11 +1514,11 @@ export async function runParallelBatchScan(
         fileHash = `hash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       }
 
-      // Pre-compress image client-side to max 1600px width/height and 0.82 JPEG quality
-      // Slashes 8-15MB phone photos to ~200KB, freeing 95% browser memory and vastly accelerating AI OCR & Drive uploads
+      // Pre-compress image client-side to max 2400px width/height and 0.85 JPEG quality
+      // Slashes 8-15MB phone photos to ~350KB while preserving pristine detail for multiple receipts in one frame
       if (dataUrl && (dataUrl.startsWith('data:image/') || (!dataUrl.startsWith('data:application/pdf') && !item.fileType?.includes('pdf')))) {
         try {
-          dataUrl = await compressImageForDrive(dataUrl, 1600, 0.82);
+          dataUrl = await compressImageForDrive(dataUrl, 2400, 0.85);
         } catch {
           // fallback to original if canvas conversion fails
         }
@@ -1576,9 +1614,10 @@ export async function runParallelBatchScan(
 
       let aiScanSuccess = false;
       let ocrErrorMessage = '';
+      let ocrRes: ScanReceiptAiOutput | null = null;
 
       if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/pdf'))) {
-        const ocrRes = await scanReceiptWithAI({
+        ocrRes = await scanReceiptWithAI({
           dataUrl,
           fileType: item.fileType,
           fileName: item.fileName,
@@ -1612,127 +1651,147 @@ export async function runParallelBatchScan(
         );
       }
 
-      // 3. Tax Classification
-      worker.currentStep = 'Classifying IRS Form 1040 Schedule...';
-      worker.progressPercent = 80;
-      options.onWorkerUpdate([...workers]);
-
-      const taxCls = (extracted.schedule && extracted.irsLineNumber && extracted.irsLineTitle)
-        ? {
-            schedule: extracted.schedule,
-            lineNumber: extracted.irsLineNumber,
-            lineTitle: extracted.irsLineTitle,
-            categoryName: extracted.category || 'Supplies',
-            confidence: 0.99
-          }
-        : classifyExtractedTaxSchedule(
-            extracted.vendor,
-            item.categoryHint || extracted.memo,
-            item.memo || extracted.memo,
-            item.fileName
-          );
-
-      // 4. Duplicate Check against existing ledger + newly scanned items
-      worker.currentStep = 'Running Duplicate Receipt Detector...';
-      worker.progressPercent = 95;
-      options.onWorkerUpdate([...workers]);
-
-      const dupCheck = evaluateReceiptDuplicate(
-        {
-          fileHash,
-          vendor: extracted.vendor,
-          total: extracted.total,
-          date: extracted.date,
-          clientName
-        },
-        currentLedger
-      );
-
-      const latency = Math.round(performance.now() - startTime);
-
-      // Only exact identical file duplicates are automatically REJECTED;
-      // Fuzzy matches are kept as PROCESSED with a warning status so legitimate repeat purchases are not lost.
-      const initialStatus: ProcessedReceipt['status'] = 
-        dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
-
-      // 5. Google Drive Cloud Vault Backup (Dispatched to Decoupled Queue)
-      // Workers finish OCR and classification immediately so subsequent queue items are scanned without I/O wait
+      // Metadata context for ledger entries and Drive sync
       const targetWebhook = options.driveWebhookUrl || getStoredDriveWebhookUrl();
       const hasDriveDestination = Boolean(targetWebhook || options.googleAccessToken);
-      const shouldSyncToDrive = hasDriveDestination && Boolean(dataUrl) && initialStatus !== 'REJECTED' && dupCheck.status !== 'DUPLICATE_EXACT';
-
       const submitterName = item.submittedBy || (item.clientEmail ? `${clientName} (${item.clientEmail})` : (clientName.toLowerCase().includes('admin') ? 'Administrator (moisttowlett247@gmail.com)' : clientName));
       const submitterRole = item.submittedByRole || (clientName.toLowerCase().includes('admin') ? 'ADMIN' : 'CLIENT');
       const uploadTimestamp = item.uploadedAt || new Date().toISOString();
 
-      const processedRecord: ProcessedReceipt = {
-        id: item.id || `rec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-        submissionId: item.id,
-        fileName: item.fileName,
-        fileSize: item.fileSize || (item.file?.size ?? 125000),
-        fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
-        dataUrl: dataUrl || item.dataUrl,
-        fileHash,
-        clientId: item.clientId || (clientName.toLowerCase().includes('admin') ? 'admin' : undefined),
-        clientName,
-        clientEmail: item.clientEmail,
-        submittedBy: submitterName,
-        submittedByRole: submitterRole,
-        uploadedAt: uploadTimestamp,
-        vendor: extracted.vendor,
-        normalizedVendor: normalizeVendorName(extracted.vendor),
-        date: extracted.date,
-        lineItems: extracted.lineItems,
-        subtotal: extracted.subtotal,
-        tax: extracted.tax,
-        tip: extracted.tip,
-        total: extracted.total,
-        paymentMethod: extracted.paymentMethod,
-        cardLast4: extracted.cardLast4,
-        invoiceNumber: extracted.invoiceNumber,
-        transactionNumber: extracted.transactionNumber,
-        referenceId: extracted.referenceId,
-        category: taxCls.categoryName,
-        schedule: taxCls.schedule,
-        irsLineNumber: taxCls.lineNumber,
-        irsLineTitle: taxCls.lineTitle,
-        confidence: Number((extracted.confidence * taxCls.confidence).toFixed(2)),
-        duplicateStatus: dupCheck.status,
-        duplicateReason: dupCheck.reason,
-        duplicateMatchId: dupCheck.matchedId,
-        status: initialStatus,
-        workerNodeId: worker.name,
-        processingDurationMs: latency,
-        memo: item.memo || extracted.memo,
-        processedAt: new Date().toISOString(),
-        ocrFailed: !aiScanSuccess,
-        ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined
-      };
+      // 3. Multi-Receipt Extraction Dispatcher
+      // If the AI model detected 2, 3, or more separate receipts in a single photo/scan,
+      // process and ledger EACH ONE as an independent forensic receipt!
+      const receiptsToProcess: ExtractedReceiptMetadata[] = (ocrRes?.allReceipts && ocrRes.allReceipts.length > 0)
+        ? ocrRes.allReceipts
+        : (extracted ? [extracted] : []);
 
-      if (shouldSyncToDrive && dataUrl) {
-        worker.currentStep = `Queued for Drive Vault (${clientName})...`;
-        enqueueDriveSync({
-          processedRecord,
-          dataUrl,
-          fileName: item.fileName,
-          clientName,
-          taxCls,
-          fileHash
-        });
+      if (receiptsToProcess.length > 1) {
+        worker.currentStep = `Detected ${receiptsToProcess.length} distinct receipts in image! Processing entries...`;
+        options.onWorkerUpdate([...workers]);
       }
 
-      currentLedger.push(processedRecord);
-      results.push(processedRecord);
+      for (let subIdx = 0; subIdx < receiptsToProcess.length; subIdx++) {
+        const receiptItem = receiptsToProcess[subIdx];
+        const isMulti = receiptsToProcess.length > 1;
 
-      // Update worker stats
-      worker.processedCount++;
-      worker.lastLatencyMs = latency;
-      worker.progressPercent = 100;
-      worker.currentStep = 'Item Completed';
-      options.onWorkerUpdate([...workers]);
+        // Tax Classification
+        const taxCls = (receiptItem.schedule && receiptItem.irsLineNumber && receiptItem.irsLineTitle)
+          ? {
+              schedule: receiptItem.schedule,
+              lineNumber: receiptItem.irsLineNumber,
+              lineTitle: receiptItem.irsLineTitle,
+              categoryName: receiptItem.category || 'Supplies',
+              confidence: 0.99
+            }
+          : classifyExtractedTaxSchedule(
+              receiptItem.vendor,
+              item.categoryHint || receiptItem.memo,
+              item.memo || receiptItem.memo,
+              item.fileName
+            );
 
-      // Notify caller
-      options.onItemProcessed(processedRecord, results.length, totalItems);
+        // Sub-hash to differentiate distinct receipts from the same multi-receipt image
+        const receiptSubHash = isMulti ? `${fileHash}_sub${subIdx + 1}` : fileHash;
+
+        // Duplicate Check against existing ledger + newly scanned items
+        const dupCheck = evaluateReceiptDuplicate(
+          {
+            fileHash: receiptSubHash,
+            vendor: receiptItem.vendor,
+            total: receiptItem.total,
+            date: receiptItem.date,
+            clientName
+          },
+          currentLedger
+        );
+
+        const latency = Math.round(performance.now() - startTime);
+
+        const initialStatus: ProcessedReceipt['status'] = 
+          dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
+
+        const shouldSyncToDrive = hasDriveDestination && Boolean(dataUrl) && initialStatus !== 'REJECTED' && dupCheck.status !== 'DUPLICATE_EXACT';
+
+        const ext = item.fileName.includes('.') ? item.fileName.substring(item.fileName.lastIndexOf('.')) : '';
+        const baseName = item.fileName.replace(/\.[^/.]+$/, "");
+        const distinctFileName = isMulti 
+          ? `${baseName} (Receipt ${subIdx + 1} of ${receiptsToProcess.length})${ext}`
+          : item.fileName;
+
+        const distinctId = item.id 
+          ? (isMulti ? `${item.id}_part${subIdx + 1}` : item.id)
+          : `rec-${Date.now()}-${subIdx}-${Math.random().toString(36).slice(2, 7)}`;
+
+        const processedRecord: ProcessedReceipt = {
+          id: distinctId,
+          submissionId: item.id,
+          fileName: distinctFileName,
+          fileSize: item.fileSize || (item.file?.size ?? 125000),
+          fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
+          dataUrl: dataUrl || item.dataUrl,
+          fileHash: receiptSubHash,
+          clientId: item.clientId || (clientName.toLowerCase().includes('admin') ? 'admin' : undefined),
+          clientName,
+          clientEmail: item.clientEmail,
+          submittedBy: submitterName,
+          submittedByRole: submitterRole,
+          uploadedAt: uploadTimestamp,
+          vendor: receiptItem.vendor,
+          normalizedVendor: normalizeVendorName(receiptItem.vendor),
+          date: receiptItem.date,
+          lineItems: receiptItem.lineItems,
+          subtotal: receiptItem.subtotal,
+          tax: receiptItem.tax,
+          tip: receiptItem.tip,
+          total: receiptItem.total,
+          paymentMethod: receiptItem.paymentMethod,
+          cardLast4: receiptItem.cardLast4,
+          invoiceNumber: receiptItem.invoiceNumber,
+          transactionNumber: receiptItem.transactionNumber,
+          referenceId: receiptItem.referenceId,
+          category: taxCls.categoryName,
+          schedule: taxCls.schedule,
+          irsLineNumber: taxCls.lineNumber,
+          irsLineTitle: taxCls.lineTitle,
+          confidence: Number((receiptItem.confidence * taxCls.confidence).toFixed(2)),
+          duplicateStatus: dupCheck.status,
+          duplicateReason: dupCheck.reason,
+          duplicateMatchId: dupCheck.matchedId,
+          status: initialStatus,
+          workerNodeId: worker.name,
+          processingDurationMs: latency,
+          memo: isMulti ? `[Receipt ${subIdx + 1}/${receiptsToProcess.length}] ${item.memo || receiptItem.memo}` : (item.memo || receiptItem.memo),
+          processedAt: new Date().toISOString(),
+          ocrFailed: !aiScanSuccess,
+          ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined
+        };
+
+        if (shouldSyncToDrive && dataUrl) {
+          enqueueDriveSync({
+            processedRecord,
+            dataUrl,
+            fileName: distinctFileName,
+            clientName,
+            taxCls,
+            fileHash: receiptSubHash
+          });
+        }
+
+        currentLedger.push(processedRecord);
+        results.push(processedRecord);
+
+        // Update worker stats
+        worker.processedCount++;
+        worker.lastLatencyMs = latency;
+        worker.progressPercent = Math.round(((subIdx + 1) / receiptsToProcess.length) * 100);
+        worker.currentStep = isMulti 
+          ? `Processed receipt ${subIdx + 1}/${receiptsToProcess.length} (${receiptItem.vendor})`
+          : 'Item Completed';
+        options.onWorkerUpdate([...workers]);
+
+        // Notify caller
+        options.onItemProcessed(processedRecord, results.length, totalItems);
+      }
     }
 
     worker.status = 'COMPLETED';
