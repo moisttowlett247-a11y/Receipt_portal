@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Cpu,
   Play,
@@ -123,6 +123,28 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const [scanProgress, setScanProgress] = useState<{ current: number; total: number }>({ current: 0, total: 0 });
   const [scanStartTime, setScanStartTime] = useState<number>(0);
   const [elapsedSec, setElapsedSec] = useState<number>(0);
+
+  // Throttled worker state dispatcher to maintain 60fps UI during ultra-high concurrency (16-24 threads)
+  const lastWorkerRenderRef = useRef<number>(0);
+  const pendingWorkersRef = useRef<ParallelWorkerState[] | null>(null);
+  const workerRafRef = useRef<number | null>(null);
+
+  const handleThrottledWorkerUpdate = useCallback((updatedWorkers: ParallelWorkerState[]) => {
+    pendingWorkersRef.current = updatedWorkers;
+    const now = performance.now();
+    if (now - lastWorkerRenderRef.current >= 75) {
+      lastWorkerRenderRef.current = now;
+      setWorkers(updatedWorkers);
+    } else if (!workerRafRef.current) {
+      workerRafRef.current = requestAnimationFrame(() => {
+        workerRafRef.current = null;
+        lastWorkerRenderRef.current = performance.now();
+        if (pendingWorkersRef.current) {
+          setWorkers(pendingWorkersRef.current);
+        }
+      });
+    }
+  }, []);
 
   // File queue to process & Target Client / Submitter Profile
   const [queuedFiles, setQueuedFiles] = useState<ReceiptInputItem[]>([]);
@@ -1124,8 +1146,15 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         existingLedger: receiptsRef.current,
         googleAccessToken: googleAccessTokenRef.current || undefined,
         driveWebhookUrl: autoSyncToCloudRef.current ? (driveWebhookUrl || getStoredDriveWebhookUrl()) : undefined,
-        onWorkerUpdate: updatedWorkers => {
-          setWorkers(updatedWorkers);
+        onWorkerUpdate: handleThrottledWorkerUpdate,
+        onItemDriveSynced: (syncedRecord) => {
+          // As soon as background Drive upload lands, stamp Drive ID/link and purge image from memory
+          setReceipts(prev => prev.map(r => r.id === syncedRecord.id ? {
+            ...r,
+            googleDriveId: syncedRecord.googleDriveId,
+            googleDriveLink: syncedRecord.googleDriveLink,
+            dataUrl: undefined
+          } : r));
         },
         onItemProcessed: (processed, current, total) => {
           setScanProgress({ current, total });
@@ -1974,21 +2003,24 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   <span className="font-mono text-emerald-400 font-extrabold text-sm">{concurrency} Worker Threads</span>
                 </div>
                 <div className="text-[11px] text-stone-400">
-                  Runs multiple worker pipelines simultaneously to process large batches in parallel.
+                  Decoupled background Drive sync &amp; client-side image compression allow up to 24 parallel worker threads with minimal RAM and zero I/O blocking.
                 </div>
-                <div className="flex items-center gap-1.5 pt-1">
-                  {[1, 2, 4, 8, 12].map(n => (
+                <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  {[1, 2, 4, 8, 12, 16, 24].map(n => (
                     <button
                       key={n}
                       disabled={isScanning}
                       onClick={() => setConcurrency(n)}
-                      className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition-colors cursor-pointer ${
+                      className={`px-2.5 py-1 rounded text-xs font-mono font-medium transition-colors cursor-pointer flex items-center gap-1 ${
                         concurrency === n
-                          ? 'bg-emerald-500 text-stone-950 font-bold'
+                          ? 'bg-emerald-500 text-stone-950 font-bold shadow-md shadow-emerald-500/20'
                           : 'bg-stone-900 text-stone-400 hover:text-stone-200 border border-stone-800'
                       }`}
                     >
-                      {n} {n === 1 ? 'Worker' : 'Workers'}
+                      {n >= 16 && <Zap className="w-3 h-3 text-amber-400" />}
+                      <span>{n} {n === 1 ? 'Worker' : 'Workers'}</span>
+                      {n === 16 && <span className="text-[9px] font-bold text-amber-300 ml-0.5">Turbo</span>}
+                      {n === 24 && <span className="text-[9px] font-bold text-emerald-300 ml-0.5">Ultra</span>}
                     </button>
                   ))}
                 </div>
@@ -3546,20 +3578,20 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 rows={4}
                 className="w-full px-3 py-2 rounded-xl bg-stone-950 border border-stone-800 text-stone-200 font-mono text-xs focus:outline-none focus:border-emerald-500 resize-none leading-relaxed"
               />
-              <p className="text-[11px] text-stone-500">
+              <p className="text-[11px] text-stone-400">
                 You currently have <span className="text-emerald-400 font-semibold">{configuredKeys.length}</span> active API key(s) detected.
-                These are saved securely in your browser's localStorage and used for direct in-browser Gemini Vision scanning.
+                When multiple keys are provided, parallel worker threads rotate keys round-robin with smart 429 rate-limit backoff, multiplying total throughput and preventing quota exhaustion during high concurrency.
               </p>
             </div>
 
             <div className="p-3 rounded-xl bg-stone-950/80 border border-stone-800/80 text-[11px] text-stone-400 space-y-1">
               <div className="text-stone-300 font-semibold flex items-center gap-1.5">
                 <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                Anti-405 Protection
+                Anti-405 Protection &amp; Round-Robin Key Multiplexing
               </div>
               <p>
                 When deployed to GitHub Pages (static host), local POST requests are blocked by Nginx with HTTP 405. 
-                With these keys configured, all receipt scans execute directly in-browser using Google's Gemini Vision API with 100% reliability.
+                With configured keys, receipt scans execute directly in-browser using Google's Gemini Vision API with 100% reliability and zero server requirements.
               </p>
             </div>
 

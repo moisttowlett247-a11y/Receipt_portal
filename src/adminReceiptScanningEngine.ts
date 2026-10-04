@@ -11,7 +11,7 @@ import {
   ClientSubmission 
 } from './clientSubmissionService';
 import { getBackendApiUrl } from './urlUtils';
-import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata, uploadReceiptViaWebhook, getStoredDriveWebhookUrl } from './googleDriveService';
+import { ensureFolderPath, uploadReceiptToDrive, updateFileMetadata, uploadReceiptViaWebhook, getStoredDriveWebhookUrl, compressImageForDrive } from './googleDriveService';
 
 export interface ExtractedLineItem {
   description: string;
@@ -823,6 +823,10 @@ export interface ScanReceiptAiOutput {
   source?: 'CLIENT_GEMINI' | 'SERVER_API';
 }
 
+// Global round-robin tracker and key cooldown map for rate-limit protection across parallel workers
+let globalGeminiKeyRoundRobin = 0;
+const geminiKeyCooldowns = new Map<string, number>();
+
 /**
  * High-accuracy AI OCR receipt scanner.
  * On GitHub Pages (static host) or when API keys are configured, executes direct
@@ -839,8 +843,26 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     };
   }
 
-  const apiKeys = getActiveGeminiApiKeys();
+  const rawApiKeys = getActiveGeminiApiKeys();
   const isStaticHost = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
+
+  // Filter out keys currently on rate-limit cooldown (unless all are on cooldown, in which case reset)
+  const now = Date.now();
+  let availableKeys = rawApiKeys.filter(k => (geminiKeyCooldowns.get(k) || 0) <= now);
+  if (availableKeys.length === 0 && rawApiKeys.length > 0) {
+    geminiKeyCooldowns.clear();
+    availableKeys = rawApiKeys;
+  }
+
+  // Rotate keys round-robin across worker threads so parallel calls distribute quota evenly
+  let apiKeys = availableKeys;
+  if (availableKeys.length > 1) {
+    const startIdx = (globalGeminiKeyRoundRobin++) % availableKeys.length;
+    apiKeys = [
+      ...availableKeys.slice(startIdx),
+      ...availableKeys.slice(0, startIdx)
+    ];
+  }
 
   let cleanBase64 = dataUrl;
   let cleanMime = fileType || (dataUrl.startsWith('data:application/pdf') ? 'application/pdf' : 'image/jpeg');
@@ -1190,9 +1212,10 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
                 const errMsg = parsedErr?.error?.message || errText.slice(0, 4000);
                 clientLastError = `HTTP ${gResp.status} [${model}] with Key [${currentKey.slice(0, 6)}...]: ${errMsg}`;
 
-                // If 429 / RESOURCE_EXHAUSTED (Quota exceeded on this model), skip immediately to alternative models
+                // If 429 / RESOURCE_EXHAUSTED (Quota exceeded on this model), mark key cooldown and skip immediately
                 if (gResp.status === 429 || errMsg.toLowerCase().includes('quota') || errMsg.toLowerCase().includes('resource_exhausted')) {
-                  if (onStep) onStep(`Quota limit on ${model}. Instantly switching to next unexhausted model...`);
+                  geminiKeyCooldowns.set(currentKey, Date.now() + 12000); // 12-second backoff for this key
+                  if (onStep) onStep(`Quota rate-limit on ${model} (Key ${currentKey.slice(0, 4)}...). Routing to next key/model...`);
                   continue;
                 } else if (gResp.status === 503) {
                   if (onStep) onStep(`High demand (503) on ${model}. Switching to alternative model...`);
@@ -1299,9 +1322,10 @@ export async function runParallelBatchScan(
     driveWebhookUrl?: string;
     onWorkerUpdate: (workers: ParallelWorkerState[]) => void;
     onItemProcessed: (processed: ProcessedReceipt, index: number, total: number) => void;
+    onItemDriveSynced?: (synced: ProcessedReceipt) => void;
   }
 ): Promise<ProcessedReceipt[]> {
-  const concurrency = Math.max(1, Math.min(16, options.concurrency || 4));
+  const concurrency = Math.max(1, Math.min(32, options.concurrency || 4));
   const results: ProcessedReceipt[] = [];
   const currentLedger = [...options.existingLedger];
 
@@ -1320,6 +1344,92 @@ export async function runParallelBatchScan(
   // Queue of tasks
   let currentIndex = 0;
   const totalItems = items.length;
+
+  // -------------------------------------------------------------------------
+  // DECOUPLED BACKGROUND GOOGLE DRIVE SYNC DISPATCHER (Max 3 Concurrent Streams)
+  // Ensures AI OCR workers are never blocked waiting 2-3s on Drive HTTP uploads,
+  // and prevents Google Apps Script concurrency limits from being tripped.
+  // -------------------------------------------------------------------------
+  const MAX_CONCURRENT_DRIVE_UPLOADS = 3;
+  let activeDriveUploads = 0;
+  const driveQueue: Array<{
+    processedRecord: ProcessedReceipt;
+    dataUrl: string;
+    fileName: string;
+    clientName: string;
+    taxCls: any;
+    fileHash: string;
+    resolve: () => void;
+  }> = [];
+
+  const triggerDriveQueue = () => {
+    while (activeDriveUploads < MAX_CONCURRENT_DRIVE_UPLOADS && driveQueue.length > 0) {
+      const task = driveQueue.shift();
+      if (!task) break;
+
+      activeDriveUploads++;
+      (async () => {
+        try {
+          const targetWebhook = options.driveWebhookUrl || getStoredDriveWebhookUrl();
+          if (targetWebhook) {
+            const driveRes = await uploadReceiptViaWebhook(targetWebhook, task.fileName, task.dataUrl, {
+              vendor: task.processedRecord.vendor,
+              total: task.processedRecord.total,
+              date: task.processedRecord.date,
+              schedule: task.taxCls.schedule,
+              irsLineNumber: task.taxCls.lineNumber,
+              irsLineTitle: task.taxCls.lineTitle,
+              fileHash: task.fileHash,
+              clientName: task.clientName
+            });
+            if (driveRes) {
+              task.processedRecord.googleDriveId = driveRes.id;
+              task.processedRecord.googleDriveLink = driveRes.webViewLink;
+              task.processedRecord.dataUrl = undefined; // Purge heavy image from memory
+              options.onItemDriveSynced?.(task.processedRecord);
+            }
+          } else if (options.googleAccessToken) {
+            const year = task.processedRecord.date ? task.processedRecord.date.split('-')[0] : new Date().getFullYear().toString();
+            const folderId = await ensureFolderPath(options.googleAccessToken, ['Receipt Vault', year, task.clientName]);
+            if (folderId) {
+              const driveRes = await uploadReceiptToDrive(options.googleAccessToken, folderId, task.fileName, task.dataUrl);
+              if (driveRes) {
+                task.processedRecord.googleDriveId = driveRes.id;
+                task.processedRecord.googleDriveLink = driveRes.webViewLink;
+                task.processedRecord.dataUrl = undefined; // Purge heavy image from memory
+                const description = `Vendor: ${task.processedRecord.vendor}\nTotal: $${task.processedRecord.total}\nDate: ${task.processedRecord.date}\nSchedule: ${task.taxCls.schedule}\nIRS Line: ${task.taxCls.lineNumber} (${task.taxCls.lineTitle})\nSHA-256: ${task.fileHash}`;
+                await updateFileMetadata(options.googleAccessToken, driveRes.id, description);
+                options.onItemDriveSynced?.(task.processedRecord);
+              }
+            }
+          }
+        } catch (dErr) {
+          console.warn('Background Drive Sync error:', dErr);
+        } finally {
+          activeDriveUploads--;
+          task.resolve();
+          // 120ms stagger between Google Drive uploads to respect Google rate limits
+          setTimeout(triggerDriveQueue, 120);
+        }
+      })();
+    }
+  };
+
+  const pendingDrivePromises: Promise<void>[] = [];
+  const enqueueDriveSync = (taskData: {
+    processedRecord: ProcessedReceipt;
+    dataUrl: string;
+    fileName: string;
+    clientName: string;
+    taxCls: any;
+    fileHash: string;
+  }) => {
+    const p = new Promise<void>((resolve) => {
+      driveQueue.push({ ...taskData, resolve });
+    });
+    pendingDrivePromises.push(p);
+    triggerDriveQueue();
+  };
 
   // Worker loop function
   const runWorker = async (workerIndex: number) => {
@@ -1364,6 +1474,16 @@ export async function runParallelBatchScan(
         }
       } catch {
         fileHash = `hash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      }
+
+      // Pre-compress image client-side to max 1600px width/height and 0.82 JPEG quality
+      // Slashes 8-15MB phone photos to ~200KB, freeing 95% browser memory and vastly accelerating AI OCR & Drive uploads
+      if (dataUrl && (dataUrl.startsWith('data:image/') || (!dataUrl.startsWith('data:application/pdf') && !item.fileType?.includes('pdf')))) {
+        try {
+          dataUrl = await compressImageForDrive(dataUrl, 1600, 0.82);
+        } catch {
+          // fallback to original if canvas conversion fails
+        }
       }
 
       // Fast-Path Pre-OCR Duplicate Detection:
@@ -1535,56 +1655,11 @@ export async function runParallelBatchScan(
       const initialStatus: ProcessedReceipt['status'] = 
         dupCheck.status === 'DUPLICATE_EXACT' ? 'REJECTED' : 'PROCESSED';
 
-      // 5. Google Drive Cloud Vault Backup (Forensic Blob Storage with Duplicate Protection)
-      let googleDriveId: string | undefined = undefined;
-      let googleDriveLink: string | undefined = undefined;
-
+      // 5. Google Drive Cloud Vault Backup (Dispatched to Decoupled Queue)
+      // Workers finish OCR and classification immediately so subsequent queue items are scanned without I/O wait
       const targetWebhook = options.driveWebhookUrl || getStoredDriveWebhookUrl();
       const hasDriveDestination = Boolean(targetWebhook || options.googleAccessToken);
-
-      if (hasDriveDestination && dataUrl && initialStatus !== 'REJECTED' && dupCheck.status !== 'DUPLICATE_EXACT') {
-        try {
-          worker.currentStep = `Syncing to Google Drive Vault (${clientName})...`;
-          worker.progressPercent = 98;
-          options.onWorkerUpdate([...workers]);
-
-          if (targetWebhook) {
-            // High-performance Direct Webhook Upload (Receiptcheckerv@gmail.com)
-            const driveRes = await uploadReceiptViaWebhook(targetWebhook, item.fileName, dataUrl, {
-              vendor: extracted.vendor,
-              total: extracted.total,
-              date: extracted.date,
-              schedule: taxCls.schedule,
-              irsLineNumber: taxCls.lineNumber,
-              irsLineTitle: taxCls.lineTitle,
-              fileHash,
-              clientName
-            });
-            if (driveRes) {
-              googleDriveId = driveRes.id;
-              googleDriveLink = driveRes.webViewLink;
-            }
-          } else if (options.googleAccessToken) {
-            // Google OAuth REST API Fallback
-            const year = extracted.date ? extracted.date.split('-')[0] : new Date().getFullYear().toString();
-            const folderId = await ensureFolderPath(options.googleAccessToken, ['Receipt Vault', year, clientName]);
-            
-            if (folderId) {
-              const driveRes = await uploadReceiptToDrive(options.googleAccessToken, folderId, item.fileName, dataUrl);
-              if (driveRes) {
-                googleDriveId = driveRes.id;
-                googleDriveLink = driveRes.webViewLink;
-
-                // Attach forensic metadata to Drive description
-                const description = `Vendor: ${extracted.vendor}\nTotal: $${extracted.total}\nDate: ${extracted.date}\nSchedule: ${taxCls.schedule}\nIRS Line: ${taxCls.lineNumber} (${taxCls.lineTitle})\nSHA-256: ${fileHash}`;
-                await updateFileMetadata(options.googleAccessToken, driveRes.id, description);
-              }
-            }
-          }
-        } catch (driveErr) {
-          console.warn('Google Drive Sync Warning:', driveErr);
-        }
-      }
+      const shouldSyncToDrive = hasDriveDestination && Boolean(dataUrl) && initialStatus !== 'REJECTED' && dupCheck.status !== 'DUPLICATE_EXACT';
 
       const submitterName = item.submittedBy || (item.clientEmail ? `${clientName} (${item.clientEmail})` : (clientName.toLowerCase().includes('admin') ? 'Administrator (moisttowlett247@gmail.com)' : clientName));
       const submitterRole = item.submittedByRole || (clientName.toLowerCase().includes('admin') ? 'ADMIN' : 'CLIENT');
@@ -1596,7 +1671,7 @@ export async function runParallelBatchScan(
         fileName: item.fileName,
         fileSize: item.fileSize || (item.file?.size ?? 125000),
         fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
-        dataUrl: googleDriveId ? undefined : (dataUrl || item.dataUrl), // Offload heavy base64 payload from active RAM once safely in Drive Vault
+        dataUrl: dataUrl || item.dataUrl,
         fileHash,
         clientId: item.clientId || (clientName.toLowerCase().includes('admin') ? 'admin' : undefined),
         clientName,
@@ -1631,10 +1706,20 @@ export async function runParallelBatchScan(
         memo: item.memo || extracted.memo,
         processedAt: new Date().toISOString(),
         ocrFailed: !aiScanSuccess,
-        ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined,
-        googleDriveId,
-        googleDriveLink
+        ocrError: !aiScanSuccess ? (ocrErrorMessage || 'Unknown AI OCR connection error') : undefined
       };
+
+      if (shouldSyncToDrive && dataUrl) {
+        worker.currentStep = `Queued for Drive Vault (${clientName})...`;
+        enqueueDriveSync({
+          processedRecord,
+          dataUrl,
+          fileName: item.fileName,
+          clientName,
+          taxCls,
+          fileHash
+        });
+      }
 
       currentLedger.push(processedRecord);
       results.push(processedRecord);
@@ -1658,11 +1743,16 @@ export async function runParallelBatchScan(
   // Launch worker promises with slight stagger to prevent concurrent burst
   const activeWorkerPromises = Array.from({ length: concurrency }).map(async (_, idx) => {
     if (idx > 0) {
-      await new Promise(r => setTimeout(r, idx * 250));
+      await new Promise(r => setTimeout(r, Math.min(idx * 150, 1200)));
     }
     return runWorker(idx);
   });
   await Promise.all(activeWorkerPromises);
+
+  // Await any remaining background Google Drive uploads to complete before finishing
+  if (pendingDrivePromises.length > 0) {
+    await Promise.all(pendingDrivePromises);
+  }
 
   return results;
 }
