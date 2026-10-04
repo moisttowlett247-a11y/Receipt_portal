@@ -69,7 +69,7 @@ const INITIAL_KEYS: LicenseKeyRecord[] = [];
 export default function App() {
   const [activeTab, setActiveTab] = useState<'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'updater' | 'code' | 'guide'>('scanner');
   const [legalModalOpen, setLegalModalOpen] = useState(false);
-  const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'support'>('privacy');
+  const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'security' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
   
   // Persistent License Keys registry state
@@ -345,8 +345,11 @@ export default function App() {
       } else if (hash === '#terms' || hash === '#eula') {
         setLegalTab('terms');
         setLegalModalOpen(true);
-      } else if (hash === '#support') {
+      } else if (hash === '#support' || hash === '#help') {
         setLegalTab('support');
+        setLegalModalOpen(true);
+      } else if (hash === '#security' || hash === '#compliance') {
+        setLegalTab('security');
         setLegalModalOpen(true);
       }
     }
@@ -2355,7 +2358,7 @@ class UpdateManager:
           <span className="w-2 h-2 rounded-full bg-emerald-400" />
           <span>QuickBooks Online OAuth 2.0 • TLS 1.3 Transport • AES-256 Encrypted</span>
         </div>
-        <div className="flex items-center gap-4 text-stone-400">
+        <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 text-stone-400">
           <button
             onClick={() => {
               setLegalTab('privacy');
@@ -2374,6 +2377,16 @@ class UpdateManager:
             className="hover:text-amber-400 hover:underline cursor-pointer"
           >
             Terms of Service & EULA
+          </button>
+          <span>•</span>
+          <button
+            onClick={() => {
+              setLegalTab('security');
+              setLegalModalOpen(true);
+            }}
+            className="hover:text-cyan-400 hover:underline cursor-pointer"
+          >
+            Security & Status
           </button>
           <span>•</span>
           <button

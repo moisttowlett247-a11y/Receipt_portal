@@ -51,7 +51,7 @@ interface QboConfigState {
 
 interface QuickBooksProductionCenterProps {
   showToast: (msg: string) => void;
-  onOpenLegal: (tab: 'privacy' | 'terms' | 'support') => void;
+  onOpenLegal: (tab: 'privacy' | 'terms' | 'security' | 'support') => void;
 }
 
 const QBO_STORAGE_CONFIG_KEY = 'receipt_processor_qbo_config_v1';
@@ -969,6 +969,13 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                   className="text-amber-400 hover:underline text-[11px] cursor-pointer"
                 >
                   EULA / Terms
+                </button>
+                <span className="text-stone-600">•</span>
+                <button
+                  onClick={() => onOpenLegal('security')}
+                  className="text-cyan-400 hover:underline text-[11px] cursor-pointer"
+                >
+                  Security Status
                 </button>
                 <span className="text-stone-600">•</span>
                 <button

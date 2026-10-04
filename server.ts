@@ -359,32 +359,6 @@ router.get([
 });
 
 // Presence & Active Devices Endpoints
-router.post('/api/presence/heartbeat', (req, res) => {
-  const clientIp = getClientIp(req);
-  const { portal, userId, username, email, displayName, companyName, plan, licenseKey, browserInfo, deviceCategory, status } = req.body || {};
-  recordWebPresenceSession({
-    portal: portal || 'CLIENT',
-    ip: clientIp,
-    userId,
-    username,
-    email,
-    displayName,
-    companyName,
-    plan,
-    licenseKey,
-    browserInfo,
-    deviceCategory,
-    status
-  });
-  return res.json({ success: true });
-});
-
-router.get('/api/licenses/sessions', (req, res) => {
-  const sessionsMap = loadSessions();
-  const sessions = Object.values(sessionsMap);
-  return res.json({ success: true, sessions });
-});
-
 router.post('/api/licenses/sessions/clear', (req, res) => {
   const { clearAll } = req.body || {};
   if (clearAll) {
@@ -522,7 +496,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     "gemini-1.5-flash",
     "gemini-flash-latest"
   ];
-  let rawResult: any = null;
+  let rawReceiptsList: any[] = [];
   let lastError = "";
 
   outerLoop:
@@ -567,10 +541,10 @@ router.post('/api/scan/receipt', async (req, res) => {
 
             if (parsed) {
               if (parsed.receipts && Array.isArray(parsed.receipts) && parsed.receipts.length > 0) {
-                rawResult = parsed.receipts[0];
+                rawReceiptsList = parsed.receipts;
                 break outerLoop;
               } else if (parsed.vendor && parsed.total !== undefined) {
-                rawResult = parsed;
+                rawReceiptsList = [parsed];
                 break outerLoop;
               }
             }
@@ -590,7 +564,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     }
   }
 
-  if (!rawResult) {
+  if (rawReceiptsList.length === 0) {
     return res.status(502).json({ 
       success: false, 
       error: 'OCR model extraction failed after multiple attempts',
@@ -598,153 +572,164 @@ router.post('/api/scan/receipt', async (req, res) => {
     });
   }
 
-  // Mathematical reconciliation
-  let total = Number(rawResult.total) || 0;
-  let subtotal = Number(rawResult.subtotal) || 0;
-  let tax = Number(rawResult.tax) || 0;
-  const tip = Number(rawResult.tip) || 0;
+  function formatExtractedReceipt(rawItem: any, sourceFileName: string) {
+    // Mathematical reconciliation
+    let total = Number(rawItem.total) || 0;
+    let subtotal = Number(rawItem.subtotal) || 0;
+    let tax = Number(rawItem.tax) || 0;
+    const tip = Number(rawItem.tip) || 0;
 
-  const itemsList = Array.isArray(rawResult.items) ? rawResult.items : [];
-  let itemSum = 0;
-  for (const itm of itemsList) {
-    if (itm && typeof itm.amount === 'number') {
-      itemSum += itm.amount;
+    const itemsList = Array.isArray(rawItem.items) ? rawItem.items : [];
+    let itemSum = 0;
+    for (const itm of itemsList) {
+      if (itm && typeof itm.amount === 'number') {
+        itemSum += itm.amount;
+      }
     }
-  }
-  itemSum = Number(itemSum.toFixed(2));
+    itemSum = Number(itemSum.toFixed(2));
 
-  if (subtotal <= 0 && itemSum > 0) {
-    subtotal = itemSum;
-  }
-
-  if (subtotal <= 0 && total > 0) {
-    subtotal = total > (tax + tip) ? Number((total - tax - tip).toFixed(2)) : total;
-  }
-
-  const expectedSum = Number((subtotal + tax + tip).toFixed(2));
-  
-  if (total <= 0.01) {
-    if (expectedSum > 0) {
-      total = expectedSum;
-    } else if (itemSum > 0) {
-      total = Number((itemSum + tax).toFixed(2));
+    if (subtotal <= 0 && itemSum > 0) {
+      subtotal = itemSum;
     }
+
+    if (subtotal <= 0 && total > 0) {
+      subtotal = total > (tax + tip) ? Number((total - tax - tip).toFixed(2)) : total;
+    }
+
+    const expectedSum = Number((subtotal + tax + tip).toFixed(2));
+    
+    if (total <= 0.01) {
+      if (expectedSum > 0) {
+        total = expectedSum;
+      } else if (itemSum > 0) {
+        total = Number((itemSum + tax).toFixed(2));
+      }
+    }
+
+    total = Number(total.toFixed(2));
+    subtotal = Number(subtotal.toFixed(2));
+    tax = Number(tax.toFixed(2));
+
+    // Date parsing
+    let dateStr = String(rawItem.date || '').trim();
+    dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
+    dateStr = dateStr.replace(/[;,.]$/, '');
+
+    const monthMap: Record<string, string> = {
+      jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+      jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+      january: '01', february: '02', march: '03', april: '04', june: '06',
+      july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
+    };
+
+    const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
+    const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9]{2})\b/);
+    const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
+    const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
+
+    if (isoMatch) {
+      dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+    } else if (usMatch) {
+      let yr = usMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
+      dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
+    } else if (monthNameMatch) {
+      const mStr = monthNameMatch[1].toLowerCase().slice(0, 3);
+      const mNum = monthMap[mStr] || '01';
+      const day = monthNameMatch[2].padStart(2, '0');
+      let yr = monthNameMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
+      dateStr = `${yr}-${mNum}-${day}`;
+    } else if (dayMonthMatch) {
+      const mStr = dayMonthMatch[2].toLowerCase().slice(0, 3);
+      const mNum = monthMap[mStr] || '01';
+      const day = dayMonthMatch[1].padStart(2, '0');
+      let yr = dayMonthMatch[3];
+      if (yr.length === 2) {
+        yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+      }
+      dateStr = `${yr}-${mNum}-${day}`;
+    } else if (!isNaN(Date.parse(dateStr))) {
+      const parsedD = new Date(dateStr);
+      if (!isNaN(parsedD.getTime())) {
+        dateStr = parsedD.toISOString().split('T')[0];
+      }
+    }
+
+    if (!dateStr || dateStr.length < 8) {
+      const fileDateMatch = sourceFileName.match(/\b(20[123][0-9])[-_](0?[1-9]|1[0-2])[-_](0?[1-9]|[12][0-9]|3[01])\b/);
+      if (fileDateMatch) {
+        dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
+      } else {
+        dateStr = new Date().toISOString().split('T')[0];
+      }
+    }
+
+    const yearCheck = dateStr.match(/^(\d{4})/);
+    if (yearCheck) {
+      const yr = parseInt(yearCheck[1]);
+      if (yr < 2000 || yr > 2040) {
+        dateStr = new Date().toISOString().split('T')[0];
+      }
+    }
+
+    let cardLast4 = String(rawItem.card_last_4 || '').replace(/\D/g, '');
+    if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
+    if (cardLast4.length < 4) cardLast4 = '';
+
+    let rawTrans = String(rawItem.transaction_number || rawItem.transactionNumber || '').trim();
+    let rawRef = String(rawItem.reference_id || rawItem.referenceId || '').trim();
+    let rawInv = String(rawItem.invoice_number || rawItem.invoiceNumber || '').trim();
+
+    if (rawRef && !rawTrans && /^(?:trans|tran|txn|transaction)[\s#.:-]/i.test(rawRef)) {
+      rawTrans = rawRef;
+      rawRef = '';
+    } else if (rawTrans && !rawRef && /^(?:ref|reference|auth|trace|host\s*ref)[\s#.:-]/i.test(rawTrans)) {
+      rawRef = rawTrans;
+      rawTrans = '';
+    }
+
+    const cleanTrans = rawTrans ? rawTrans.replace(/^(?:trans(?:action)?|tran|txn)[\s#.:-]*/i, '').trim() : '';
+    const cleanRef = rawRef ? rawRef.replace(/^(?:ref(?:erence)?|auth|trace|host\s*ref|acq\s*ref)[\s#.:-]*/i, '').trim() : '';
+    let cleanInv = rawInv ? rawInv.replace(/^(?:invoice|inv|receipt|order)[\s#.:-]*/i, '').trim() : '';
+    if (!cleanInv) {
+      if (cleanTrans) cleanInv = `TXN-${cleanTrans}`;
+      else if (cleanRef) cleanInv = `REF-${cleanRef}`;
+    }
+
+    return {
+      vendor: rawItem.vendor || 'Unknown Vendor',
+      date: dateStr,
+      total: Number(total.toFixed(2)),
+      subtotal: Number(subtotal.toFixed(2)),
+      tax: Number(tax.toFixed(2)),
+      tip: Number(tip.toFixed(2)),
+      paymentMethod: rawItem.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
+      cardLast4: cardLast4 || undefined,
+      transactionNumber: cleanTrans || undefined,
+      referenceId: cleanRef || undefined,
+      invoiceNumber: cleanInv || undefined,
+      category: rawItem.category || 'Supplies & Materials',
+      items: rawItem.items || [],
+      memo: rawItem.memo || `AI-OCR Scanned (${sourceFileName})`,
+      confidence: 0.99
+    };
   }
 
-  total = Number(total.toFixed(2));
-  subtotal = Number(subtotal.toFixed(2));
-  tax = Number(tax.toFixed(2));
+  const allProcessedReceipts = rawReceiptsList.map((r: any) => formatExtractedReceipt(r, fileName));
+  const primaryReceipt = allProcessedReceipts[0];
 
-  // Date parsing
-  let dateStr = String(rawResult.date || '').trim();
-  dateStr = dateStr.replace(/[\sT]+(?:at\s+)?(?:\d{1,2}:\d{2}(?::\d{2})?).*$/i, '').trim();
-  dateStr = dateStr.replace(/[;,.]$/, '');
-
-  const monthMap: Record<string, string> = {
-    jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
-    jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
-    january: '01', february: '02', march: '03', april: '04', june: '06',
-    july: '07', august: '08', september: '09', october: '10', november: '11', december: '12'
-  };
-
-  const isoMatch = dateStr.match(/\b(20[123][0-9])[-/.](0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])\b/);
-  const usMatch = dateStr.match(/\b(0?[1-9]|1[0-2])[-/.](0?[1-9]|[12][0-9]|3[01])[-/.](20[123][0-9]|[0-9]{2})\b/);
-  const monthNameMatch = dateStr.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
-  const dayMonthMatch = dateStr.match(/\b(0?[1-9]|[12][0-9]|3[01])(?:st|nd|rd|th)?[\s.,-]+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[\s.,-]+(20[123][0-9]|[0-9]{2})\b/i);
-
-  if (isoMatch) {
-    dateStr = `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
-  } else if (usMatch) {
-    let yr = usMatch[3];
-    if (yr.length === 2) {
-      yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
+  return res.json({
+    success: true,
+    data: {
+      ...primaryReceipt,
+      receipts: allProcessedReceipts
     }
-    dateStr = `${yr}-${usMatch[1].padStart(2, '0')}-${usMatch[2].padStart(2, '0')}`;
-  } else if (monthNameMatch) {
-    const mStr = monthNameMatch[1].toLowerCase().slice(0, 3);
-    const mNum = monthMap[mStr] || '01';
-    const day = monthNameMatch[2].padStart(2, '0');
-    let yr = monthNameMatch[3];
-    if (yr.length === 2) {
-      yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
-    }
-    dateStr = `${yr}-${mNum}-${day}`;
-  } else if (dayMonthMatch) {
-    const mStr = dayMonthMatch[2].toLowerCase().slice(0, 3);
-    const mNum = monthMap[mStr] || '01';
-    const day = dayMonthMatch[1].padStart(2, '0');
-    let yr = dayMonthMatch[3];
-    if (yr.length === 2) {
-      yr = parseInt(yr) > 50 ? `19${yr}` : `20${yr}`;
-    }
-    dateStr = `${yr}-${mNum}-${day}`;
-  } else if (!isNaN(Date.parse(dateStr))) {
-    const parsedD = new Date(dateStr);
-    if (!isNaN(parsedD.getTime())) {
-      dateStr = parsedD.toISOString().split('T')[0];
-    }
-  }
-
-  if (!dateStr || dateStr.length < 8) {
-    const fileDateMatch = fileName.match(/\b(20[123][0-9])[-_](0?[1-9]|1[0-2])[-_](0?[1-9]|[12][0-9]|3[01])\b/);
-    if (fileDateMatch) {
-      dateStr = `${fileDateMatch[1]}-${fileDateMatch[2]}-${fileDateMatch[3]}`;
-    } else {
-      dateStr = new Date().toISOString().split('T')[0];
-    }
-  }
-
-  const yearCheck = dateStr.match(/^(\d{4})/);
-  if (yearCheck) {
-    const yr = parseInt(yearCheck[1]);
-    if (yr < 2000 || yr > 2040) {
-      dateStr = new Date().toISOString().split('T')[0];
-    }
-  }
-
-  let cardLast4 = String(rawResult.card_last_4 || '').replace(/\D/g, '');
-  if (cardLast4.length > 4) cardLast4 = cardLast4.slice(-4);
-  if (cardLast4.length < 4) cardLast4 = '';
-
-  let rawTrans = String(rawResult.transaction_number || rawResult.transactionNumber || '').trim();
-  let rawRef = String(rawResult.reference_id || rawResult.referenceId || '').trim();
-  let rawInv = String(rawResult.invoice_number || rawResult.invoiceNumber || '').trim();
-
-  if (rawRef && !rawTrans && /^(?:trans|tran|txn|transaction)[\s#.:-]/i.test(rawRef)) {
-    rawTrans = rawRef;
-    rawRef = '';
-  } else if (rawTrans && !rawRef && /^(?:ref|reference|auth|trace|host\s*ref)[\s#.:-]/i.test(rawTrans)) {
-    rawRef = rawTrans;
-    rawTrans = '';
-  }
-
-  const cleanTrans = rawTrans ? rawTrans.replace(/^(?:trans(?:action)?|tran|txn)[\s#.:-]*/i, '').trim() : '';
-  const cleanRef = rawRef ? rawRef.replace(/^(?:ref(?:erence)?|auth|trace|host\s*ref|acq\s*ref)[\s#.:-]*/i, '').trim() : '';
-  let cleanInv = rawInv ? rawInv.replace(/^(?:invoice|inv|receipt|order)[\s#.:-]*/i, '').trim() : '';
-  if (!cleanInv) {
-    if (cleanTrans) cleanInv = `TXN-${cleanTrans}`;
-    else if (cleanRef) cleanInv = `REF-${cleanRef}`;
-  }
-
-  const resultData = {
-    vendor: rawResult.vendor || 'Unknown Vendor',
-    date: dateStr,
-    total: Number(total.toFixed(2)),
-    subtotal: Number(subtotal.toFixed(2)),
-    tax: Number(tax.toFixed(2)),
-    tip: Number(tip.toFixed(2)),
-    paymentMethod: rawResult.payment_method || (cardLast4 ? 'CARD' : 'CASH'),
-    cardLast4: cardLast4 || undefined,
-    transactionNumber: cleanTrans || undefined,
-    referenceId: cleanRef || undefined,
-    invoiceNumber: cleanInv || undefined,
-    category: rawResult.category || 'Supplies & Materials',
-    items: rawResult.items || [],
-    memo: rawResult.memo || `AI-OCR Scanned (${fileName})`,
-    confidence: 0.99
-  };
-
-  return res.json({ success: true, data: resultData });
+  });
 });
 
 // Licensing Endpoints
@@ -1495,7 +1480,7 @@ router.get('/api/qbo/callback', async (req, res) => {
     try {
       const infoResp = await fetch(`${baseApi}/v3/company/${realmId}/companyinfo/${realmId}`, {
         headers: {
-          'Authorization': `Base ${accessToken}`,
+          'Authorization': `Bearer ${accessToken}`,
           'Accept': 'application/json'
         }
       });

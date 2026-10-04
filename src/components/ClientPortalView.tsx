@@ -67,7 +67,7 @@ interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
   currentVersion: string;
   onInquirySubmitted?: (inquiry: ProductInquiry) => void;
-  onOpenLegal?: (tab: 'privacy' | 'terms' | 'support') => void;
+  onOpenLegal?: (tab: 'privacy' | 'terms' | 'security' | 'support') => void;
   onNavigateToAdmin?: () => void;
   onLicenseRevoked?: (key: string) => void;
 }
@@ -1808,6 +1808,10 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           <span>•</span>
           <button type="button" onClick={() => onOpenLegal?.('terms')} className="hover:text-stone-300 cursor-pointer">
             Terms of Service
+          </button>
+          <span>•</span>
+          <button type="button" onClick={() => onOpenLegal?.('security')} className="hover:text-stone-300 cursor-pointer">
+            Security & Status
           </button>
           <span>•</span>
           <button type="button" onClick={() => onOpenLegal?.('support')} className="hover:text-stone-300 cursor-pointer">
