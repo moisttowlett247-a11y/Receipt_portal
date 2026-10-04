@@ -34,7 +34,10 @@ import {
   User,
   Plus,
   Key,
-  Cloud
+  Cloud,
+  WifiOff,
+  ChevronLeft,
+  ChevronRight
 } from 'lucide-react';
 import {
   ProcessedReceipt,
@@ -62,7 +65,8 @@ import {
   getStoredDriveWebhookUrl,
   saveDriveWebhookUrl,
   uploadReceiptViaWebhook,
-  testWebhookConnection
+  testWebhookConnection,
+  APPS_SCRIPT_VAULT_CODE
 } from '../googleDriveService';
 import { saveImageToDisk, getImageFromDisk } from '../imageStorageService';
 import { 
@@ -215,6 +219,36 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       onToast(clean ? '✅ Google Drive Webhook saved! Receipts will sync to Receiptcheckerv@gmail.com.' : 'Reset to default webhook.');
     }
   };
+
+  // -------------------------------------------------------------------------
+  // PAGINATION & NETWORK RESILIENCE OPTIMIZATIONS
+  // -------------------------------------------------------------------------
+  const [ledgerPage, setLedgerPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [copiedAppsScript, setCopiedAppsScript] = useState<boolean>(false);
+  const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
+
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      if (onToast) onToast('🌐 Network connection active. Checking Cloud Vault queue...');
+      // Automatic Resilient Recovery: Sync any pending non-duplicate items
+      const unsynced = receiptsRef.current.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
+      if (unsynced.length > 0 && autoSyncToCloudRef.current) {
+        syncReceiptsBatchToDrive(null, unsynced);
+      }
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      if (onToast) onToast('⚠️ Network connection dropped. Receipts will queue locally.');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const syncReceiptsBatchToDrive = async (tokenOrWebhook: string | null, itemsToSync: ProcessedReceipt[]) => {
     const webhook = driveWebhookUrl || getStoredDriveWebhookUrl();
@@ -624,6 +658,27 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const unsyncedReceipts = useMemo(() => {
     return receipts.filter(r => !r.googleDriveId && r.dataUrl && r.status !== 'REJECTED');
   }, [receipts]);
+
+  // Pagination & sync health metrics
+  const totalPages = Math.ceil(filteredReceipts.length / pageSize) || 1;
+  const pagedReceipts = useMemo(() => {
+    const start = (ledgerPage - 1) * pageSize;
+    return filteredReceipts.slice(start, start + pageSize);
+  }, [filteredReceipts, ledgerPage, pageSize]);
+
+  const syncedReceiptsCount = useMemo(() => {
+    return receipts.filter(r => r.googleDriveId).length;
+  }, [receipts]);
+
+  const eligibleSyncCount = useMemo(() => {
+    return receipts.filter(r => r.status !== 'REJECTED').length;
+  }, [receipts]);
+
+  useEffect(() => {
+    if (ledgerPage > totalPages) {
+      setLedgerPage(Math.max(1, totalPages));
+    }
+  }, [totalPages, ledgerPage]);
 
   // Detailed per-client tracking: volume of uploaded, pending, and processed receipts
   const clientBreakdown = useMemo(() => {
@@ -2428,15 +2483,30 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       {/* AUDIT LEDGER TABLE */}
       <div className="rounded-2xl bg-stone-900 border border-stone-800 shadow-xl overflow-hidden">
-        <div className="p-4 bg-stone-900/90 border-b border-stone-800 flex items-center justify-between">
+        <div className="p-4 bg-stone-900/90 border-b border-stone-800 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
             <h3 className="text-xs font-bold text-white uppercase tracking-wider">
               Scanned Receipts Audit Ledger ({filteredReceipts.length})
             </h3>
           </div>
-          <div className="text-xs text-stone-400 flex items-center gap-3">
-            <span>Showing verified line-item categorizations</span>
+          <div className="flex items-center gap-3">
+            <div className={`px-2.5 py-1 rounded-full text-[11px] font-medium border flex items-center gap-1.5 ${
+              syncedReceiptsCount === eligibleSyncCount && eligibleSyncCount > 0
+                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                : 'bg-blue-950/60 border-blue-500/40 text-blue-300'
+            }`}>
+              <Cloud className="w-3.5 h-3.5 text-blue-400" />
+              <span>Vault Synced: <strong>{syncedReceiptsCount}</strong> / {eligibleSyncCount}</span>
+            </div>
+            {!isOnline && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                <WifiOff className="w-3 h-3" />
+                Offline Mode
+              </span>
+            )}
+            <span className="text-xs text-stone-500 hidden sm:inline">•</span>
+            <span className="text-xs text-stone-400 hidden sm:inline">Verified line-item categorizations</span>
           </div>
         </div>
 
@@ -2509,7 +2579,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                   <th className="py-3 px-4 w-8">
                     <input
                       type="checkbox"
-                      checked={selectedIds.size === filteredReceipts.length && filteredReceipts.length > 0}
+                      checked={selectedIds.size === pagedReceipts.length && pagedReceipts.length > 0}
                       onChange={handleToggleSelectAll}
                       className="rounded border-stone-700 text-emerald-500 focus:ring-0 cursor-pointer"
                     />
@@ -2527,7 +2597,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-800/60 font-sans">
-                {filteredReceipts.map(r => {
+                {pagedReceipts.map(r => {
                   const isDup = r.duplicateStatus !== 'UNIQUE';
                   const isSelected = selectedIds.has(r.id);
 
@@ -2770,6 +2840,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                             </button>
                           )}
 
+                          {r.googleDriveId && (
+                            <a
+                              href={r.googleDriveLink || `https://drive.google.com/file/d/${r.googleDriveId}/view`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 transition-colors inline-flex items-center justify-center cursor-pointer"
+                              title="Open verified file in Google Drive Vault"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          )}
+
                           <button
                             onClick={() => handleToggleDuplicateStatus(r.id)}
                             className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
@@ -2803,6 +2885,64 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* PAGINATION CONTROLS */}
+        {filteredReceipts.length > 0 && (
+          <div className="p-3.5 bg-stone-950/90 border-t border-stone-800 flex flex-wrap items-center justify-between gap-3 text-xs text-stone-400">
+            <div className="flex items-center gap-2">
+              <span>Showing</span>
+              <span className="font-semibold text-stone-200">
+                {Math.min((ledgerPage - 1) * pageSize + 1, filteredReceipts.length)}–{Math.min(ledgerPage * pageSize, filteredReceipts.length)}
+              </span>
+              <span>of</span>
+              <span className="font-semibold text-stone-200">{filteredReceipts.length}</span>
+              <span>verified transactions</span>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-stone-500">Rows per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setLedgerPage(1);
+                  }}
+                  className="bg-stone-900 border border-stone-700 rounded-lg px-2 py-1 text-xs text-stone-300 focus:outline-none focus:border-emerald-500"
+                >
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setLedgerPage(p => Math.max(1, p - 1))}
+                  disabled={ledgerPage === 1}
+                  className="p-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title="Previous Page"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="px-2.5 text-stone-300 font-mono text-[11px]">
+                  Page {ledgerPage} of {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setLedgerPage(p => Math.min(totalPages, p + 1))}
+                  disabled={ledgerPage >= totalPages}
+                  className="p-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                  title="Next Page"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -3568,6 +3708,31 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 <Cloud className="w-3.5 h-3.5" />
                 <span>Sync Unsynced Now</span>
               </button>
+            </div>
+
+            {/* Optimized Backend Code Reference */}
+            <div className="p-3 rounded-xl bg-stone-950 border border-stone-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-stone-300 flex items-center gap-1.5">
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  Optimized Apps Script Backend (CacheService &amp; Duplicate Shield)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(APPS_SCRIPT_VAULT_CODE);
+                    setCopiedAppsScript(true);
+                    setTimeout(() => setCopiedAppsScript(false), 3000);
+                  }}
+                  className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-stone-200 text-[10px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  {copiedAppsScript ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedAppsScript ? 'Copied to Clipboard!' : 'Copy Code'}</span>
+                </button>
+              </div>
+              <p className="text-[10px] text-stone-400 leading-normal">
+                Includes 6-hour folder caching via <code className="text-amber-300">CacheService</code> (4x faster execution) and Google Drive duplicate check preventing repeated files.
+              </p>
             </div>
 
             {/* Modal Actions */}

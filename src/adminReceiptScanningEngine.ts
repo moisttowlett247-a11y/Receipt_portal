@@ -1366,12 +1366,72 @@ export async function runParallelBatchScan(
         fileHash = `hash-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       }
 
+      // Fast-Path Pre-OCR Duplicate Detection:
+      // If cryptographic SHA-256 matches an existing record for this client, reject immediately in 0ms without wasting OCR
+      const clientName = item.clientName || options.defaultClientName || 'General';
+      const existingMatch = currentLedger.find(e => 
+        e.fileHash && fileHash && e.fileHash.toLowerCase() === fileHash.toLowerCase() &&
+        (!item.clientName || !e.clientName || item.clientName.trim().toLowerCase() === e.clientName.trim().toLowerCase())
+      );
+
+      if (existingMatch) {
+        worker.currentStep = 'Duplicate detected (SHA-256 match) - Bypassing OCR';
+        worker.progressPercent = 100;
+        options.onWorkerUpdate([...workers]);
+
+        const processedRecord: ProcessedReceipt = {
+          id: item.id || `rec-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          submissionId: item.id,
+          fileName: item.fileName,
+          fileSize: item.fileSize || (item.file?.size ?? 125000),
+          fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
+          dataUrl: undefined, // Purge duplicate image from RAM
+          fileHash,
+          clientId: item.clientId || (clientName.toLowerCase().includes('admin') ? 'admin' : undefined),
+          clientName,
+          clientEmail: item.clientEmail,
+          submittedBy: item.submittedBy || clientName,
+          submittedByRole: item.submittedByRole || 'CLIENT',
+          uploadedAt: item.uploadedAt || new Date().toISOString(),
+          vendor: existingMatch.vendor,
+          normalizedVendor: existingMatch.normalizedVendor || normalizeVendorName(existingMatch.vendor),
+          date: existingMatch.date,
+          total: existingMatch.total,
+          tax: existingMatch.tax,
+          tip: existingMatch.tip,
+          subtotal: existingMatch.subtotal,
+          paymentMethod: existingMatch.paymentMethod,
+          cardLast4: existingMatch.cardLast4,
+          lineItems: existingMatch.lineItems,
+          category: existingMatch.category,
+          schedule: existingMatch.schedule,
+          irsLineNumber: existingMatch.irsLineNumber,
+          irsLineTitle: existingMatch.irsLineTitle,
+          confidence: existingMatch.confidence,
+          duplicateStatus: 'DUPLICATE_EXACT',
+          duplicateReason: `Exact identical file SHA-256 hash matched existing record (${existingMatch.id.slice(0, 10)}) for '${existingMatch.clientName}'. Cloud sync blocked.`,
+          duplicateMatchId: existingMatch.id,
+          status: 'REJECTED',
+          workerNodeId: worker.name,
+          processingDurationMs: Math.round(performance.now() - startTime),
+          memo: item.memo || 'Duplicate upload prevented by cryptographic SHA-256 filter',
+          processedAt: new Date().toISOString()
+        };
+
+        results.push(processedRecord);
+        currentLedger.unshift(processedRecord);
+        worker.processedCount++;
+        worker.status = 'IDLE';
+        worker.progressPercent = 100;
+        options.onWorkerUpdate([...workers]);
+        options.onItemProcessed(processedRecord, results.length, totalItems);
+        continue;
+      }
+
       // 2. Preprocess & Extract text & line items
       worker.currentStep = 'Executing AI Vision OCR & Entity Extraction...';
       worker.progressPercent = 55;
       options.onWorkerUpdate([...workers]);
-
-      const clientName = item.clientName || options.defaultClientName || 'General';
 
       let extracted: {
         vendor: string;
@@ -1495,6 +1555,9 @@ export async function runParallelBatchScan(
               total: extracted.total,
               date: extracted.date,
               schedule: taxCls.schedule,
+              irsLineNumber: taxCls.lineNumber,
+              irsLineTitle: taxCls.lineTitle,
+              fileHash,
               clientName
             });
             if (driveRes) {
@@ -1533,7 +1596,7 @@ export async function runParallelBatchScan(
         fileName: item.fileName,
         fileSize: item.fileSize || (item.file?.size ?? 125000),
         fileType: item.fileType || (item.file?.type ?? 'image/jpeg'),
-        dataUrl: dataUrl || item.dataUrl,
+        dataUrl: googleDriveId ? undefined : (dataUrl || item.dataUrl), // Offload heavy base64 payload from active RAM once safely in Drive Vault
         fileHash,
         clientId: item.clientId || (clientName.toLowerCase().includes('admin') ? 'admin' : undefined),
         clientName,
