@@ -115,27 +115,40 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
   }
 }
 
+let lastHeartbeatTime = 0;
+
 /**
  * Starts automated real-time presence heartbeat broadcasting for the active view.
+ * Throttled to 60s (with visibility-based pause) to prevent exhausting Cloudflare daily limits.
  */
 export function startPresenceTracker(payload: WebPresencePayload): () => void {
-  // Send immediately
-  sendPresenceHeartbeat(payload);
+  // Send initial heartbeat only once
+  const now = Date.now();
+  if (now - lastHeartbeatTime >= 30000) {
+    lastHeartbeatTime = now;
+    sendPresenceHeartbeat(payload);
+  }
 
   if (activeInterval) {
     clearInterval(activeInterval);
   }
 
-  // Ping every 5 seconds while tab is active
+  // Ping every 60 seconds (down from hyperactive 5s) while tab is active and visible
   activeInterval = setInterval(() => {
     if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+      lastHeartbeatTime = Date.now();
       sendPresenceHeartbeat(payload);
     }
-  }, 5000);
+  }, 60000);
 
   const handleVisibilityChange = () => {
+    // Only send on tab refocus if at least 45 seconds have elapsed since last ping
     if (document.visibilityState === 'visible') {
-      sendPresenceHeartbeat(payload);
+      const elapsed = Date.now() - lastHeartbeatTime;
+      if (elapsed >= 45000) {
+        lastHeartbeatTime = Date.now();
+        sendPresenceHeartbeat(payload);
+      }
     }
   };
 

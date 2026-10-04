@@ -71,18 +71,6 @@ export default function App() {
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
-
-  useEffect(() => {
-    const cleanup = startPresenceTracker({
-      portal: 'ADMIN',
-      userId: 'admin_master',
-      username: 'admin',
-      displayName: 'System Administrator',
-      plan: 'Master Administrator Console',
-      role: 'SUPER_ADMIN'
-    });
-    return () => cleanup();
-  }, []);
   
   // Persistent License Keys registry state
   const [licenseKeys, setLicenseKeys] = useState<LicenseKeyRecord[]>(() => {

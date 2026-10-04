@@ -57,7 +57,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const [sessions, setSessions] = useState<ActiveDeviceSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(5); // seconds, 0 = paused
+  const [autoRefreshInterval, setAutoRefreshInterval] = useState<number>(30); // default 30s (down from hyperactive 5s to preserve Cloudflare quota)
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ONLINE' | 'IDLE' | 'OFFLINE'>('ALL');
   const [copiedField, setCopiedField] = useState<string | null>(null);
@@ -237,13 +237,16 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
     }
   }, [showToast]);
 
-  // Polling effect
+  // Polling effect (pauses when browser tab is inactive to preserve Cloudflare quota)
   useEffect(() => {
     fetchSessions(true);
 
     if (autoRefreshInterval <= 0) return;
 
     const timer = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) {
+        return; // Don't burn Cloudflare requests while tab is minimized or in background
+      }
       fetchSessions(true);
     }, autoRefreshInterval * 1000);
 
@@ -468,27 +471,37 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
             <div className="flex items-center bg-stone-950 border border-stone-800 rounded-xl p-1 text-xs font-medium text-stone-400">
               <span className="px-2 text-[11px] text-stone-500">Auto-Refresh:</span>
               <button
-                onClick={() => setAutoRefreshInterval(3)}
+                onClick={() => setAutoRefreshInterval(15)}
                 className={`px-2.5 py-1 rounded-lg text-[11px] transition-colors cursor-pointer ${
-                  autoRefreshInterval === 3
+                  autoRefreshInterval === 15
                     ? 'bg-amber-500 text-stone-950 font-bold'
                     : 'hover:text-stone-200'
                 }`}
               >
-                3s
+                15s
               </button>
               <button
-                onClick={() => setAutoRefreshInterval(10)}
+                onClick={() => setAutoRefreshInterval(30)}
                 className={`px-2.5 py-1 rounded-lg text-[11px] transition-colors cursor-pointer ${
-                  autoRefreshInterval === 10
+                  autoRefreshInterval === 30
                     ? 'bg-amber-500 text-stone-950 font-bold'
                     : 'hover:text-stone-200'
                 }`}
               >
-                10s
+                30s
               </button>
               <button
-                onClick={() => setAutoRefreshInterval(autoRefreshInterval === 0 ? 5 : 0)}
+                onClick={() => setAutoRefreshInterval(60)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] transition-colors cursor-pointer ${
+                  autoRefreshInterval === 60
+                    ? 'bg-amber-500 text-stone-950 font-bold'
+                    : 'hover:text-stone-200'
+                }`}
+              >
+                60s
+              </button>
+              <button
+                onClick={() => setAutoRefreshInterval(autoRefreshInterval === 0 ? 30 : 0)}
                 className={`px-2.5 py-1 rounded-lg text-[11px] transition-colors cursor-pointer flex items-center gap-1 ${
                   autoRefreshInterval === 0
                     ? 'bg-rose-500/20 text-rose-300 font-bold'

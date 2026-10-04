@@ -395,22 +395,32 @@ export async function fetchCloudflareLicenses(): Promise<CloudflareLicenseRecord
   return [];
 }
 
+let cachedHealth: { online: boolean; ip?: string; location?: string; hasDb?: boolean } | null = null;
+let cachedHealthTime = 0;
+
 /**
- * Checks Cloudflare Worker health and database connection
+ * Checks Cloudflare Worker health and database connection with 45s in-memory TTL cache
  */
-export async function fetchCloudflareHealth(): Promise<{ online: boolean; ip?: string; location?: string; hasDb?: boolean }> {
+export async function fetchCloudflareHealth(force = false): Promise<{ online: boolean; ip?: string; location?: string; hasDb?: boolean }> {
+  const now = Date.now();
+  if (!force && cachedHealth && (now - cachedHealthTime < 45000)) {
+    return cachedHealth;
+  }
+
   try {
     const resp = await fetch(`${CLOUDFLARE_WORKER_URL}/api/health`, {
       headers: { 'Cache-Control': 'no-cache' }
     });
     if (resp.ok) {
       const data = await resp.json();
-      return {
+      cachedHealth = {
         online: data.status === 'ONLINE',
         ip: data.your_ip,
         location: data.location,
         hasDb: Boolean(data.has_database)
       };
+      cachedHealthTime = now;
+      return cachedHealth;
     }
   } catch (err) {
     console.warn('Cloudflare health check failed:', err);

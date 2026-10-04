@@ -276,10 +276,12 @@ export function subscribeToClientSubmissions(callback: (submissions: ClientSubmi
   }).catch(() => {});
 
   const intervalId = setInterval(() => {
+    // Avoid burning network requests when tab is hidden
+    if (typeof document !== 'undefined' && document.hidden) return;
     syncClientSubmissionsWithBackend().then(res => {
       if (res) callback(res);
     }).catch(() => {});
-  }, 4000);
+  }, 30000);
 
   return () => {
     if (typeof window !== 'undefined') {
