@@ -32,7 +32,8 @@ import {
   Building2,
   Mail,
   Inbox,
-  Cpu
+  Cpu,
+  FileSpreadsheet
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -55,6 +56,7 @@ import { QuickBooksProductionCenter } from './components/QuickBooksProductionCen
 import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { ClientIntakeManager } from './components/ClientIntakeManager';
 import { AdminReceiptProcessorEngine } from './components/AdminReceiptProcessorEngine';
+import { AdminTaxDocumentsCenter } from './components/AdminTaxDocumentsCenter';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
@@ -67,7 +69,7 @@ import { startPresenceTracker } from './webPresenceService';
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'updater' | 'code' | 'guide'>('scanner');
+  const [activeTab, setActiveTab] = useState<'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'tax_hub' | 'updater' | 'code' | 'guide'>('scanner');
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'security' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
@@ -1192,6 +1194,21 @@ export default function App() {
         </button>
 
         <button
+          onClick={() => setActiveTab('tax_hub')}
+          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
+            activeTab === 'tax_hub'
+              ? 'border-purple-500 text-purple-400'
+              : 'border-transparent text-stone-400 hover:text-stone-200'
+          }`}
+        >
+          <FileSpreadsheet className="w-4 h-4 text-purple-400" />
+          <span>W-2 &amp; 1099 Tax Hub</span>
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 ml-1">
+            Form 1040
+          </span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('updater')}
           className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
             activeTab === 'updater'
@@ -1880,6 +1897,13 @@ export default function App() {
               setLegalTab(tab);
               setLegalModalOpen(true);
             }}
+          />
+        )}
+
+        {/* TAB: W-2 & 1099 COMPLIANCE & STATE TAX HUB (INDIVIDUAL TAXES) */}
+        {activeTab === 'tax_hub' && (
+          <AdminTaxDocumentsCenter
+            onToast={showToast}
           />
         )}
 

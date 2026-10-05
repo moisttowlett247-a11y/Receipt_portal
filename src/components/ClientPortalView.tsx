@@ -60,6 +60,7 @@ import {
 import { ClientAuthModal } from './ClientAuthModal';
 import { ClientAccountModal } from './ClientAccountModal';
 import { ClientTaxSchedulesView } from './ClientTaxSchedulesView';
+import { ClientTaxDocumentsHub } from './ClientTaxDocumentsHub';
 import { classifyReceiptTaxSchedule } from '../taxScheduleService';
 import { startPresenceTracker } from '../webPresenceService';
 
@@ -100,7 +101,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [uploadSuccessCount, setUploadSuccessCount] = useState<number | null>(null);
-  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'tax_schedules' | 'services'>('upload');
+  const [activeTab, setActiveTab] = useState<'upload' | 'history' | 'tax_documents' | 'tax_schedules' | 'services'>('upload');
 
   // Plan Activation & Voucher state
   const [authInitialPlan, setAuthInitialPlan] = useState<string | undefined>(undefined);
@@ -714,6 +715,22 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
 
           <button
             type="button"
+            onClick={() => setActiveTab('tax_documents')}
+            className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-colors cursor-pointer flex items-center gap-2 border-b-2 ${
+              activeTab === 'tax_documents'
+                ? 'border-amber-500 text-amber-400 bg-stone-900/60'
+                : 'border-transparent text-stone-400 hover:text-stone-200'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-purple-400" />
+            <span>W-2 &amp; 1099 Income Vault</span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/10 text-purple-300 font-mono hidden sm:inline">
+              Individual / State Tax
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('tax_schedules')}
             className={`px-4 py-2.5 text-xs font-bold rounded-t-xl transition-colors cursor-pointer flex items-center gap-2 border-b-2 ${
               activeTab === 'tax_schedules'
@@ -1208,6 +1225,10 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           className="w-full px-3 py-2 bg-stone-950 border border-stone-800 rounded-xl text-xs text-stone-200 focus:outline-none focus:border-amber-500"
                         >
                           <option value="Auto-Detect (AI)">Auto-Detect (Bookkeeper AI)</option>
+                          <option value="Form W-2: Wage & Tax Statement">Form W-2 (Wage & Tax Statement)</option>
+                          <option value="Form 1099-NEC: Nonemployee Comp">Form 1099-NEC (Nonemployee Compensation)</option>
+                          <option value="Form 1099-MISC: Miscellaneous Income">Form 1099-MISC (Miscellaneous Income)</option>
+                          <option value="Form 1098: Mortgage Interest">Form 1098 (Mortgage Interest Statement)</option>
                           <option value="Supplies & Materials">Supplies & Materials</option>
                           <option value="Farm:Feed & Fertilizer">Farm: Feed & Fertilizer</option>
                           <option value="Farm:Livestock & Veterinary">Farm: Livestock & Veterinary</option>
@@ -1550,6 +1571,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
           </div>
+        )}
+
+        {/* TAB: W-2 & 1099 Income Vault (Non-Business Individual Taxes) */}
+        {activeTab === 'tax_documents' && (
+          <ClientTaxDocumentsHub
+            clientSession={clientSession}
+            onToast={(msg) => setPlanSuccessMsg(msg)}
+          />
         )}
 
         {/* TAB 3: Tax Schedules (C & F) */}
