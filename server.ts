@@ -1997,14 +1997,14 @@ router.post('/api/qbo/push', async (req, res) => {
   const nowStr = new Date().toISOString();
 
   for (const rcpt of rawReceipts) {
-    const vendor = (rcpt.vendor || 'Unknown Vendor').trim();
+    const vendor = (rcpt.vendor || rcpt.merchant || rcpt.store || 'Unknown Vendor').toString().trim();
     const date = rcpt.date || nowStr.split('T')[0];
     const total = parseFloat(rcpt.total || '0') || 0;
     const tax = parseFloat(rcpt.tax || '0') || 0;
-    const docNumber = rcpt.invoiceNumber || rcpt.transactionNumber || rcpt.referenceId || `RCPT-${Date.now().toString().slice(-6)}`;
-    const lineTitle = rcpt.irsLineTitle || 'Operating Expenses';
-    const schedule = rcpt.schedule || 'SCHEDULE_F';
-    const irsLine = rcpt.irsLineNumber || (schedule === 'SCHEDULE_F' ? 'Line 32' : 'Line 27');
+    const docNumber = rcpt.invoiceNumber || rcpt.transactionNumber || rcpt.referenceId || rcpt.id || `RCPT-${Date.now().toString().slice(-6)}`;
+    const lineTitle = rcpt.irsLineTitle || rcpt.irsCategory || 'Operating Expenses';
+    const schedule = rcpt.schedule || rcpt.irsSchedule || 'SCHEDULE_F';
+    const irsLine = rcpt.irsLineNumber || rcpt.line || (schedule === 'SCHEDULE_F' ? 'Line 32' : 'Line 27');
     const memo = `Worker Ingested: ${rcpt.fileName || 'Document'} | Tax Deduction: ${schedule} ${irsLine} (${lineTitle}) | Card: ${rcpt.cardLast4 || 'N/A'}`;
 
     // Target QBO Account Name
