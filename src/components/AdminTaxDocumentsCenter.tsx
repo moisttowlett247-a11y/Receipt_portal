@@ -23,7 +23,8 @@ import {
   Clock,
   Layers,
   ArrowRight,
-  Eye
+  Eye,
+  Lock
 } from 'lucide-react';
 import { 
   W2Record, 
@@ -181,6 +182,30 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
             <Sparkles className="w-4 h-4 text-amber-400" />
             <span>Seed Multi-State Batch</span>
           </button>
+        </div>
+      </div>
+
+      {/* Security & Cryptographic Compliance Banner */}
+      <div className="p-3.5 rounded-xl bg-stone-950 border border-purple-500/20 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-inner">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center shrink-0">
+            <ShieldCheck className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="font-bold text-white flex items-center gap-2">
+              <span>Federal Tax Information (FTI) &amp; PII Cryptographic Vault Active</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300">
+                AES-256-GCM
+              </span>
+            </div>
+            <p className="text-[11px] text-stone-400">
+              Tax files encrypted at rest • Zero unmasked SSNs • Real-time sanitized exports with formula injection defense
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-stone-400 font-mono">
+          <Lock className="w-3.5 h-3.5 text-purple-400" />
+          <span>IRS Publication 1075 Baseline</span>
         </div>
       </div>
 

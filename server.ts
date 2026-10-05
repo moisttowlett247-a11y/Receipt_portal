@@ -14,6 +14,22 @@ const port = process.env.PORT || 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Strict Security Headers for Financial and Sensitive Tax Data (IRS Pub 1075 / FTI Guidelines)
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
+  // For sensitive financial and tax document endpoints, strictly disable client/proxy caching
+  if (req.path.startsWith('/api/tax-docs') || req.path.startsWith('/api/scan') || req.path.startsWith('/api/qbo')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
 // Helper directories
 const LICENSES_DIR = path.resolve(__dirname, 'public', 'licenses');
 if (!fs.existsSync(LICENSES_DIR)) {
@@ -34,25 +50,89 @@ const SUBMISSIONS_FILE = path.join(DATA_DIR, 'client_submissions.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'client_accounts.json');
 const TAX_DOCS_FILE = path.join(DATA_DIR, 'tax_documents.json');
 
+// Cryptographic Infrastructure: AES-256-GCM Encryption with SHA-256 key derivation
+const MASTER_SALT = process.env.QBO_ENCRYPTION_KEY || 'receipt_processor_qbo_secure_aes256_salt_8921';
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(MASTER_SALT).digest();
+
+function encryptToken(plaintext: string): string {
+  if (!plaintext) return '';
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const authTag = cipher.getAuthTag().toString('hex');
+  return `aes_gcm:${iv.toString('hex')}:${authTag}:${encrypted}`;
+}
+
+function decryptToken(ciphertext: string): string {
+  if (!ciphertext) return '';
+  if (!ciphertext.startsWith('aes_gcm:')) return ciphertext;
+  const parts = ciphertext.split(':');
+  if (parts.length !== 4) return '';
+  const [, ivHex, authTagHex, encData] = parts;
+  const iv = Buffer.from(ivHex, 'hex');
+  const authTag = Buffer.from(authTagHex, 'hex');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(authTag);
+  let decrypted = decipher.update(encData, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
+// Forensic PII & Federal Tax Information (FTI) Redaction Helpers
+function sanitizeSSN(ssnRaw: string | undefined | null): string {
+  if (!ssnRaw) return '***-**-****';
+  const digits = String(ssnRaw).replace(/\D/g, '');
+  if (digits.length >= 4) {
+    const last4 = digits.slice(-4);
+    return `***-**-${last4}`;
+  }
+  return '***-**-****';
+}
+
+function sanitizeEIN(einRaw: string | undefined | null): string {
+  if (!einRaw) return '**-*******';
+  const str = String(einRaw).trim();
+  const digits = str.replace(/\D/g, '');
+  if (digits.length >= 4) {
+    const last4 = digits.slice(-4);
+    return `**-***${last4}`;
+  }
+  return str.length > 4 ? `**-***${str.slice(-4)}` : '**-*******';
+}
+
+// Encrypted at Rest Tax Documents Persistence
 function loadTaxDocuments(): { w2s: any[]; form1099s: any[] } {
   if (fs.existsSync(TAX_DOCS_FILE)) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(TAX_DOCS_FILE, 'utf-8'));
+      const raw = fs.readFileSync(TAX_DOCS_FILE, 'utf-8');
+      let jsonStr = raw;
+      if (raw.startsWith('aes_gcm:')) {
+        jsonStr = decryptToken(raw);
+      }
+      const parsed = JSON.parse(jsonStr);
       if (parsed && typeof parsed === 'object') {
         return {
           w2s: Array.isArray(parsed.w2s) ? parsed.w2s : [],
           form1099s: Array.isArray(parsed.form1099s) ? parsed.form1099s : []
         };
       }
-    } catch {}
+    } catch (err) {
+      console.error('[Security] Error decrypting tax documents at rest:', err);
+    }
   }
   return { w2s: [], form1099s: [] };
 }
 
 function saveTaxDocuments(data: { w2s: any[]; form1099s: any[] }) {
   try {
-    fs.writeFileSync(TAX_DOCS_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch {}
+    const jsonStr = JSON.stringify(data, null, 2);
+    // Encrypt at rest with AES-256-GCM
+    const encrypted = encryptToken(jsonStr);
+    fs.writeFileSync(TAX_DOCS_FILE, encrypted, 'utf-8');
+  } catch (err) {
+    console.error('[Security] Error saving encrypted tax documents:', err);
+  }
 }
 
 function loadAccounts(): any[] {
@@ -85,35 +165,6 @@ function saveSubmissions(submissions: any[]) {
   try {
     fs.writeFileSync(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2), 'utf-8');
   } catch {}
-}
-
-// QBO Encryption Setup
-const MASTER_SALT = process.env.QBO_ENCRYPTION_KEY || 'receipt_processor_qbo_secure_aes256_salt_8921';
-const ENCRYPTION_KEY = crypto.createHash('sha256').update(MASTER_SALT).digest();
-
-function encryptToken(plaintext: string): string {
-  if (!plaintext) return '';
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
-  let encrypted = cipher.update(plaintext, 'utf8', 'hex');
-  encrypted += cipher.final('hex');
-  const authTag = cipher.getAuthTag().toString('hex');
-  return `aes_gcm:${iv.toString('hex')}:${authTag}:${encrypted}`;
-}
-
-function decryptToken(ciphertext: string): string {
-  if (!ciphertext) return '';
-  if (!ciphertext.startsWith('aes_gcm:')) return ciphertext;
-  const parts = ciphertext.split(':');
-  if (parts.length !== 4) return '';
-  const [, ivHex, authTagHex, encData] = parts;
-  const iv = Buffer.from(ivHex, 'hex');
-  const authTag = Buffer.from(authTagHex, 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
-  decipher.setAuthTag(authTag);
-  let decrypted = decipher.update(encData, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
-  return decrypted;
 }
 
 // Config & Company Helpers
@@ -1399,6 +1450,24 @@ router.post('/api/tax-docs', (req, res) => {
 
     if (!record || !record.id) {
       return res.status(400).json({ success: false, error: 'Valid record with id is required' });
+    }
+
+    // Forensic PII Redaction: Enforce strict SSN/EIN masking before disk storage
+    if (record.employeeSsnMasked || record.ssn || record.employeeSsn) {
+      record.employeeSsnMasked = sanitizeSSN(record.employeeSsnMasked || record.ssn || record.employeeSsn);
+      delete record.ssn;
+      delete record.employeeSsn;
+    }
+    if (record.recipientTinMasked || record.tin || record.recipientTin) {
+      record.recipientTinMasked = sanitizeSSN(record.recipientTinMasked || record.tin || record.recipientTin);
+      delete record.tin;
+      delete record.recipientTin;
+    }
+    if (record.employerEin) {
+      record.employerEin = sanitizeEIN(record.employerEin);
+    }
+    if (record.payerTin) {
+      record.payerTin = sanitizeEIN(record.payerTin);
     }
 
     const data = loadTaxDocuments();

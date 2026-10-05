@@ -13,6 +13,36 @@ const W2_STORAGE_KEY = 'receipt_processor_w2_records_v1';
 const FORM1099_STORAGE_KEY = 'receipt_processor_1099_records_v1';
 const BROADCAST_NAME = 'tax_documents_sync_channel_v1';
 
+// Strict PII & Federal Tax Information (FTI) Redaction Helpers
+export function sanitizeSSN(ssnRaw?: string | null): string {
+  if (!ssnRaw) return '***-**-****';
+  const clean = String(ssnRaw).replace(/\D/g, '');
+  if (clean.length >= 4) {
+    return `***-**-${clean.slice(-4)}`;
+  }
+  return '***-**-****';
+}
+
+export function sanitizeEIN(einRaw?: string | null): string {
+  if (!einRaw) return '**-*******';
+  const clean = String(einRaw).replace(/\D/g, '');
+  if (clean.length >= 4) {
+    return `**-***${clean.slice(-4)}`;
+  }
+  return '**-*******';
+}
+
+// CWE-1236 Defense against CSV / Excel Spreadsheet Formula Injection
+function sanitizeCSVCell(val: string | number | undefined | null): string {
+  if (val === undefined || val === null) return '""';
+  let str = String(val).trim();
+  // Neutralize formula triggers: =, +, -, @, \t, \r
+  if (/^[=+@\-\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
+  return `"${str.replace(/"/g, '""')}"`;
+}
+
 let taxBroadcast: BroadcastChannel | null = null;
 try {
   if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
@@ -83,6 +113,8 @@ export function saveW2Record(w2Data: Omit<W2Record, 'id' | 'stateAssessment' | '
 
   const fullRecord: W2Record = {
     ...w2Data,
+    employeeSsnMasked: sanitizeSSN(w2Data.employeeSsnMasked),
+    employerEin: sanitizeEIN(w2Data.employerEin),
     id,
     stateAssessment: assessment,
     uploadedAt: new Date().toISOString()
@@ -149,6 +181,8 @@ export function save1099Record(data: Omit<Form1099Record, 'id' | 'stateAssessmen
 
   const fullRecord: Form1099Record = {
     ...data,
+    recipientTinMasked: sanitizeSSN(data.recipientTinMasked),
+    payerTin: sanitizeEIN(data.payerTin),
     id,
     stateAssessment: assessment,
     uploadedAt: new Date().toISOString()
@@ -302,47 +336,47 @@ export function exportTaxDocumentsCSV(clientId?: string): void {
   const rows: string[] = [];
   rows.push('Document Type,Client Name,Tax Year,Employer / Payer,EIN / TIN,Federal Wages / Gross,Fed Tax Withheld,Social Security Tax,Medicare Tax,State Code,State Name,State Wages,State Tax Withheld,State Return Required?,Filing Guidance,Notes');
 
-  // Add W2 rows
+  // Add W2 rows with formula injection protection
   for (const w of w2s) {
     rows.push([
       'Form W-2',
-      `"${w.clientName.replace(/"/g, '""')}"`,
+      sanitizeCSVCell(w.clientName),
       w.taxYear,
-      `"${w.employerName.replace(/"/g, '""')}"`,
-      `"${w.employerEin}"`,
+      sanitizeCSVCell(w.employerName),
+      sanitizeCSVCell(w.employerEin),
       w.box1Wages.toFixed(2),
       w.box2FedTaxWithheld.toFixed(2),
       w.box4SocialSecurityTax.toFixed(2),
       w.box6MedicareTax.toFixed(2),
-      w.box15State || 'N/A',
-      `"${(w.stateAssessment?.stateName || '').replace(/"/g, '""')}"`,
+      sanitizeCSVCell(w.box15State || 'N/A'),
+      sanitizeCSVCell(w.stateAssessment?.stateName || ''),
       w.box16StateWages.toFixed(2),
       w.box17StateTaxWithheld.toFixed(2),
       w.stateAssessment?.stateReturnRequired ? 'YES' : 'NO (Zero State Tax)',
-      `"${(w.stateAssessment?.summaryMessage || '').replace(/"/g, '""')}"`,
-      `"${(w.notes || '').replace(/"/g, '""')}"`
+      sanitizeCSVCell(w.stateAssessment?.summaryMessage || ''),
+      sanitizeCSVCell(w.notes || '')
     ].join(','));
   }
 
-  // Add 1099 rows
+  // Add 1099 rows with formula injection protection
   for (const f of form1099s) {
     rows.push([
       f.formType === '1099_NEC' ? 'Form 1099-NEC' : 'Form 1099-MISC',
-      `"${f.clientName.replace(/"/g, '""')}"`,
+      sanitizeCSVCell(f.clientName),
       f.taxYear,
-      `"${f.payerName.replace(/"/g, '""')}"`,
-      `"${f.payerTin}"`,
+      sanitizeCSVCell(f.payerName),
+      sanitizeCSVCell(f.payerTin),
       f.box1Amount.toFixed(2),
       f.box4FedTaxWithheld.toFixed(2),
       '0.00',
       '0.00',
-      f.box6State || 'N/A',
-      `"${(f.stateAssessment?.stateName || '').replace(/"/g, '""')}"`,
+      sanitizeCSVCell(f.box6State || 'N/A'),
+      sanitizeCSVCell(f.stateAssessment?.stateName || ''),
       f.box7StateIncome.toFixed(2),
       f.box5StateTaxWithheld.toFixed(2),
       f.stateAssessment?.stateReturnRequired ? 'YES' : 'NO (Zero State Tax)',
-      `"${(f.stateAssessment?.summaryMessage || '').replace(/"/g, '""')}"`,
-      `"${(f.notes || '').replace(/"/g, '""')}"`
+      sanitizeCSVCell(f.stateAssessment?.summaryMessage || ''),
+      sanitizeCSVCell(f.notes || '')
     ].join(','));
   }
 

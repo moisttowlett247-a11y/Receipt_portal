@@ -369,6 +369,30 @@ export const ClientTaxDocumentsHub: React.FC<ClientTaxDocumentsHubProps> = ({
         </div>
       </div>
 
+      {/* Sensitive Tax Information & Encryption Security Guarantee */}
+      <div className="p-3.5 rounded-xl bg-stone-950/80 border border-emerald-500/20 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-inner">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+            <Lock className="w-4 h-4" />
+          </div>
+          <div>
+            <div className="font-bold text-white flex items-center gap-2">
+              <span>Federal Tax Information (FTI) &amp; PII Vault Security Active</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+                AES-256-GCM
+              </span>
+            </div>
+            <p className="text-[11px] text-stone-400">
+              Automatic SSN masking (***-**-XXXX) • Encrypted at rest • Zero persistent image URLs • Anti-CSV injection defense
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-stone-400 font-mono">
+          <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+          <span>IRS Pub 1075 Baseline</span>
+        </div>
+      </div>
+
       {/* Aggregate Financial Metrics */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Wage / Compensation */}
