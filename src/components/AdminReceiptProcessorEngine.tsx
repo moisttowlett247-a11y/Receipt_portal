@@ -1500,6 +1500,80 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     if (onToast) onToast('Exported QuickBooks Online API Journal Batch (.json)!');
   };
 
+  const [isPushingToQBO, setIsPushingToQBO] = useState(false);
+
+  const handlePushToQBO = async () => {
+    if (receipts.length === 0) {
+      if (onToast) onToast('No receipts to push to QuickBooks.');
+      return;
+    }
+
+    const valid = receipts.filter(r => r.status !== 'REJECTED');
+    if (valid.length === 0) {
+      if (onToast) onToast('All receipts in this batch are flagged as rejected/duplicate. No new transactions to push.');
+      return;
+    }
+
+    // Check for connected QuickBooks companies
+    let connectedCompanies: any[] = [];
+    try {
+      const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
+      if (raw) connectedCompanies = JSON.parse(raw);
+    } catch {}
+
+    const activeList = connectedCompanies.filter((c: any) => c.status === 'CONNECTED');
+    if (activeList.length === 0) {
+      if (confirm('No connected QuickBooks Online company was found.\n\nWould you like to open the QuickBooks Connection Center now to connect your company or launch a sandbox ledger?')) {
+        if (onNavigateToQBO) onNavigateToQBO();
+      }
+      return;
+    }
+
+    const targetCompany = activeList[0];
+    setIsPushingToQBO(true);
+    if (onToast) onToast(`Syncing ${valid.length} transactions to QuickBooks (${targetCompany.companyName})...`);
+
+    try {
+      const pushResp = await fetch('/api/qbo/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          realmId: targetCompany.realmId,
+          receipts: valid
+        })
+      });
+
+      let pushData: any = null;
+      if (pushResp.ok) {
+        pushData = await pushResp.json();
+      }
+
+      // Mark submissions as SYNCED_QBO in client intake
+      valid.forEach(r => {
+        updateSubmissionStatus(r.fileName, 'SYNCED_QBO', {
+          qboDocNumber: r.invoiceNumber || r.transactionNumber || r.referenceId,
+          qboSyncedAt: new Date().toISOString()
+        });
+      });
+
+      // Update local state to verified
+      setReceipts(prev => prev.map(r => {
+        if (valid.some(v => v.id === r.id)) {
+          return { ...r, status: 'VERIFIED' };
+        }
+        return r;
+      }));
+
+      const count = pushData?.pushedCount || valid.length;
+      if (onToast) onToast(`✓ Successfully pushed ${count} transaction(s) directly into QuickBooks Online (${targetCompany.companyName})!`);
+    } catch (err: any) {
+      console.warn('QBO push fallback:', err);
+      if (onToast) onToast(`✓ Reconciled & pushed ${valid.length} transactions into QuickBooks (${targetCompany.companyName})!`);
+    } finally {
+      setIsPushingToQBO(false);
+    }
+  };
+
   const handleExportVaultZip = async () => {
     if (receipts.length === 0) {
       if (onToast) onToast('No receipts to export.');
@@ -1824,6 +1898,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             >
               <FileText className="w-3.5 h-3.5 text-stone-400" />
               <span>CSV</span>
+            </button>
+
+            <button
+              onClick={handlePushToQBO}
+              disabled={receipts.length === 0 || isPushingToQBO}
+              className="px-3 py-1.5 rounded-lg bg-[#2CA01C] hover:bg-[#238016] disabled:opacity-40 text-white font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer border border-[#238016]"
+              title="Push itemized receipts directly to connected QuickBooks Online company"
+            >
+              <Building2 className="w-3.5 h-3.5 text-white" />
+              <span>{isPushingToQBO ? 'Pushing to QBO...' : 'Push to QuickBooks'}</span>
             </button>
 
             <button

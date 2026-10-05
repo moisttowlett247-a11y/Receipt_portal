@@ -21,6 +21,8 @@ export interface ClientSubmission {
   extractedAmount?: number;
   extractedDate?: string;
   workerNodeId?: string;
+  qboDocNumber?: string;
+  qboSyncedAt?: string;
 }
 
 const STORAGE_KEY = 'receipt_processor_client_submissions_v1';
