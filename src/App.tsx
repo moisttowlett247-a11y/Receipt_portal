@@ -31,9 +31,12 @@ import {
   Radio,
   Building2,
   Mail,
-  Inbox,
-  Cpu,
-  FileSpreadsheet
+  Inbox, 
+  Cpu, 
+  FileSpreadsheet,
+  Menu,
+  Home,
+  ArrowLeft
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -57,6 +60,8 @@ import { LegalAndComplianceModal } from './components/LegalAndComplianceModal';
 import { ClientIntakeManager } from './components/ClientIntakeManager';
 import { AdminReceiptProcessorEngine } from './components/AdminReceiptProcessorEngine';
 import { AdminTaxDocumentsCenter } from './components/AdminTaxDocumentsCenter';
+import { AdminHomeOverview } from './components/AdminHomeOverview';
+import { AdminHamburgerMenu, AdminTab } from './components/AdminHamburgerMenu';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
@@ -69,7 +74,8 @@ import { startPresenceTracker } from './webPresenceService';
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'tax_hub' | 'updater' | 'code' | 'guide'>('scanner');
+  const [activeTab, setActiveTab] = useState<AdminTab>('home');
+  const [isHamburgerOpen, setIsHamburgerOpen] = useState(false);
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'security' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
@@ -435,6 +441,7 @@ export default function App() {
 
   const handleAdminUnlockSuccess = () => {
     setIsAdminUnlocked(true);
+    setActiveTab('home');
     try {
       sessionStorage.setItem('receipt_processor_admin_auth', 'true');
     } catch {}
@@ -990,6 +997,29 @@ export default function App() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {/* Hamburger Menu & Home Buttons in Header */}
+          <button
+            onClick={() => setIsHamburgerOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 transition-all cursor-pointer shadow-sm"
+            title="Open all 10 admin sections navigation menu"
+          >
+            <Menu className="w-4 h-4 text-amber-400" />
+            <span>All Sections</span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('home')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-sm ${
+              activeTab === 'home'
+                ? 'bg-amber-500 text-stone-950 border-amber-400 shadow-md font-extrabold'
+                : 'bg-stone-800 hover:bg-stone-700 text-stone-200 border-stone-700'
+            }`}
+            title="Go to Home Overview Dashboard"
+          >
+            <Home className="w-3.5 h-3.5" />
+            <span>Home</span>
+          </button>
+
           {/* Change Admin Account button */}
           <button
             onClick={() => setShowPinModal(true)}
@@ -1104,149 +1134,126 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Tab Navigation */}
-      <nav className="border-b border-stone-800/80 bg-stone-900/40 px-6 flex gap-2 overflow-x-auto">
-        <button
-          onClick={() => setActiveTab('scanner')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'scanner'
-              ? 'border-emerald-500 text-emerald-400 font-bold'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <Cpu className="w-4 h-4 text-emerald-400 animate-pulse" />
-          <span>Receipt Processing &amp; Parallel Engine</span>
-          {pendingSubmissionsCount > 0 ? (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500 text-stone-950 animate-pulse ml-1">
-              {pendingSubmissionsCount} Queued
+      {/* Main Admin Navigation Bar with Hamburger Menu & Home Button */}
+      <nav className="border-b border-stone-800/80 bg-stone-900/60 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          {/* Hamburger Menu Toggle Button */}
+          <button
+            onClick={() => setIsHamburgerOpen(true)}
+            className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-stone-850 hover:bg-stone-800 text-stone-200 border border-stone-700 hover:border-amber-500/50 transition-all cursor-pointer shadow-sm group"
+            title="Open navigation menu to choose from all 10 admin sections"
+          >
+            <Menu className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
+            <span>All Sections</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-semibold">
+              10
             </span>
+          </button>
+
+          {/* Dedicated Home Overview Button */}
+          <button
+            onClick={() => setActiveTab('home')}
+            className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-sm ${
+              activeTab === 'home'
+                ? 'bg-amber-500 text-stone-950 border-amber-400 shadow-amber-500/20 shadow-md font-extrabold'
+                : 'bg-stone-850 hover:bg-stone-800 text-stone-300 border-stone-700'
+            }`}
+            title="Return to Home Overview Dashboard"
+          >
+            <Home className="w-4 h-4" />
+            <span>Home Overview</span>
+          </button>
+
+          {/* Breadcrumb / Active Module Indicator */}
+          <div className="h-4 w-px bg-stone-800 hidden sm:block" />
+
+          {activeTab === 'home' ? (
+            <div className="hidden sm:flex items-center gap-2 text-xs text-stone-400">
+              <span className="text-stone-500 font-mono">Overview:</span>
+              <span className="text-stone-300 font-medium">Platform Command Center &amp; Directory</span>
+            </div>
           ) : (
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
-              Multi-Worker
-            </span>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-stone-500">Active Module:</span>
+              <span className="font-semibold text-stone-200 px-2.5 py-1 rounded-lg bg-stone-950 border border-stone-800 flex items-center gap-1.5 shadow-inner">
+                {activeTab === 'scanner' && <Cpu className="w-3.5 h-3.5 text-emerald-400" />}
+                {activeTab === 'intake' && <Inbox className="w-3.5 h-3.5 text-amber-400" />}
+                {activeTab === 'tax_hub' && <FileSpreadsheet className="w-3.5 h-3.5 text-purple-400" />}
+                {activeTab === 'qbo' && <Building2 className="w-3.5 h-3.5 text-emerald-400" />}
+                {activeTab === 'devices' && <Radio className="w-3.5 h-3.5 text-emerald-400" />}
+                {activeTab === 'licensing' && <Key className="w-3.5 h-3.5 text-amber-400" />}
+                {activeTab === 'updater' && <RefreshCw className="w-3.5 h-3.5 text-sky-400" />}
+                {activeTab === 'guide' && <Layers className="w-3.5 h-3.5 text-emerald-400" />}
+                {activeTab === 'code' && <FileCode2 className="w-3.5 h-3.5 text-purple-400" />}
+                <span>
+                  {activeTab === 'scanner' && 'Receipt Processing & Parallel Engine'}
+                  {activeTab === 'intake' && 'Client Intake & Multi-VM Cluster'}
+                  {activeTab === 'tax_hub' && 'W-2 & 1099 Tax Hub'}
+                  {activeTab === 'qbo' && 'QuickBooks Online Production'}
+                  {activeTab === 'devices' && 'Live Connected Devices & Active IPs'}
+                  {activeTab === 'licensing' && 'Subscription & Key Registry'}
+                  {activeTab === 'updater' && 'Auto-Update System'}
+                  {activeTab === 'guide' && 'Subscription Architecture Guide'}
+                  {activeTab === 'code' && 'Integrated Python Code'}
+                </span>
+              </span>
+
+              <button
+                onClick={() => setActiveTab('home')}
+                className="text-stone-400 hover:text-amber-400 text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ml-1"
+                title="Return to Home Overview"
+              >
+                <span>&larr; Back to Home</span>
+              </button>
+            </div>
           )}
-        </button>
+        </div>
 
-        <button
-          onClick={() => setActiveTab('intake')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'intake'
-              ? 'border-amber-500 text-amber-400 font-bold'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <Inbox className="w-4 h-4 text-amber-400" />
-          <span>Client Intake & Multi-VM Cluster</span>
-          {pendingSubmissionsCount > 0 ? (
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500 text-stone-950 ml-1">
-              {pendingSubmissionsCount} Pending
-            </span>
-          ) : (
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 ml-1">
-              Central Hub
-            </span>
+        {/* Right side quick status / switcher */}
+        <div className="flex items-center gap-2">
+          {pendingSubmissionsCount > 0 && (
+            <button
+              onClick={() => setActiveTab('intake')}
+              className="px-2.5 py-1 rounded-md text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 hover:bg-amber-500/30 transition-colors cursor-pointer"
+            >
+              <Inbox className="w-3 h-3 text-amber-400" />
+              <span>{pendingSubmissionsCount} Intake Pending</span>
+            </button>
           )}
-        </button>
 
-        <button
-          onClick={() => setActiveTab('licensing')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'licensing'
-              ? 'border-amber-500 text-amber-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <Key className="w-4 h-4" />
-          <span>Subscription & Key Registry</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 ml-1">
-            {licenseKeys.filter(k => k.status === 'ACTIVE').length} Active / {licenseKeys.length} Total
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('devices')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'devices'
-              ? 'border-emerald-500 text-emerald-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-          <span>Live Connected Devices & Active IPs</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
-            Live Stream
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('qbo')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'qbo'
-              ? 'border-emerald-500 text-emerald-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <Building2 className="w-4 h-4 text-emerald-400" />
-          <span>QuickBooks Online Production</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 ml-1">
-            OAuth 2.0
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('tax_hub')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'tax_hub'
-              ? 'border-purple-500 text-purple-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <FileSpreadsheet className="w-4 h-4 text-purple-400" />
-          <span>W-2 &amp; 1099 Tax Hub</span>
-          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 ml-1">
-            Form 1040
-          </span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('updater')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'updater'
-              ? 'border-sky-500 text-sky-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <RefreshCw className="w-4 h-4" />
-          <span>Auto-Update System & Dismissible Modal</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('guide')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'guide'
-              ? 'border-emerald-500 text-emerald-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <Layers className="w-4 h-4" />
-          <span>Subscription Architecture Guide</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('code')}
-          className={`px-4 py-3 text-xs font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer whitespace-nowrap ${
-            activeTab === 'code'
-              ? 'border-purple-500 text-purple-400'
-              : 'border-transparent text-stone-400 hover:text-stone-200'
-          }`}
-        >
-          <FileCode2 className="w-4 h-4" />
-          <span>Integrated Python Code</span>
-        </button>
+          <button
+            onClick={() => setIsHamburgerOpen(true)}
+            className="px-2.5 py-1 text-xs text-stone-300 hover:text-amber-300 hover:bg-stone-800 rounded-md transition-colors cursor-pointer flex items-center gap-1.5 border border-stone-800"
+            title="Browse all 10 sections in hamburger drawer"
+          >
+            <span>Choose Section</span>
+            <ChevronDown className="w-3.5 h-3.5 text-stone-400" />
+          </button>
+        </div>
       </nav>
 
       {/* Main Content Area */}
       <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
+        {/* TAB 0: HOME OVERVIEW DASHBOARD */}
+        {activeTab === 'home' && (
+          <AdminHomeOverview
+            licenseKeys={licenseKeys}
+            currentVersion={currentVersion}
+            pendingSubmissionsCount={pendingSubmissionsCount}
+            onNavigateTab={(tab) => setActiveTab(tab)}
+            onOpenBundleModal={() => setIsBundleModalOpen(true)}
+            onOpenAccountModal={() => setShowPinModal(true)}
+            onOpenUpdateModal={() => {
+              setShowUpdateModal(true);
+              setUpdateDismissed(false);
+            }}
+            onOpenInquiriesModal={() => setIsInquiriesModalOpen(true)}
+            onOpenGitHubModal={() => setIsGhModalOpen(true)}
+            onDownloadBundle={handleDownloadBundle}
+            isPackagingZip={isPackagingZip}
+            onToast={showToast}
+          />
+        )}
         {/* TAB: RECEIPT SCANNER & MULTI-WORKER PARALLEL ENGINE */}
         {activeTab === 'scanner' && (
           <AdminReceiptProcessorEngine
@@ -2431,6 +2438,28 @@ class UpdateManager:
         activeTab={legalTab}
         onClose={() => setLegalModalOpen(false)}
         onTabChange={(tab) => setLegalTab(tab)}
+      />
+
+      {/* Admin Hamburger Navigation Drawer (All 10 Sections & Utilities) */}
+      <AdminHamburgerMenu
+        isOpen={isHamburgerOpen}
+        onClose={() => setIsHamburgerOpen(false)}
+        activeTab={activeTab}
+        onSelectTab={(tab) => setActiveTab(tab)}
+        pendingSubmissionsCount={pendingSubmissionsCount}
+        activeKeysCount={licenseKeys.filter(k => k.status === 'ACTIVE').length}
+        totalKeysCount={licenseKeys.length}
+        currentVersion={currentVersion}
+        onOpenPinModal={() => setShowPinModal(true)}
+        onOpenUpdateModal={() => {
+          setShowUpdateModal(true);
+          setUpdateDismissed(false);
+        }}
+        onOpenGhModal={() => setIsGhModalOpen(true)}
+        onOpenInquiriesModal={() => setIsInquiriesModalOpen(true)}
+        onOpenBundleModal={() => setIsBundleModalOpen(true)}
+        onLockConsole={handleLockAdminPanel}
+        onGoToPublicPortal={() => navigateTo('/')}
       />
 
       {/* Toast Notification Banner */}
