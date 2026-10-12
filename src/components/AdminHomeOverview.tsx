@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   ShieldCheck, 
   Key, 
@@ -19,24 +19,70 @@ import {
   Mail, 
   Inbox, 
   Cpu, 
-  FileSpreadsheet,
-  Home,
-  ArrowRight,
-  TrendingUp,
-  FileCheck2,
-  Users,
-  Zap,
-  Activity,
-  Server,
-  FolderArchive,
-  Eye,
-  Calendar,
-  DollarSign
+  FileSpreadsheet, 
+  Home, 
+  ArrowRight, 
+  TrendingUp, 
+  Users, 
+  Zap, 
+  Activity, 
+  Server, 
+  FolderArchive, 
+  Eye, 
+  Calendar, 
+  DollarSign,
+  Search,
+  Wifi,
+  Clock,
+  Filter,
+  AlertCircle,
+  Shield,
+  Globe,
+  Terminal,
+  Sparkles,
+  ArrowUpRight
 } from 'lucide-react';
 import { LicenseKeyRecord } from '../types';
 import { getClientSubmissions, subscribeToClientSubmissions, ClientSubmission } from '../clientSubmissionService';
 import { getW2Records, get1099Records, subscribeToTaxDocuments } from '../taxDocumentService';
 import { W2Record, Form1099Record } from '../taxDocumentTypes';
+
+interface DeviceSession {
+  id: string;
+  ip: string;
+  hash?: string;
+  keyMasked?: string;
+  rawKey?: string;
+  hwid?: string;
+  machineName?: string;
+  appVersion?: string;
+  plan?: string;
+  status?: string;
+  lastPing?: string;
+  lastPingMs?: number;
+  firstSeen?: string;
+  pingCount?: number;
+  sessionType?: string;
+  portalName?: string;
+  browserInfo?: string;
+  deviceCategory?: string;
+  onlineState?: 'ONLINE' | 'IDLE' | 'OFFLINE';
+  secondsSinceLastPing?: number;
+  username?: string;
+  displayName?: string;
+}
+
+interface QboSyncLogItem {
+  id?: string;
+  timestamp: string;
+  action: string;
+  companyName?: string;
+  realmId?: string;
+  status: 'SUCCESS' | 'ERROR' | 'PENDING' | string;
+  message?: string;
+  receiptsCount?: number;
+  details?: string;
+}
 
 interface AdminHomeOverviewProps {
   licenseKeys: LicenseKeyRecord[];
@@ -67,6 +113,7 @@ export function AdminHomeOverview({
   isPackagingZip,
   onToast
 }: AdminHomeOverviewProps) {
+  // Live Data States
   const [submissions, setSubmissions] = useState<ClientSubmission[]>(() => {
     try {
       return getClientSubmissions();
@@ -91,10 +138,110 @@ export function AdminHomeOverview({
     }
   });
 
+  // Real-time Sessions & QuickBooks telemetry from backend
+  const [deviceSessions, setDeviceSessions] = useState<DeviceSession[]>([]);
+  const [onlineDevicesCount, setOnlineDevicesCount] = useState<number>(0);
+  const [uniqueIpsCount, setUniqueIpsCount] = useState<number>(0);
   const [qboConnectedCompany, setQboConnectedCompany] = useState<string | null>(null);
-  const [qboSyncLogsCount, setQboSyncLogsCount] = useState<number>(0);
+  const [qboRealmId, setQboRealmId] = useState<string | null>(null);
+  const [qboEnvironment, setQboEnvironment] = useState<string>('sandbox');
+  const [qboSyncLogs, setQboSyncLogs] = useState<QboSyncLogItem[]>([]);
+  
+  // Real-time synchronization states
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(new Date());
+  const [activeWorkstationTab, setActiveWorkstationTab] = useState<'intake' | 'devices' | 'qbo' | 'taxes' | 'licenses'>('intake');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [intakeFilter, setIntakeFilter] = useState<'ALL' | 'QUEUED' | 'PROCESSED'>('ALL');
 
-  // Subscribe to live client submissions
+  // Fetch live telemetry from server
+  const fetchLiveTelemetry = useCallback(async () => {
+    try {
+      // 1. Fetch live active sessions & IP telemetry
+      const resSessions = await fetch('/api/licenses/sessions');
+      if (resSessions.ok) {
+        const data = await resSessions.json();
+        if (data.sessions && Array.isArray(data.sessions)) {
+          setDeviceSessions(data.sessions);
+          setOnlineDevicesCount(data.onlineCount || 0);
+          setUniqueIpsCount(data.uniqueIps || 0);
+        }
+      }
+    } catch {
+      // quiet fallback
+    }
+
+    try {
+      // 2. Fetch QuickBooks companies & config
+      const resCompanies = await fetch('/api/qbo/companies');
+      if (resCompanies.ok) {
+        const compData = await resCompanies.json();
+        if (compData.companies && compData.companies.length > 0) {
+          const first = compData.companies[0];
+          setQboConnectedCompany(first.companyName || 'Connected Intuit Company');
+          setQboRealmId(first.realmId || null);
+          setQboEnvironment(first.environment || 'sandbox');
+        }
+      }
+    } catch {
+      // quiet fallback
+    }
+
+    try {
+      // 3. Fetch QuickBooks sync logs
+      const resLogs = await fetch('/api/qbo/sync-log');
+      if (resLogs.ok) {
+        const logData = await resLogs.json();
+        if (logData.logs && Array.isArray(logData.logs)) {
+          setQboSyncLogs(logData.logs);
+        }
+      }
+    } catch {
+      // quiet fallback
+    }
+
+    try {
+      // 4. Fetch server submissions
+      const resSubs = await fetch('/api/client/submissions');
+      if (resSubs.ok) {
+        const subData = await resSubs.json();
+        if (subData.submissions && Array.isArray(subData.submissions) && subData.submissions.length > 0) {
+          setSubmissions(subData.submissions);
+        }
+      }
+    } catch {
+      // quiet fallback
+    }
+
+    try {
+      // 5. Fetch server tax docs
+      const resTax = await fetch('/api/tax-docs');
+      if (resTax.ok) {
+        const taxData = await resTax.json();
+        if (taxData.w2s && Array.isArray(taxData.w2s)) {
+          setW2s(taxData.w2s);
+        }
+        if (taxData.form1099s && Array.isArray(taxData.form1099s)) {
+          setF1099s(taxData.form1099s);
+        }
+      }
+    } catch {
+      // quiet fallback
+    }
+
+    setLastRefreshedAt(new Date());
+  }, []);
+
+  // Poll live telemetry every 4 seconds for real-time fidelity
+  useEffect(() => {
+    fetchLiveTelemetry();
+    const interval = setInterval(() => {
+      fetchLiveTelemetry();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [fetchLiveTelemetry]);
+
+  // Subscribe to live client submissions events
   useEffect(() => {
     const unsub = subscribeToClientSubmissions((newSubs) => {
       setSubmissions(newSubs || []);
@@ -111,40 +258,23 @@ export function AdminHomeOverview({
     return () => unsub();
   }, []);
 
-  // Check QuickBooks config / company status
-  useEffect(() => {
-    async function checkQboStatus() {
-      try {
-        const res = await fetch('/api/qbo/companies');
-        if (res.ok) {
-          const data = await res.json();
-          if (data.companies && data.companies.length > 0) {
-            setQboConnectedCompany(data.companies[0].companyName || 'Connected Company');
-          }
-        }
-      } catch {
-        // quiet fallback
-      }
+  const handleManualRefresh = async () => {
+    setIsRefreshing(true);
+    await fetchLiveTelemetry();
+    setSubmissions(getClientSubmissions());
+    setW2s(getW2Records());
+    setF1099s(get1099Records());
+    setTimeout(() => {
+      setIsRefreshing(false);
+      onToast('All real-time platform telemetry refreshed.');
+    }, 500);
+  };
 
-      try {
-        const resLog = await fetch('/api/qbo/sync-log');
-        if (resLog.ok) {
-          const logData = await resLog.json();
-          if (logData.logs) {
-            setQboSyncLogsCount(logData.logs.length);
-          }
-        }
-      } catch {
-        // quiet fallback
-      }
-    }
-    checkQboStatus();
-  }, []);
-
-  // Computed metrics
+  // Aggregated Metrics Calculations
   const activeKeysCount = licenseKeys.filter(k => k.status === 'ACTIVE').length;
   const adminKeysCount = licenseKeys.filter(k => k.plan === 'ADMIN').length;
   const inUseKeysCount = licenseKeys.filter(k => k.inUse).length;
+  const expiredKeysCount = licenseKeys.filter(k => k.status === 'EXPIRED').length;
 
   const totalWages = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box1Wages || '0')) || 0), 0);
   const totalFederalWithheld = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box2FederalTaxWithheld || '0')) || 0), 0);
@@ -156,7 +286,52 @@ export function AdminHomeOverview({
     ...f1099s.map(f => f.box6State).filter(Boolean)
   ]));
 
-  const recentSubmissions = submissions.slice(0, 5);
+  const queuedSubmissionsCount = submissions.filter(s => s.status === 'QUEUED').length;
+  const processedSubmissionsCount = submissions.filter(s => s.status === 'PROCESSED' || s.status === 'SYNCED_QBO').length;
+
+  // Filtered Items for Interactive Workstation
+  const filteredSubmissions = useMemo(() => {
+    let list = submissions;
+    if (intakeFilter === 'QUEUED') {
+      list = list.filter(s => s.status === 'QUEUED');
+    } else if (intakeFilter === 'PROCESSED') {
+      list = list.filter(s => s.status === 'PROCESSED' || s.status === 'SYNCED_QBO');
+    }
+
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      list = list.filter(s => 
+        (s.fileName && s.fileName.toLowerCase().includes(q)) ||
+        (s.clientName && s.clientName.toLowerCase().includes(q)) ||
+        (s.categoryHint && s.categoryHint.toLowerCase().includes(q)) ||
+        (s.extractedVendor && s.extractedVendor.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [submissions, intakeFilter, searchQuery]);
+
+  const filteredSessions = useMemo(() => {
+    if (!searchQuery.trim()) return deviceSessions;
+    const q = searchQuery.toLowerCase();
+    return deviceSessions.filter(s => 
+      (s.ip && s.ip.toLowerCase().includes(q)) ||
+      (s.machineName && s.machineName.toLowerCase().includes(q)) ||
+      (s.portalName && s.portalName.toLowerCase().includes(q)) ||
+      (s.browserInfo && s.browserInfo.toLowerCase().includes(q)) ||
+      (s.hwid && s.hwid.toLowerCase().includes(q))
+    );
+  }, [deviceSessions, searchQuery]);
+
+  const filteredLicenses = useMemo(() => {
+    if (!searchQuery.trim()) return licenseKeys;
+    const q = searchQuery.toLowerCase();
+    return licenseKeys.filter(k => 
+      (k.key && k.key.toLowerCase().includes(q)) ||
+      (k.clientName && k.clientName.toLowerCase().includes(q)) ||
+      (k.clientEmail && k.clientEmail.toLowerCase().includes(q)) ||
+      (k.plan && k.plan.toLowerCase().includes(q))
+    );
+  }, [licenseKeys, searchQuery]);
 
   const copyIntuitUri = () => {
     try {
@@ -172,40 +347,81 @@ export function AdminHomeOverview({
   };
 
   return (
-    <div className="space-y-8 pb-12">
-      {/* Hero Welcome & Executive Pulse */}
-      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-stone-900 via-stone-900 to-amber-950/30 border border-stone-800 p-6 md:p-8 shadow-xl">
+    <div className="space-y-7 pb-16">
+      {/* Real-Time Live Status Bar */}
+      <section className="bg-stone-900/90 border border-stone-800 rounded-xl px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs shadow-sm">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="relative flex h-2.5 w-2.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+            </span>
+            <span className="font-bold text-stone-100 font-mono tracking-tight">
+              LIVE PLATFORM TELEMETRY
+            </span>
+          </div>
+
+          <span className="text-stone-600 hidden sm:inline">|</span>
+
+          <div className="flex items-center gap-2 text-stone-400">
+            <span className="text-emerald-400 font-medium">● 4 Worker Threads Ready</span>
+            <span>·</span>
+            <span className="text-sky-400 font-medium">Cloudflare KV Synced</span>
+            <span>·</span>
+            <span className="text-amber-400 font-medium">AES-256 GCM Vault</span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <div className="text-[11px] text-stone-400 font-mono flex items-center gap-1.5">
+            <Clock className="w-3.5 h-3.5 text-stone-500" />
+            <span>Updated: {lastRefreshedAt.toLocaleTimeString()}</span>
+          </div>
+
+          <button
+            onClick={handleManualRefresh}
+            disabled={isRefreshing}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-md bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 transition-colors cursor-pointer text-[11px] font-semibold"
+            title="Immediately poll and refresh all live data streams"
+          >
+            <RefreshCw className={`w-3 h-3 text-amber-400 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Hero Executive Command Header */}
+      <section className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-stone-900 via-stone-900 to-amber-950/25 border border-stone-800 p-6 md:p-8 shadow-xl">
         <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
           <div className="space-y-3 max-w-2xl">
-            <div className="flex flex-wrap items-center gap-2.5 text-xs">
-              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-semibold font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-emerald-400 font-semibold font-mono flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
                 All Systems Operational
               </span>
-              <span className="text-stone-400">·</span>
-              <span className="text-stone-300 font-mono">v{currentVersion}</span>
-              <span className="text-stone-400">·</span>
-              <span className="text-amber-400 font-medium flex items-center gap-1">
-                <ShieldCheck className="w-3.5 h-3.5" />
-                AES-256 Vault Active
+              <span className="text-stone-500">·</span>
+              <span className="text-stone-300 font-mono">Platform Release v{currentVersion}</span>
+              <span className="text-stone-500">·</span>
+              <span className="text-amber-300 font-medium">
+                Lead Administrator Session
               </span>
             </div>
 
             <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight text-white">
-              Admin Operations Center &amp; System Overview
+              Executive Command &amp; Operations Center
             </h2>
 
-            <p className="text-sm text-stone-300 leading-relaxed">
-              Consolidated command view for client receipt OCR pipelines, individual W-2 / 1099 tax hubs, 
-              live connected client telemetry, QuickBooks Online OAuth synchronization, and perpetual license management.
+            <p className="text-xs md:text-sm text-stone-300 leading-relaxed">
+              Real-time monitoring across client document intake, parallel receipt OCR extraction, 
+              W-2 / 1099 wage and state tax intelligence, live connected IPs, and QuickBooks Online production sync.
             </p>
           </div>
 
-          {/* Quick Action Buttons */}
+          {/* Quick Launch Action Center */}
           <div className="flex flex-wrap lg:flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
             <button
               onClick={() => onNavigateTab('scanner')}
-              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 transition-all cursor-pointer"
+              className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/40 transition-all cursor-pointer"
             >
               <Cpu className="w-4 h-4" />
               <span>Launch Parallel Engine</span>
@@ -214,10 +430,10 @@ export function AdminHomeOverview({
 
             <button
               onClick={() => onNavigateTab('intake')}
-              className="px-4 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-950/50 transition-all cursor-pointer"
+              className="px-4 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs flex items-center justify-center gap-2 shadow-lg shadow-amber-950/40 transition-all cursor-pointer"
             >
               <Inbox className="w-4 h-4" />
-              <span>Review Intake ({pendingSubmissionsCount})</span>
+              <span>Client Intake ({queuedSubmissionsCount} Pending)</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
 
@@ -237,300 +453,954 @@ export function AdminHomeOverview({
         <div className="absolute -bottom-24 -left-24 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
       </section>
 
-      {/* Vital Metric Statistics Grid (6 Cards) */}
+      {/* Vital Metric Statistics Grid (6 High-Density KPI Cards) */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-xs uppercase tracking-wider font-bold text-stone-400 flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-amber-400" />
-            Key Platform Metrics &amp; Live Telemetry
+            Real-Time Platform Vital Statistics
           </h3>
-          <span className="text-[11px] text-stone-500 font-mono">Live In-Memory &amp; Redundant KV</span>
+          <span className="text-[11px] text-stone-500 font-mono">Continuous Multi-Source Feed</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {/* Card 1: Client Submissions Queue */}
           <div 
             onClick={() => onNavigateTab('intake')}
-            className="p-5 rounded-xl bg-stone-900/90 border border-stone-800 hover:border-amber-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden"
+            className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-amber-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
           >
-            <div className="flex items-start justify-between">
-              <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                <Inbox className="w-5 h-5" />
+            <div>
+              <div className="flex items-start justify-between">
+                <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                  <Inbox className="w-5 h-5" />
+                </div>
+                {queuedSubmissionsCount > 0 ? (
+                  <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse">
+                    {queuedSubmissionsCount} Pending Action
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded text-[11px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
+                    Queue Current
+                  </span>
+                )}
               </div>
-              {pendingSubmissionsCount > 0 ? (
-                <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 animate-pulse">
-                  {pendingSubmissionsCount} Pending
-                </span>
-              ) : (
-                <span className="px-2 py-0.5 rounded text-[11px] font-mono text-emerald-400 bg-emerald-500/10 border border-emerald-500/20">
-                  Queue Clean
-                </span>
-              )}
+
+              <div className="mt-4">
+                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-amber-400 transition-colors">
+                  {submissions.length}
+                </div>
+                <div className="text-xs font-bold text-stone-200 mt-1">Client Ingest Submissions</div>
+                <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
+                  <span className="text-amber-400 font-semibold">{queuedSubmissionsCount} in queue</span>
+                  <span>·</span>
+                  <span className="text-emerald-400 font-semibold">{processedSubmissionsCount} processed</span>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4">
-              <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-amber-400 transition-colors">
-                {submissions.length}
-              </div>
-              <div className="text-xs font-semibold text-stone-300 mt-0.5">Total Client Submissions</div>
-              <p className="text-[11px] text-stone-400 mt-1">
-                {pendingSubmissionsCount} files awaiting processing · AES-256 local encrypted storage
-              </p>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-amber-400 font-medium">
-              <span>Open Intake Manager</span>
-              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+            <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-amber-400 font-semibold">
+              <span>Inspect Intake Queue</span>
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
 
-          {/* Card 2: Subscriptions & License Keys */}
+          {/* Card 2: Subscription & Key Registry */}
           <div 
             onClick={() => onNavigateTab('licensing')}
-            className="p-5 rounded-xl bg-stone-900/90 border border-stone-800 hover:border-sky-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden"
+            className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-sky-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
           >
-            <div className="flex items-start justify-between">
-              <div className="w-10 h-10 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
-                <Key className="w-5 h-5" />
+            <div>
+              <div className="flex items-start justify-between">
+                <div className="w-10 h-10 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
+                  <Key className="w-5 h-5" />
+                </div>
+                <span className="px-2 py-0.5 rounded text-[11px] font-mono text-sky-300 bg-sky-500/10 border border-sky-500/20">
+                  {activeKeysCount} Active / {licenseKeys.length} Total
+                </span>
               </div>
-              <span className="px-2 py-0.5 rounded text-[11px] font-mono text-sky-300 bg-sky-500/10 border border-sky-500/20">
-                {activeKeysCount} Active / {licenseKeys.length} Total
-              </span>
+
+              <div className="mt-4">
+                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-sky-400 transition-colors">
+                  {activeKeysCount}
+                </div>
+                <div className="text-xs font-bold text-stone-200 mt-1">Active Subscribers &amp; Keys</div>
+                <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
+                  <span className="text-amber-400 font-semibold">{adminKeysCount} perpetual admin</span>
+                  <span>·</span>
+                  <span className="text-emerald-400 font-semibold">{inUseKeysCount} hardware bound</span>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4">
-              <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-sky-400 transition-colors">
-                {activeKeysCount}
-              </div>
-              <div className="text-xs font-semibold text-stone-300 mt-0.5">Active Subscribers &amp; Keys</div>
-              <p className="text-[11px] text-stone-400 mt-1">
-                {adminKeysCount} perpetual admin keys · {inUseKeysCount} currently tied to hardware HWID
-              </p>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-sky-400 font-medium">
-              <span>View Key Registry</span>
-              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+            <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-sky-400 font-semibold">
+              <span>Manage Key Registry</span>
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
 
-          {/* Card 3: W-2 & 1099 Tax Documents */}
+          {/* Card 3: W-2 & 1099 Individual Tax Vault */}
           <div 
             onClick={() => onNavigateTab('tax_hub')}
-            className="p-5 rounded-xl bg-stone-900/90 border border-stone-800 hover:border-purple-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden"
+            className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-purple-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
           >
-            <div className="flex items-start justify-between">
-              <div className="w-10 h-10 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
-                <FileSpreadsheet className="w-5 h-5" />
+            <div>
+              <div className="flex items-start justify-between">
+                <div className="w-10 h-10 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
+                  <FileSpreadsheet className="w-5 h-5" />
+                </div>
+                <span className="px-2 py-0.5 rounded text-[11px] font-mono text-purple-300 bg-purple-500/10 border border-purple-500/20">
+                  {statesDetected.length > 0 ? `${statesDetected.join(', ')}` : 'Form 1040 Vault'}
+                </span>
               </div>
-              <span className="px-2 py-0.5 rounded text-[11px] font-mono text-purple-300 bg-purple-500/10 border border-purple-500/20">
-                {statesDetected.length} States Tracked
-              </span>
+
+              <div className="mt-4">
+                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-purple-400 transition-colors">
+                  {w2s.length + f1099s.length}
+                </div>
+                <div className="text-xs font-bold text-stone-200 mt-1">W-2 &amp; 1099 Tax Documents</div>
+                <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
+                  <span className="text-purple-300 font-semibold">
+                    ${totalWages.toLocaleString('en-US', { maximumFractionDigits: 0 })} wages
+                  </span>
+                  <span>·</span>
+                  <span className="text-emerald-400 font-semibold">
+                    ${(totalFederalWithheld + totalStateWithheld).toLocaleString('en-US', { maximumFractionDigits: 0 })} withheld
+                  </span>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4">
-              <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-purple-400 transition-colors">
-                {w2s.length + f1099s.length}
-              </div>
-              <div className="text-xs font-semibold text-stone-300 mt-0.5">W-2 &amp; 1099 Income Records</div>
-              <p className="text-[11px] text-stone-400 mt-1">
-                ${totalWages.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} wages · Form 1040 packet export ready
-              </p>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-purple-400 font-medium">
+            <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-purple-400 font-semibold">
               <span>Open Tax Documents Hub</span>
-              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
 
-          {/* Card 4: QuickBooks Online Production */}
+          {/* Card 4: QuickBooks Online Production Center */}
           <div 
             onClick={() => onNavigateTab('qbo')}
-            className="p-5 rounded-xl bg-stone-900/90 border border-stone-800 hover:border-emerald-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden"
+            className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-emerald-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
           >
-            <div className="flex items-start justify-between">
-              <div className="w-10 h-10 rounded-lg bg-[#2CA01C]/15 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                <Building2 className="w-5 h-5 text-[#2CA01C]" />
+            <div>
+              <div className="flex items-start justify-between">
+                <div className="w-10 h-10 rounded-lg bg-[#2CA01C]/15 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  <Building2 className="w-5 h-5 text-[#2CA01C]" />
+                </div>
+                <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold ${
+                  qboConnectedCompany 
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                    : 'bg-stone-800 text-stone-400 border border-stone-700'
+                }`}>
+                  {qboConnectedCompany ? 'Connected OAuth 2.0' : 'OAuth Ready'}
+                </span>
               </div>
-              <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold ${
-                qboConnectedCompany ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-stone-800 text-stone-400 border border-stone-700'
-              }`}>
-                {qboConnectedCompany ? 'OAuth 2.0 Connected' : 'Ready to Connect'}
-              </span>
+
+              <div className="mt-4">
+                <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors truncate">
+                  {qboConnectedCompany || 'QuickBooks OAuth'}
+                </div>
+                <div className="text-xs font-bold text-stone-200 mt-1">Accounting Synchronization Engine</div>
+                <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
+                  <span className="text-emerald-400 font-semibold">{qboSyncLogs.length} sync logs</span>
+                  <span>·</span>
+                  <span className="text-stone-300 font-mono text-[10px]">
+                    {qboRealmId ? `Realm: ${qboRealmId}` : '101-day renewal'}
+                  </span>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4">
-              <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors truncate">
-                {qboConnectedCompany || 'QuickBooks OAuth'}
-              </div>
-              <div className="text-xs font-semibold text-stone-300 mt-0.5">Accounting Sync Engine</div>
-              <p className="text-[11px] text-stone-400 mt-1">
-                {qboSyncLogsCount} sync history events recorded · Direct JSON batch push enabled
-              </p>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-emerald-400 font-medium">
+            <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-emerald-400 font-semibold">
               <span>Open QuickBooks Center</span>
-              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
 
-          {/* Card 5: Live Connected Devices & Active IPs */}
+          {/* Card 5: Live Connected Devices & IP Telemetry */}
           <div 
             onClick={() => onNavigateTab('devices')}
-            className="p-5 rounded-xl bg-stone-900/90 border border-stone-800 hover:border-emerald-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden"
+            className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-emerald-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
           >
-            <div className="flex items-start justify-between">
-              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                <Radio className="w-5 h-5 animate-pulse" />
+            <div>
+              <div className="flex items-start justify-between">
+                <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                  <Radio className="w-5 h-5 animate-pulse" />
+                </div>
+                <span className="px-2 py-0.5 rounded text-[11px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/20">
+                  {onlineDevicesCount > 0 ? `${onlineDevicesCount} Online Now` : 'Stream Active'}
+                </span>
               </div>
-              <span className="px-2 py-0.5 rounded text-[11px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/20">
-                Live Heartbeat Stream
-              </span>
+
+              <div className="mt-4">
+                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors">
+                  {deviceSessions.length}
+                </div>
+                <div className="text-xs font-bold text-stone-200 mt-1">Live Connected Client Sessions</div>
+                <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
+                  <span className="text-emerald-400 font-semibold">{uniqueIpsCount} unique IPs</span>
+                  <span>·</span>
+                  <span className="text-stone-300">Continuous heartbeats</span>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4">
-              <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors">
-                Active Telemetry
-              </div>
-              <div className="text-xs font-semibold text-stone-300 mt-0.5">Real-Time IP &amp; Client Presence</div>
-              <p className="text-[11px] text-stone-400 mt-1">
-                Multi-device heartbeat monitoring, IP geolocation &amp; concurrent session tracking
-              </p>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-emerald-400 font-medium">
+            <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-emerald-400 font-semibold">
               <span>View Connected Devices</span>
-              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
 
-          {/* Card 6: Desktop Runtime Package */}
+          {/* Card 6: Desktop Runtime & Batch Launcher Package */}
           <div 
             onClick={onOpenBundleModal}
-            className="p-5 rounded-xl bg-stone-900/90 border border-stone-800 hover:border-amber-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden"
+            className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-amber-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
           >
-            <div className="flex items-start justify-between">
-              <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
-                <FolderArchive className="w-5 h-5" />
+            <div>
+              <div className="flex items-start justify-between">
+                <div className="w-10 h-10 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                  <FolderArchive className="w-5 h-5" />
+                </div>
+                <span className="px-2 py-0.5 rounded text-[11px] font-mono text-amber-300 bg-amber-500/10 border border-amber-500/20">
+                  v{currentVersion} Bundle
+                </span>
               </div>
-              <span className="px-2 py-0.5 rounded text-[11px] font-mono text-amber-300 bg-amber-500/10 border border-amber-500/20">
-                Batch .bat Included
-              </span>
+
+              <div className="mt-4">
+                <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-amber-400 transition-colors">
+                  Batch .bat Ready
+                </div>
+                <div className="text-xs font-bold text-stone-200 mt-1">Desktop Runtime Package</div>
+                <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
+                  <span className="text-amber-400 font-semibold">receipt_processor.py</span>
+                  <span>·</span>
+                  <span className="text-stone-300">Auto-update enabled</span>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-4">
-              <div className="text-2xl font-bold font-mono text-stone-100 group-hover:text-amber-400 transition-colors">
-                v{currentVersion} Bundle
-              </div>
-              <div className="text-xs font-semibold text-stone-300 mt-0.5">Desktop Runtime Package</div>
-              <p className="text-[11px] text-stone-400 mt-1">
-                receipt_processor.py, run_receipt_processor.bat, and requirements.txt bundle
-              </p>
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-amber-400 font-medium">
-              <span>Inspect Package Files</span>
-              <ChevronRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+            <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-amber-400 font-semibold">
+              <span>Inspect Package Bundle</span>
+              <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
         </div>
       </section>
 
-      {/* Complete Section Directory (All Sections Neatly Formatted) */}
+      {/* Global Real-Time Workstation (Multi-Tab Interactive Live View) */}
+      <section className="bg-stone-900 border border-stone-800 rounded-2xl overflow-hidden shadow-lg space-y-0">
+        {/* Workstation Header & Navigation Tabs */}
+        <div className="p-5 border-b border-stone-800 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-stone-900/80">
+          <div>
+            <div className="flex items-center gap-2">
+              <Activity className="w-4 h-4 text-amber-400" />
+              <h3 className="text-sm font-bold text-stone-100">
+                Real-Time Operations Workstation &amp; Live Data Streams
+              </h3>
+            </div>
+            <p className="text-xs text-stone-400 mt-0.5">
+              Instantly monitor and interact with live records across all subsystems without switching pages.
+            </p>
+          </div>
+
+          {/* Search Input for Unified Fast Access */}
+          <div className="relative w-full md:w-72">
+            <Search className="w-3.5 h-3.5 text-stone-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search across all live data..."
+              className="w-full bg-stone-950 border border-stone-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-stone-200 placeholder-stone-500 focus:outline-none focus:border-amber-500 transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-500 hover:text-stone-300 text-xs"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Tab Selection Bar */}
+        <div className="px-5 pt-3 border-b border-stone-800 bg-stone-950/40 flex items-center gap-2 overflow-x-auto">
+          <button
+            onClick={() => setActiveWorkstationTab('intake')}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-colors cursor-pointer flex items-center gap-2 border-b-2 whitespace-nowrap ${
+              activeWorkstationTab === 'intake'
+                ? 'border-amber-500 text-amber-300 bg-stone-900 font-bold'
+                : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-900/50'
+            }`}
+          >
+            <Inbox className="w-3.5 h-3.5 text-amber-400" />
+            <span>Client Inflow Queue</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300">
+              {submissions.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveWorkstationTab('devices')}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-colors cursor-pointer flex items-center gap-2 border-b-2 whitespace-nowrap ${
+              activeWorkstationTab === 'devices'
+                ? 'border-emerald-500 text-emerald-300 bg-stone-900 font-bold'
+                : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-900/50'
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <span>Live IP Telemetry &amp; Sessions</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+              {deviceSessions.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveWorkstationTab('qbo')}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-colors cursor-pointer flex items-center gap-2 border-b-2 whitespace-nowrap ${
+              activeWorkstationTab === 'qbo'
+                ? 'border-emerald-500 text-emerald-300 bg-stone-900 font-bold'
+                : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-900/50'
+            }`}
+          >
+            <Building2 className="w-3.5 h-3.5 text-[#2CA01C]" />
+            <span>QuickBooks Sync History</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
+              {qboSyncLogs.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveWorkstationTab('taxes')}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-colors cursor-pointer flex items-center gap-2 border-b-2 whitespace-nowrap ${
+              activeWorkstationTab === 'taxes'
+                ? 'border-purple-500 text-purple-300 bg-stone-900 font-bold'
+                : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-900/50'
+            }`}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-purple-400" />
+            <span>W-2 &amp; 1099 Tax Ledger</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300">
+              {w2s.length + f1099s.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveWorkstationTab('licenses')}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-colors cursor-pointer flex items-center gap-2 border-b-2 whitespace-nowrap ${
+              activeWorkstationTab === 'licenses'
+                ? 'border-sky-500 text-sky-300 bg-stone-900 font-bold'
+                : 'border-transparent text-stone-400 hover:text-stone-200 hover:bg-stone-900/50'
+            }`}
+          >
+            <Key className="w-3.5 h-3.5 text-sky-400" />
+            <span>License Registry</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300">
+              {licenseKeys.length}
+            </span>
+          </button>
+        </div>
+
+        {/* Tab 1 Content: Client Inflow Queue */}
+        {activeWorkstationTab === 'intake' && (
+          <div className="p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="text-stone-400">Filter Inflow:</span>
+                <button
+                  onClick={() => setIntakeFilter('ALL')}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                    intakeFilter === 'ALL' ? 'bg-amber-500 text-stone-950 font-bold' : 'bg-stone-800 text-stone-300 hover:text-white'
+                  }`}
+                >
+                  All ({submissions.length})
+                </button>
+                <button
+                  onClick={() => setIntakeFilter('QUEUED')}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                    intakeFilter === 'QUEUED' ? 'bg-amber-500 text-stone-950 font-bold' : 'bg-stone-800 text-stone-300 hover:text-white'
+                  }`}
+                >
+                  Queued ({queuedSubmissionsCount})
+                </button>
+                <button
+                  onClick={() => setIntakeFilter('PROCESSED')}
+                  className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors cursor-pointer ${
+                    intakeFilter === 'PROCESSED' ? 'bg-amber-500 text-stone-950 font-bold' : 'bg-stone-800 text-stone-300 hover:text-white'
+                  }`}
+                >
+                  Processed ({processedSubmissionsCount})
+                </button>
+              </div>
+
+              <button
+                onClick={() => onNavigateTab('intake')}
+                className="text-amber-400 hover:text-amber-300 font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <span>Open Full Intake Console</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {filteredSubmissions.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-stone-950/60 border border-stone-800 text-xs text-stone-400 space-y-2">
+                <div>No submissions matching the current filter.</div>
+                <p className="text-[11px] text-stone-500">
+                  Clients uploading receipts or tax documents via the Client Portal will appear here automatically in real time.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-stone-800 rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-950/80 text-stone-400 text-[11px] uppercase tracking-wider font-mono border-b border-stone-800">
+                    <tr>
+                      <th className="px-4 py-3">File / Document</th>
+                      <th className="px-4 py-3">Client Information</th>
+                      <th className="px-4 py-3">Category Hint</th>
+                      <th className="px-4 py-3">Extracted Vendor &amp; Amount</th>
+                      <th className="px-4 py-3">Submission Timestamp</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800 text-stone-200">
+                    {filteredSubmissions.slice(0, 8).map((sub) => (
+                      <tr key={sub.id} className="hover:bg-stone-850/50 transition-colors">
+                        <td className="px-4 py-3 font-semibold text-stone-100 flex items-center gap-2">
+                          <Inbox className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span className="truncate max-w-[200px]" title={sub.fileName}>
+                            {sub.fileName}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-stone-300">
+                          <div>{sub.clientName || 'Client'}</div>
+                          <div className="text-[10px] text-stone-500">{sub.clientEmail || 'client@example.com'}</div>
+                        </td>
+                        <td className="px-4 py-3 text-stone-400">
+                          {sub.categoryHint || 'Standard Receipt'}
+                        </td>
+                        <td className="px-4 py-3 font-mono">
+                          {sub.extractedVendor ? (
+                            <div>
+                              <span className="text-stone-200 font-semibold">{sub.extractedVendor}</span>
+                              {sub.extractedAmount !== undefined && (
+                                <span className="text-emerald-400 ml-1.5 font-bold">
+                                  ${sub.extractedAmount.toFixed(2)}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-stone-500 italic">Pending OCR extraction</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-stone-400 font-mono text-[11px]">
+                          {new Date(sub.uploadedAt).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            sub.status === 'PROCESSED' || sub.status === 'SYNCED_QBO'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-amber-500/10 text-amber-300 border border-amber-500/20 animate-pulse'
+                          }`}>
+                            {sub.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => onNavigateTab('intake')}
+                            className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-amber-400 hover:text-amber-300 font-semibold text-[11px] transition-colors cursor-pointer"
+                          >
+                            Review &rarr;
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 2 Content: Live Connected Devices & Active IPs */}
+        {activeWorkstationTab === 'devices' && (
+          <div className="p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-stone-300">
+                <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
+                <span className="font-semibold">
+                  {onlineDevicesCount} Active Connected Client &amp; Admin Workstations
+                </span>
+                <span className="text-stone-500">·</span>
+                <span className="text-stone-400">{uniqueIpsCount} Unique IP Networks</span>
+              </div>
+
+              <button
+                onClick={() => onNavigateTab('devices')}
+                className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <span>Open Full Device Monitor</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {filteredSessions.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-stone-950/60 border border-stone-800 text-xs text-stone-400">
+                No active device sessions detected right now. Sessions register automatically upon client activity.
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-stone-800 rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-950/80 text-stone-400 text-[11px] uppercase tracking-wider font-mono border-b border-stone-800">
+                    <tr>
+                      <th className="px-4 py-3">IP Address</th>
+                      <th className="px-4 py-3">Portal Session</th>
+                      <th className="px-4 py-3">Machine / Browser Info</th>
+                      <th className="px-4 py-3">Heartbeats</th>
+                      <th className="px-4 py-3">Last Heartbeat Ping</th>
+                      <th className="px-4 py-3">Network State</th>
+                      <th className="px-4 py-3 text-right">Inspect</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800 text-stone-200">
+                    {filteredSessions.map((sess) => {
+                      const isOnline = sess.onlineState === 'ONLINE';
+                      return (
+                        <tr key={sess.id} className="hover:bg-stone-850/50 transition-colors">
+                          <td className="px-4 py-3 font-mono font-bold text-stone-100 flex items-center gap-2">
+                            <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-ping' : 'bg-stone-600'}`} />
+                            <span>{sess.ip}</span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="font-semibold text-stone-200">{sess.portalName || sess.sessionType}</span>
+                            {sess.username && (
+                              <div className="text-[10px] text-amber-400 font-mono">User: {sess.username}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-stone-300">
+                            <div>{sess.machineName || sess.browserInfo || 'Browser Client'}</div>
+                            <div className="text-[10px] text-stone-500 font-mono">{sess.deviceCategory}</div>
+                          </td>
+                          <td className="px-4 py-3 font-mono text-stone-400">
+                            {sess.pingCount || 1} pings
+                          </td>
+                          <td className="px-4 py-3 text-stone-400 font-mono text-[11px]">
+                            {sess.lastPing ? new Date(sess.lastPing).toLocaleTimeString() : 'Just now'}
+                            {sess.secondsSinceLastPing !== undefined && (
+                              <span className="text-stone-500 ml-1">({sess.secondsSinceLastPing}s ago)</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                              isOnline
+                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                : 'bg-stone-800 text-stone-400 border border-stone-700'
+                            }`}>
+                              {sess.onlineState || 'ONLINE'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              onClick={() => onNavigateTab('devices')}
+                              className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 hover:text-emerald-300 font-semibold text-[11px] transition-colors cursor-pointer"
+                            >
+                              Track &rarr;
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 3 Content: QuickBooks Online Sync Ledger */}
+        {activeWorkstationTab === 'qbo' && (
+          <div className="p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-stone-300">
+                <Building2 className="w-4 h-4 text-[#2CA01C]" />
+                <span className="font-semibold">
+                  QuickBooks Online Integration Ledger ({qboEnvironment.toUpperCase()})
+                </span>
+                {qboConnectedCompany && (
+                  <span className="text-emerald-400 font-mono">· {qboConnectedCompany}</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={copyIntuitUri}
+                  className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-sky-300 border border-stone-700 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copy Intuit URI</span>
+                </button>
+                <button
+                  onClick={() => onNavigateTab('qbo')}
+                  className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <span>Open QBO Production Center</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {qboSyncLogs.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-stone-950/60 border border-stone-800 text-xs text-stone-400 space-y-2">
+                <div>No QuickBooks synchronization events logged yet.</div>
+                <p className="text-[11px] text-stone-500">
+                  When batches are pushed to QuickBooks Online via the Scanner or Intake, full audit events are recorded here.
+                </p>
+                <button
+                  onClick={() => onNavigateTab('qbo')}
+                  className="px-3 py-1.5 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer mt-2"
+                >
+                  <Building2 className="w-3.5 h-3.5" />
+                  <span>Connect QuickBooks Company</span>
+                </button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-stone-800 rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-950/80 text-stone-400 text-[11px] uppercase tracking-wider font-mono border-b border-stone-800">
+                    <tr>
+                      <th className="px-4 py-3">Timestamp</th>
+                      <th className="px-4 py-3">Action Type</th>
+                      <th className="px-4 py-3">Company / Realm</th>
+                      <th className="px-4 py-3">Transactions Pushed</th>
+                      <th className="px-4 py-3">Execution Status</th>
+                      <th className="px-4 py-3 text-right">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800 text-stone-200">
+                    {qboSyncLogs.slice(0, 8).map((log, lIdx) => (
+                      <tr key={lIdx} className="hover:bg-stone-850/50 transition-colors">
+                        <td className="px-4 py-3 text-stone-400 font-mono text-[11px]">
+                          {new Date(log.timestamp).toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 font-semibold text-stone-200">
+                          {log.action}
+                        </td>
+                        <td className="px-4 py-3 text-stone-300 font-mono text-[11px]">
+                          {log.companyName || log.realmId || 'Intuit Realm'}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-emerald-400 font-bold">
+                          {log.receiptsCount || 1} transactions
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            log.status === 'SUCCESS'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          }`}>
+                            {log.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-stone-400 text-[11px] truncate max-w-[200px]">
+                          {log.message || log.details || 'Sync completed'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 4 Content: W-2 & 1099 Tax Ledger */}
+        {activeWorkstationTab === 'taxes' && (
+          <div className="p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-stone-300">
+                <FileSpreadsheet className="w-4 h-4 text-purple-400" />
+                <span className="font-semibold">
+                  Individual Taxfiling Records (Form 1040 Preparation Packet)
+                </span>
+                <span className="text-purple-300 font-mono">
+                  · {w2s.length} W-2s &amp; {f1099s.length} 1099s
+                </span>
+              </div>
+
+              <button
+                onClick={() => onNavigateTab('tax_hub')}
+                className="text-purple-400 hover:text-purple-300 font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <span>Open Tax Hub Workstation</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {w2s.length === 0 && f1099s.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-stone-950/60 border border-stone-800 text-xs text-stone-400 space-y-2">
+                <div>No W-2 or 1099 income documents registered in vault.</div>
+                <p className="text-[11px] text-stone-500">
+                  Clients uploading individual tax documents will have their wages, withholdings, and state obligations detected here.
+                </p>
+                <button
+                  onClick={() => onNavigateTab('tax_hub')}
+                  className="px-3 py-1.5 rounded-lg bg-purple-700 hover:bg-purple-600 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer mt-2"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Launch W-2 &amp; 1099 Tax Hub</span>
+                </button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-stone-800 rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-950/80 text-stone-400 text-[11px] uppercase tracking-wider font-mono border-b border-stone-800">
+                    <tr>
+                      <th className="px-4 py-3">Form</th>
+                      <th className="px-4 py-3">Employee / Payee</th>
+                      <th className="px-4 py-3">Employer / Payer</th>
+                      <th className="px-4 py-3">Box 1 Wages / Income</th>
+                      <th className="px-4 py-3">Federal Withholding</th>
+                      <th className="px-4 py-3">State Tax &amp; Obligation</th>
+                      <th className="px-4 py-3 text-right">Packet</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800 text-stone-200">
+                    {w2s.slice(0, 6).map((w) => (
+                      <tr key={w.id} className="hover:bg-stone-850/50 transition-colors">
+                        <td className="px-4 py-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                            W-2
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-stone-100">{w.employeeName || 'Wage Earner'}</div>
+                          <div className="text-[10px] text-stone-500 font-mono">SSN: {w.employeeSsnMasked}</div>
+                        </td>
+                        <td className="px-4 py-3 text-stone-300">
+                          <div>{w.employerName}</div>
+                          <div className="text-[10px] text-stone-500 font-mono">EIN: {w.employerEin}</div>
+                        </td>
+                        <td className="px-4 py-3 font-mono font-bold text-stone-100">
+                          ${parseFloat(String(w.box1Wages || '0')).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-emerald-400 font-bold">
+                          ${parseFloat(String(w.box2FederalTaxWithheld || '0')).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5 font-mono">
+                            <span className="font-bold text-amber-400">{w.box15State || 'FED'}</span>
+                            <span className="text-stone-300">
+                              ${parseFloat(String(w.box17StateTaxWithheld || '0')).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          {w.stateAssessment && (
+                            <div className="text-[10px] text-stone-400 truncate max-w-[150px]">
+                              {w.stateAssessment.note}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => onNavigateTab('tax_hub')}
+                            className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-purple-300 font-semibold text-[11px] transition-colors cursor-pointer"
+                          >
+                            View &rarr;
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Tab 5 Content: Subscription License Registry Ledger */}
+        {activeWorkstationTab === 'licenses' && (
+          <div className="p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2 text-stone-300">
+                <Key className="w-4 h-4 text-sky-400" />
+                <span className="font-semibold">
+                  Subscriber &amp; Master Admin License Registry
+                </span>
+                <span className="text-sky-300 font-mono">
+                  · {activeKeysCount} Active / {licenseKeys.length} Total
+                </span>
+              </div>
+
+              <button
+                onClick={() => onNavigateTab('licensing')}
+                className="text-sky-400 hover:text-sky-300 font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <span>Open Full Licensing Console</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {filteredLicenses.length === 0 ? (
+              <div className="p-8 text-center rounded-xl bg-stone-950/60 border border-stone-800 text-xs text-stone-400">
+                No license records matching search filter.
+              </div>
+            ) : (
+              <div className="overflow-x-auto border border-stone-800 rounded-xl">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-stone-950/80 text-stone-400 text-[11px] uppercase tracking-wider font-mono border-b border-stone-800">
+                    <tr>
+                      <th className="px-4 py-3">License Key</th>
+                      <th className="px-4 py-3">Client / Organization</th>
+                      <th className="px-4 py-3">Plan Tier</th>
+                      <th className="px-4 py-3">Hardware ID Lock</th>
+                      <th className="px-4 py-3">Expiration Date</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Manage</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800 text-stone-200">
+                    {filteredLicenses.slice(0, 8).map((k) => (
+                      <tr key={k.id} className="hover:bg-stone-850/50 transition-colors">
+                        <td className="px-4 py-3 font-mono font-bold text-stone-100 flex items-center gap-2">
+                          <Key className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                          <span>{k.key}</span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="font-semibold text-stone-200">{k.clientName || 'Subscriber'}</div>
+                          <div className="text-[10px] text-stone-500">{k.clientEmail || 'client@example.com'}</div>
+                        </td>
+                        <td className="px-4 py-3 font-mono">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            k.plan === 'ADMIN'
+                              ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                              : 'bg-stone-800 text-stone-300'
+                          }`}>
+                            {k.plan}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-stone-400 font-mono text-[11px]">
+                          {k.hardwareId || 'Unbound (First Use)'}
+                        </td>
+                        <td className="px-4 py-3 text-stone-300 font-mono text-[11px]">
+                          {k.expiresDate || 'Non-Expiring'}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                            k.status === 'ACTIVE'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                          }`}>
+                            {k.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            onClick={() => onNavigateTab('licensing')}
+                            className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-sky-400 hover:text-sky-300 font-semibold text-[11px] transition-colors cursor-pointer"
+                          >
+                            Inspect &rarr;
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Complete All-Sections Directory (Fast Navigation to Every Admin Tool) */}
       <section className="space-y-4">
-        <div>
-          <h3 className="text-sm font-bold text-stone-100 flex items-center gap-2">
-            <Layers className="w-4 h-4 text-amber-400" />
-            All Admin Management Sections Directory
-          </h3>
-          <p className="text-xs text-stone-400 mt-0.5">
-            Every section of the admin panel accessible at a glance. Select any module to jump directly to its dedicated workstation.
-          </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-bold text-stone-100 flex items-center gap-2">
+              <Layers className="w-4 h-4 text-amber-400" />
+              Complete Admin Management Workstation Directory
+            </h3>
+            <p className="text-xs text-stone-400 mt-0.5">
+              Jump directly to any of the 9 dedicated consoles in the platform.
+            </p>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* Section 1: Scanner */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          {/* Section 1: Parallel Receipt Engine */}
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                   <Cpu className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                  Parallel OCR
+                  4 Parallel Workers
                 </span>
               </div>
               <h4 className="text-sm font-bold text-stone-100">Receipt Processing &amp; Parallel Engine</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Multi-worker OCR engine with parallel thread pooling, automatic receipt deduction categorization, 
-                tax schedule classification, and ledger exports.
+                Parallel OCR pipeline for batch deduction scanning, IRS Schedule F &amp; C categorization, ledger exports, and QBO push.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('scanner')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
             >
-              <span>Open Parallel Engine</span>
+              <span>Launch Engine</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Section 2: Intake */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          {/* Section 2: Client Intake Manager */}
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
                   <Inbox className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
-                  {pendingSubmissionsCount} In Queue
+                  {queuedSubmissionsCount} Pending Review
                 </span>
               </div>
               <h4 className="text-sm font-bold text-stone-100">Client Intake &amp; Multi-VM Cluster</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Central ingest inbox for incoming receipts, tax documents, and invoices from clients. Dispatches 
-                batches to worker clusters with full verification status.
+                Central ingest queue for client receipts, tax documents, and invoices with batch verification and node dispatch.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('intake')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors cursor-pointer"
             >
-              <span>Open Client Intake</span>
+              <span>Open Intake Hub</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 3: W-2 & 1099 Tax Hub */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
                   <FileSpreadsheet className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                  Form 1040 Packet
+                  Form 1040 Preparation
                 </span>
               </div>
-              <h4 className="text-sm font-bold text-stone-100">W-2 &amp; 1099 Tax Hub</h4>
+              <h4 className="text-sm font-bold text-stone-100">W-2 &amp; 1099 Tax Documents Hub</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Dedicated non-business and wage-earner filing hub. Auto-detects state and local income tax withholdings 
-                (Boxes 15–20), masks PII/SSN, and generates CPA packets.
+                Extracts Boxes 1–20, auto-flags state tax obligations (CA, IL, NY vs TX/FL), masks SSNs, and exports Form 1040 packets.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('tax_hub')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-purple-400 hover:text-purple-300 transition-colors cursor-pointer"
             >
-              <span>Open Tax Documents Hub</span>
+              <span>Open Tax Hub</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 4: QuickBooks Online */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-[#2CA01C]/15 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
@@ -542,21 +1412,20 @@ export function AdminHomeOverview({
               </div>
               <h4 className="text-sm font-bold text-stone-100">QuickBooks Online Production</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Official Intuit Developer OAuth 2.0 connection, realm ID company linking, automated expense journal 
-                pushes, and 101-day token rolling renewals.
+                Connect Intuit accounts, map expense accounts, manage 101-day rolling renewal, and audit sync history.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('qbo')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
             >
-              <span>Open QuickBooks Center</span>
+              <span>Open QBO Center</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 5: Subscription Licensing */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
@@ -568,246 +1437,189 @@ export function AdminHomeOverview({
               </div>
               <h4 className="text-sm font-bold text-stone-100">Subscription &amp; Key Registry</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Generate monthly/annual subscriber licenses, create perpetual non-expiring master admin keys, 
-                enforce hardware HWID locks, and sync to Edge KV.
+                Issue client keys, generate perpetual non-expiring master admin keys, enforce hardware locks, and sync with Edge KV.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('licensing')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-sky-400 hover:text-sky-300 transition-colors cursor-pointer"
             >
-              <span>Manage Key Registry</span>
+              <span>Manage Keys</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 6: Connected Devices */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                  <Radio className="w-4 h-4" />
+                  <Radio className="w-4 h-4 animate-pulse" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                  Live IPs
+                  Real-Time Presence
                 </span>
               </div>
               <h4 className="text-sm font-bold text-stone-100">Live Connected Devices &amp; Active IPs</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Real-time active IP presence tracker, concurrent client connections monitor, ping heartbeats, 
-                and network security logs.
+                Real-time client IP monitoring, concurrent session tracking, ping heartbeats, and device security logs.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('devices')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
             >
-              <span>View Connected Devices</span>
+              <span>Track Devices</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 7: Auto-Update System */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-sky-400">
                   <RefreshCw className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20">
-                  In-Place Update
+                  v{currentVersion} Stable
                 </span>
               </div>
               <h4 className="text-sm font-bold text-stone-100">Auto-Update System &amp; Versioning</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                In-place application updater, release manifest checks, SHA-256 binary validation, and changelog 
-                distribution without requiring manual reinstallations.
+                In-place application updater, release manifest checks, SHA-256 binary validation, and changelog management.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('updater')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-sky-400 hover:text-sky-300 transition-colors cursor-pointer"
             >
-              <span>Open Update Center</span>
+              <span>Check Updates</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 8: Architecture Guide */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                   <Layers className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                  Architecture
+                  Technical Spec
                 </span>
               </div>
               <h4 className="text-sm font-bold text-stone-100">Subscription Architecture Guide</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Technical reference and security architecture guide explaining the subscription gating engine, 
-                offline grace period caching, and hardware signature computation.
+                Detailed technical documentation of subscription gating, local encrypted vaults, and offline grace periods.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('guide')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
             >
-              <span>Read Architecture Guide</span>
+              <span>Read Guide</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {/* Section 9: Integrated Python Code */}
-          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all">
+          <div className="p-5 rounded-xl bg-stone-900 border border-stone-800 flex flex-col justify-between hover:border-stone-700 transition-all shadow-sm">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="w-9 h-9 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400">
                   <FileCode2 className="w-4 h-4" />
                 </div>
                 <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                  .py Source &amp; .bat
+                  Python &amp; .bat Bundle
                 </span>
               </div>
               <h4 className="text-sm font-bold text-stone-100">Integrated Python Code &amp; Runtime</h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Inspect and download the desktop application's Python source code (`receipt_processor.py`), 
-                requirements list, and Windows one-click automated batch launcher.
+                Inspect and download standalone desktop code (`receipt_processor.py`) and Windows one-click automated batch launcher.
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('code')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-purple-400 hover:text-purple-300 transition-colors cursor-pointer"
             >
-              <span>View Python Source</span>
+              <span>View Source</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
       </section>
 
-      {/* Quick Summary Tables (Recent Submissions & Key Stats) */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Client Submissions Inflow */}
-        <div className="p-6 rounded-2xl bg-stone-900 border border-stone-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Inbox className="w-4 h-4 text-amber-400" />
-              <h3 className="text-sm font-bold text-stone-100">Recent Client Inflow Queue</h3>
-            </div>
-            <button
-              onClick={() => onNavigateTab('intake')}
-              className="text-xs font-semibold text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer"
-            >
-              <span>View All ({submissions.length})</span>
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
+      {/* Security, Encryption & Integrity Safeguards Audit */}
+      <section className="p-6 rounded-2xl bg-stone-900 border border-stone-800 space-y-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <h3 className="text-sm font-bold text-stone-100">Platform Security &amp; Compliance Safeguards</h3>
           </div>
-
-          {recentSubmissions.length === 0 ? (
-            <div className="p-6 text-center rounded-xl bg-stone-950/60 border border-stone-850 text-xs text-stone-400">
-              No pending client submissions. The intake inbox is completely up-to-date.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {recentSubmissions.map((sub) => (
-                <div
-                  key={sub.id}
-                  onClick={() => onNavigateTab('intake')}
-                  className="p-3 rounded-lg bg-stone-950/60 border border-stone-800/80 hover:border-amber-500/40 flex items-center justify-between gap-3 text-xs transition-colors cursor-pointer"
-                >
-                  <div className="min-w-0">
-                    <div className="font-semibold text-stone-200 truncate">{sub.fileName}</div>
-                    <div className="text-[11px] text-stone-400 truncate">
-                      {sub.clientName || 'Client'} · {sub.category || 'Receipt'} · {new Date(sub.submittedAt).toLocaleDateString()}
-                    </div>
-                  </div>
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold shrink-0 ${
-                    sub.status === 'PROCESSED'
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                      : 'bg-amber-500/10 text-amber-300 border border-amber-500/20'
-                  }`}>
-                    {sub.status}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+            All Safeguards Enforced
+          </span>
         </div>
 
-        {/* Security, Encryption & Integrity Verification */}
-        <div className="p-6 rounded-2xl bg-stone-900 border border-stone-800 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <h3 className="text-sm font-bold text-stone-100">Security &amp; Data Safeguards</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div className="p-4 rounded-xl bg-stone-950/60 border border-stone-800/80 flex items-start gap-3">
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
+              <Check className="w-4 h-4" />
             </div>
-            <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-              Protected
-            </span>
+            <div>
+              <div className="font-semibold text-stone-200">Sensitive PII &amp; FTI Masking</div>
+              <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                SSNs (`***-**-XXXX`) and EINs (`**-***XXXX`) are automatically masked across all user-facing views to protect taxpayer identity.
+              </p>
+            </div>
           </div>
 
-          <div className="space-y-3 text-xs">
-            <div className="p-3 rounded-lg bg-stone-950/60 border border-stone-800/80 flex items-start gap-3">
-              <div className="w-6 h-6 rounded bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                <Check className="w-3.5 h-3.5" />
-              </div>
-              <div>
-                <div className="font-semibold text-stone-200">Sensitive Information Masking &amp; Redaction</div>
-                <p className="text-[11px] text-stone-400 mt-0.5">
-                  All Social Security Numbers (`***-**-XXXX`) and Employer IDs (`**-***XXXX`) are masked before 
-                  render or display to protect client privacy.
-                </p>
-              </div>
+          <div className="p-4 rounded-xl bg-stone-950/60 border border-stone-800/80 flex items-start gap-3">
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
+              <Check className="w-4 h-4" />
             </div>
-
-            <div className="p-3 rounded-lg bg-stone-950/60 border border-stone-800/80 flex items-start gap-3">
-              <div className="w-6 h-6 rounded bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                <Check className="w-3.5 h-3.5" />
-              </div>
-              <div>
-                <div className="font-semibold text-stone-200">AES-256 Hardware-Locked Vault Protection</div>
-                <p className="text-[11px] text-stone-400 mt-0.5">
-                  Client licenses and encrypted snapshots are bound to machine hardware IDs (HWID) to prevent 
-                  unauthorized license sharing.
-                </p>
-              </div>
+            <div>
+              <div className="font-semibold text-stone-200">AES-256 Hardware-Locked Vault</div>
+              <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                All client licenses and encrypted database snapshots are bound to unique hardware IDs (HWID) to prevent credential piracy.
+              </p>
             </div>
+          </div>
 
-            <div className="p-3 rounded-lg bg-stone-950/60 border border-stone-800/80 flex items-start gap-3">
-              <div className="w-6 h-6 rounded bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
-                <Check className="w-3.5 h-3.5" />
-              </div>
-              <div>
-                <div className="font-semibold text-stone-200">Redundant Multi-Cloud Edge Synchronization</div>
-                <p className="text-[11px] text-stone-400 mt-0.5">
-                  Real-time failover sync between Cloudflare Edge KV and local database prevents data loss during network interruptions.
-                </p>
-              </div>
+          <div className="p-4 rounded-xl bg-stone-950/60 border border-stone-800/80 flex items-start gap-3">
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0 mt-0.5">
+              <Check className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="font-semibold text-stone-200">Multi-Cloud Edge Failover</div>
+              <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                Real-time failover sync between Cloudflare Edge KV and local database prevents data loss during network interruptions.
+              </p>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Quick Intuit OAuth Helper Footer */}
+      {/* Quick Intuit OAuth & Tools Footer Toolbar */}
       <section className="p-5 rounded-xl bg-stone-900/60 border border-stone-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-lg bg-[#2CA01C]/15 border border-emerald-500/20 flex items-center justify-center text-emerald-400 shrink-0">
             <Building2 className="w-4.5 h-4.5 text-[#2CA01C]" />
           </div>
           <div>
-            <div className="text-xs font-bold text-stone-200">Intuit Developer Redirect URI Configuration</div>
+            <div className="text-xs font-bold text-stone-200">Intuit Developer Production Redirect URI</div>
             <div className="text-[11px] text-stone-400 mt-0.5">
-              Requires exact URI in your Intuit app keys dashboard for production OAuth 2.0 authorization.
+              Exact OAuth 2.0 callback endpoint registered in your Intuit app keys portal.
             </div>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <button
             onClick={copyIntuitUri}
-            className="px-3.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-sky-300 border border-stone-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-sky-300 border border-stone-700 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <Copy className="w-3.5 h-3.5" />
             <span>Copy Redirect URI</span>
