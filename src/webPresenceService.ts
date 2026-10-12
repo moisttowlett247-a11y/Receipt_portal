@@ -2,6 +2,7 @@
 // Broadcasts lightweight heartbeats from active Admin and Client Portal sessions
 
 import { CLOUDFLARE_WORKER_URL } from './licenseSyncService';
+import { getBackendApiUrl } from './urlUtils';
 
 export interface WebPresencePayload {
   portal: 'ADMIN' | 'CLIENT';
@@ -56,8 +57,24 @@ let lastPayload: WebPresencePayload | null = null;
 
 let cachedIp: string | null = null;
 
-async function fetchPublicIp(): Promise<string | null> {
+export async function fetchPublicIp(): Promise<string | null> {
   if (cachedIp) return cachedIp;
+  // 1. Try local/backend presence IP endpoint first
+  try {
+    const backendBase = getBackendApiUrl();
+    const res = await fetch(`${backendBase}/api/presence/ip`, {
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.ip) {
+        cachedIp = String(data.ip).trim();
+        return cachedIp;
+      }
+    }
+  } catch {}
+
+  // 2. Try api.ipify.org
   try {
     const res = await fetch('https://api.ipify.org?format=json');
     if (res.ok) {
@@ -66,7 +83,7 @@ async function fetchPublicIp(): Promise<string | null> {
       return data.ip;
     }
   } catch (err) {
-    // Fallback to second service
+    // 3. Fallback to second service
     try {
       const res = await fetch('https://ipapi.co/json/');
       if (res.ok) {
@@ -102,17 +119,27 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
     timestamp: new Date().toISOString()
   };
 
+  // 1. Send to Cloudflare Worker
   try {
     const targetUrl = `${CLOUDFLARE_WORKER_URL}/api/presence/heartbeat`;
-    await fetch(targetUrl, {
+    fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
       keepalive: true
-    });
-  } catch (err) {
-    // Fail silently without disrupting UI
-  }
+    }).catch(() => {});
+  } catch {}
+
+  // 2. Also send to local backend server
+  try {
+    const backendBase = getBackendApiUrl();
+    fetch(`${backendBase}/api/presence/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      keepalive: true
+    }).catch(() => {});
+  } catch {}
 }
 
 let lastHeartbeatTime = 0;

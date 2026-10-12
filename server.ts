@@ -250,12 +250,28 @@ function saveSessions(sessions: any) {
   } catch {}
 }
 
+function normalizeIp(raw: string | undefined | null): string {
+  if (!raw) return '127.0.0.1';
+  let ip = String(raw).trim();
+  if (ip.startsWith('::ffff:')) {
+    ip = ip.replace(/^::ffff:/, '');
+  }
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$/.test(ip)) {
+    ip = ip.split(':')[0];
+  }
+  if (ip === '::1' || ip.toLowerCase() === 'localhost') {
+    ip = '127.0.0.1';
+  }
+  return ip || '127.0.0.1';
+}
+
 function recordSessionPing(data: any) {
   if (!data.hash && !data.key) return;
   const sessions = loadSessions();
-  const sessionId = `${data.ip}_${data.hash}`;
+  const cleanIp = normalizeIp(data.ip);
+  const rawId = `ip_${cleanIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
   const now = new Date();
-  const existing = sessions[sessionId] || {};
+  const existing = sessions[rawId] || {};
 
   let maskedKey = existing.keyMasked || '';
   if (data.key) {
@@ -269,13 +285,13 @@ function recordSessionPing(data: any) {
     maskedKey = `${data.hash.slice(0, 6)}...${data.hash.slice(-4)}`;
   }
 
-  sessions[sessionId] = {
-    id: sessionId,
-    ip: data.ip,
-    hash: data.hash,
+  sessions[rawId] = {
+    id: rawId,
+    ip: cleanIp,
+    hash: data.hash || existing.hash,
     keyMasked: maskedKey,
     rawKey: data.key || existing.rawKey || '',
-    hwid: data.hwid || existing.hwid || 'Pending HWID',
+    hwid: data.hwid || existing.hwid || 'Desktop-HWID',
     machineName: data.machineName || existing.machineName || 'Desktop Workstation',
     appVersion: data.appVersion || existing.appVersion || '1.0.0',
     plan: data.plan || existing.plan || 'Standard',
@@ -284,8 +300,8 @@ function recordSessionPing(data: any) {
     lastPingMs: now.getTime(),
     firstSeen: existing.firstSeen || now.toISOString(),
     pingCount: (existing.pingCount || 0) + 1,
-    sessionType: 'DESKTOP',
-    portalName: 'Desktop Python Engine',
+    sessionType: existing.sessionType?.includes('WEB') ? 'DESKTOP_AND_WEB' : 'DESKTOP',
+    portalName: existing.portalName ? `${existing.portalName} + Desktop Engine` : 'Desktop Python Engine',
     deviceCategory: 'Desktop Python Engine'
   };
 
@@ -308,59 +324,75 @@ function recordWebPresenceSession(data: {
   status?: string;
 }) {
   const sessions = loadSessions();
-  const rawId = data.sessionId || `web_${data.portal.toLowerCase()}_${data.ip}`;
+  const cleanIp = normalizeIp(data.ip);
+  const rawId = `ip_${cleanIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
   const now = new Date();
   const existing = sessions[rawId] || {};
 
-  const isAdmin = data.portal === 'ADMIN';
-  const sessionType = isAdmin ? 'WEB_ADMIN' : 'WEB_CLIENT';
-  const portalName = isAdmin ? 'Admin Console / Dashboard' : 'Client Intake Portal';
-  const machineName = data.browserInfo || (isAdmin ? 'Admin Web Browser' : 'Client Web Browser');
-  const userTag = (data.username || data.userId || (isAdmin ? 'ADMIN' : 'GUEST')).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
-  const hwid = `WEB-${userTag || 'PORTAL'}-${data.portal}`;
-  const key = data.licenseKey || (isAdmin ? 'ADMIN-ACTIVE-CONSOLE' : (existing.rawKey || ''));
-  const keyMasked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : (key || 'WEB-SESSION');
+  const isCurrentAdmin = data.portal === 'ADMIN';
+  const hasEverAdmin = isCurrentAdmin || (existing.portalName && existing.portalName.includes('Admin'));
+  const hasEverClient = (!isCurrentAdmin) || (existing.portalName && existing.portalName.includes('Client'));
+  const hasDesktop = existing.sessionType?.includes('DESKTOP') || existing.portalName?.includes('Desktop');
+
+  let portalName = isCurrentAdmin ? 'Admin Console' : 'Client Intake Portal';
+  if (hasEverAdmin && hasEverClient) {
+    portalName = 'Admin & Client Portal';
+  }
+  if (hasDesktop) {
+    portalName = `${portalName} + Desktop Engine`;
+  }
+
+  const sessionType = (hasEverAdmin && hasEverClient) ? 'WEB_MULTI' : (hasEverAdmin ? 'WEB_ADMIN' : 'WEB_CLIENT');
+  const machineName = data.browserInfo || existing.machineName || (isCurrentAdmin ? 'Admin Web Browser' : 'Client Web Browser');
+  const userTag = (data.username || data.userId || (isCurrentAdmin ? 'ADMIN' : 'GUEST')).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
+  const hwid = existing.hwid && !existing.hwid.includes('GUEST') ? existing.hwid : `WEB-${userTag || 'PORTAL'}-${data.portal}`;
+  const key = data.licenseKey || existing.rawKey || (isCurrentAdmin ? 'ADMIN-ACTIVE-CONSOLE' : '');
+  const keyMasked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : (key || existing.keyMasked || 'WEB-SESSION');
   const hash = crypto.createHash('sha256').update(rawId).digest('hex');
 
   sessions[rawId] = {
     id: rawId,
-    ip: data.ip,
+    ip: cleanIp,
     hash,
     keyMasked,
     rawKey: key,
     hwid,
     machineName,
     appVersion: 'Web v2.4',
-    plan: data.plan || (isAdmin ? 'Master Administrator' : 'Client Visitor'),
-    status: data.status || 'ACTIVE',
+    plan: data.plan || existing.plan || (isCurrentAdmin ? 'Master Administrator' : 'Client Visitor'),
+    status: data.status || existing.status || 'ACTIVE',
     lastPing: now.toISOString(),
     lastPingMs: now.getTime(),
     firstSeen: existing.firstSeen || now.toISOString(),
     pingCount: (existing.pingCount || 0) + 1,
-    sessionType,
-    username: data.username || (isAdmin ? 'admin' : undefined),
-    email: data.email || undefined,
-    displayName: data.displayName || (isAdmin ? 'Administrator' : undefined),
-    companyName: data.companyName || undefined,
+    sessionType: hasDesktop ? 'DESKTOP_AND_WEB' : sessionType,
+    username: data.username || existing.username || (isCurrentAdmin ? 'admin' : undefined),
+    email: data.email || existing.email || undefined,
+    displayName: data.displayName || existing.displayName || (isCurrentAdmin ? 'Administrator' : undefined),
+    companyName: data.companyName || existing.companyName || undefined,
     portalName,
-    browserInfo: data.browserInfo,
-    deviceCategory: data.deviceCategory || 'Browser / Web Client'
+    browserInfo: data.browserInfo || existing.browserInfo,
+    deviceCategory: data.deviceCategory || existing.deviceCategory || 'Browser / Web Client'
   };
 
   saveSessions(sessions);
 }
 
 function getClientIp(req: express.Request): string {
+  const cfIp = req.headers['cf-connecting-ip'];
+  if (typeof cfIp === 'string' && cfIp.trim()) {
+    return normalizeIp(cfIp);
+  }
   const forwarded = req.headers['x-forwarded-for'];
   if (typeof forwarded === 'string' && forwarded.trim()) {
     const first = forwarded.split(',')[0].trim();
-    if (first) return first;
+    if (first) return normalizeIp(first);
   }
   const realIp = req.headers['x-real-ip'];
   if (typeof realIp === 'string' && realIp.trim()) {
-    return realIp.trim();
+    return normalizeIp(realIp);
   }
-  return req.socket?.remoteAddress || '127.0.0.1';
+  return normalizeIp(req.socket?.remoteAddress || '127.0.0.1');
 }
 
 // Router Setup
@@ -401,7 +433,7 @@ router.use((req, res, next) => {
       const browserInfo = `${browser} on ${os}`;
       
       recordWebPresenceSession({
-        sessionId: `req_${portal.toLowerCase()}_${clientIp}_${crypto.createHash('md5').update(userAgent).digest('hex').slice(0, 6)}`,
+        sessionId: `ip_${clientIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
         portal,
         ip: clientIp,
         browserInfo,
@@ -942,6 +974,15 @@ router.post('/api/licenses/heartbeat', (req, res) => {
   }
 });
 
+router.get(['/api/presence/ip', '/api/my-ip', '/api/client/ip'], (req, res) => {
+  const clientIp = getClientIp(req);
+  return res.json({
+    success: true,
+    ip: clientIp,
+    timestamp: new Date().toISOString()
+  });
+});
+
 router.post(['/api/presence/heartbeat', '/api/presence/ping'], (req, res) => {
   try {
     const body = req.body || {};
@@ -1015,19 +1056,72 @@ router.get(['/api/licenses/sessions', '/api/devices/sessions'], (req, res) => {
     }
     saveSessions(activeSessions);
 
-    sessionList.sort((a, b) => {
+    // Deduplicate and aggregate sessions by unique clean IP address
+    const ipMap = new Map<string, any>();
+    for (const s of sessionList) {
+      const cleanIp = (s.ip && s.ip !== 'Pending Connection' && s.ip !== 'Detecting...') ? s.ip.trim() : '127.0.0.1';
+      const existing = ipMap.get(cleanIp);
+      if (!existing) {
+        ipMap.set(cleanIp, {
+          ...s,
+          ip: cleanIp,
+          id: `ip_${cleanIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`
+        });
+      } else {
+        const isNewer = (s.lastPingMs || 0) > (existing.lastPingMs || 0);
+        const mostRecent = isNewer ? s : existing;
+
+        let bestOnlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
+        if (existing.onlineState === 'ONLINE' || s.onlineState === 'ONLINE') {
+          bestOnlineState = 'ONLINE';
+        } else if (existing.onlineState === 'IDLE' || s.onlineState === 'IDLE') {
+          bestOnlineState = 'IDLE';
+        }
+
+        let combinedPortal = mostRecent.portalName || existing.portalName || s.portalName;
+        if (existing.portalName && s.portalName && existing.portalName !== s.portalName) {
+          if ((existing.portalName.includes('Admin') && s.portalName.includes('Client')) ||
+              (existing.portalName.includes('Client') && s.portalName.includes('Admin'))) {
+            combinedPortal = 'Admin & Client Portal';
+          }
+        }
+
+        ipMap.set(cleanIp, {
+          ...mostRecent,
+          id: `ip_${cleanIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
+          ip: cleanIp,
+          onlineState: bestOnlineState,
+          portalName: combinedPortal,
+          pingCount: (existing.pingCount || 1) + (s.pingCount || 1),
+          secondsSinceLastPing: Math.min(existing.secondsSinceLastPing ?? 99999, s.secondsSinceLastPing ?? 99999),
+          lastPing: mostRecent.lastPing,
+          lastPingMs: mostRecent.lastPingMs,
+          firstSeen: existing.firstSeen || s.firstSeen,
+          browserInfo: mostRecent.browserInfo || existing.browserInfo,
+          machineName: mostRecent.machineName || existing.machineName,
+          hwid: (existing.hwid && !existing.hwid.includes('GUEST')) ? existing.hwid : (s.hwid || existing.hwid),
+          keyMasked: (existing.keyMasked && !existing.keyMasked.includes('WEB')) ? existing.keyMasked : (s.keyMasked || existing.keyMasked)
+        });
+      }
+    }
+
+    const uniqueIpList = Array.from(ipMap.values());
+    uniqueIpList.sort((a, b) => {
       if (a.onlineState === 'ONLINE' && b.onlineState !== 'ONLINE') return -1;
       if (b.onlineState === 'ONLINE' && a.onlineState !== 'ONLINE') return 1;
+      if (a.onlineState === 'IDLE' && b.onlineState === 'OFFLINE') return -1;
+      if (b.onlineState === 'IDLE' && a.onlineState === 'OFFLINE') return 1;
       return (b.lastPingMs || 0) - (a.lastPingMs || 0);
     });
 
     return res.json({
       success: true,
-      totalSessions: sessionList.length,
-      onlineCount: sessionList.filter(s => s.onlineState === 'ONLINE').length,
-      idleCount: sessionList.filter(s => s.onlineState === 'IDLE').length,
-      uniqueIps: Array.from(new Set(sessionList.map(s => s.ip))).length,
-      sessions: sessionList,
+      totalSessions: uniqueIpList.length,
+      onlineCount: uniqueIpList.filter(s => s.onlineState === 'ONLINE').length,
+      idleCount: uniqueIpList.filter(s => s.onlineState === 'IDLE').length,
+      offlineCount: uniqueIpList.filter(s => s.onlineState === 'OFFLINE').length,
+      uniqueIps: uniqueIpList.length,
+      sessions: uniqueIpList,
       serverTime: new Date().toISOString()
     });
   } catch (err: any) {

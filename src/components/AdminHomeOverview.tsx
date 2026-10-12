@@ -46,31 +46,8 @@ import { LicenseKeyRecord } from '../types';
 import { getClientSubmissions, subscribeToClientSubmissions, ClientSubmission } from '../clientSubmissionService';
 import { getW2Records, get1099Records, subscribeToTaxDocuments } from '../taxDocumentService';
 import { W2Record, Form1099Record } from '../taxDocumentTypes';
-
-interface DeviceSession {
-  id: string;
-  ip: string;
-  hash?: string;
-  keyMasked?: string;
-  rawKey?: string;
-  hwid?: string;
-  machineName?: string;
-  appVersion?: string;
-  plan?: string;
-  status?: string;
-  lastPing?: string;
-  lastPingMs?: number;
-  firstSeen?: string;
-  pingCount?: number;
-  sessionType?: string;
-  portalName?: string;
-  browserInfo?: string;
-  deviceCategory?: string;
-  onlineState?: 'ONLINE' | 'IDLE' | 'OFFLINE';
-  secondsSinceLastPing?: number;
-  username?: string;
-  displayName?: string;
-}
+import { getBackendApiUrl } from '../urlUtils';
+import { fetchUnifiedIpTelemetry, TrackedIpSession, detectMyIp, IpOnlineState } from '../ipTrackerService';
 
 interface QboSyncLogItem {
   id?: string;
@@ -139,9 +116,15 @@ export function AdminHomeOverview({
   });
 
   // Real-time Sessions & QuickBooks telemetry from backend
-  const [deviceSessions, setDeviceSessions] = useState<DeviceSession[]>([]);
+  const [deviceSessions, setDeviceSessions] = useState<TrackedIpSession[]>([]);
   const [onlineDevicesCount, setOnlineDevicesCount] = useState<number>(0);
+  const [idleDevicesCount, setIdleDevicesCount] = useState<number>(0);
+  const [offlineDevicesCount, setOfflineDevicesCount] = useState<number>(0);
   const [uniqueIpsCount, setUniqueIpsCount] = useState<number>(0);
+  const [ipStatusFilter, setIpStatusFilter] = useState<'ALL' | 'ONLINE' | 'IDLE' | 'OFFLINE'>('ALL');
+  const [myDetectedIp, setMyDetectedIp] = useState<string | null>(null);
+  const [copiedIp, setCopiedIp] = useState<string | null>(null);
+
   const [qboConnectedCompany, setQboConnectedCompany] = useState<string | null>(null);
   const [qboRealmId, setQboRealmId] = useState<string | null>(null);
   const [qboEnvironment, setQboEnvironment] = useState<string>('sandbox');
@@ -156,24 +139,22 @@ export function AdminHomeOverview({
 
   // Fetch live telemetry from server
   const fetchLiveTelemetry = useCallback(async () => {
+    const backendBase = getBackendApiUrl();
+
     try {
-      // 1. Fetch live active sessions & IP telemetry
-      const resSessions = await fetch('/api/licenses/sessions');
-      if (resSessions.ok) {
-        const data = await resSessions.json();
-        if (data.sessions && Array.isArray(data.sessions)) {
-          setDeviceSessions(data.sessions);
-          setOnlineDevicesCount(data.onlineCount || 0);
-          setUniqueIpsCount(data.uniqueIps || 0);
-        }
-      }
-    } catch {
-      // quiet fallback
-    }
+      // 1. Fetch live active sessions & IP telemetry (unified, deduplicated strictly 1 entry per unique IP)
+      const ipData = await fetchUnifiedIpTelemetry();
+      setDeviceSessions(ipData.sessions);
+      setOnlineDevicesCount(ipData.onlineCount);
+      setIdleDevicesCount(ipData.idleCount);
+      setOfflineDevicesCount(ipData.offlineCount);
+      setUniqueIpsCount(ipData.uniqueIps);
+      if (ipData.myIp) setMyDetectedIp(ipData.myIp);
+    } catch {}
 
     try {
       // 2. Fetch QuickBooks companies & config
-      const resCompanies = await fetch('/api/qbo/companies');
+      const resCompanies = await fetch(`${backendBase}/api/qbo/companies`);
       if (resCompanies.ok) {
         const compData = await resCompanies.json();
         if (compData.companies && compData.companies.length > 0) {
@@ -183,39 +164,33 @@ export function AdminHomeOverview({
           setQboEnvironment(first.environment || 'sandbox');
         }
       }
-    } catch {
-      // quiet fallback
-    }
+    } catch {}
 
     try {
       // 3. Fetch QuickBooks sync logs
-      const resLogs = await fetch('/api/qbo/sync-log');
+      const resLogs = await fetch(`${backendBase}/api/qbo/sync-log`);
       if (resLogs.ok) {
         const logData = await resLogs.json();
         if (logData.logs && Array.isArray(logData.logs)) {
           setQboSyncLogs(logData.logs);
         }
       }
-    } catch {
-      // quiet fallback
-    }
+    } catch {}
 
     try {
       // 4. Fetch server submissions
-      const resSubs = await fetch('/api/client/submissions');
+      const resSubs = await fetch(`${backendBase}/api/client/submissions`);
       if (resSubs.ok) {
         const subData = await resSubs.json();
         if (subData.submissions && Array.isArray(subData.submissions) && subData.submissions.length > 0) {
           setSubmissions(subData.submissions);
         }
       }
-    } catch {
-      // quiet fallback
-    }
+    } catch {}
 
     try {
       // 5. Fetch server tax docs
-      const resTax = await fetch('/api/tax-docs');
+      const resTax = await fetch(`${backendBase}/api/tax-docs`);
       if (resTax.ok) {
         const taxData = await resTax.json();
         if (taxData.w2s && Array.isArray(taxData.w2s)) {
@@ -225,9 +200,7 @@ export function AdminHomeOverview({
           setF1099s(taxData.form1099s);
         }
       }
-    } catch {
-      // quiet fallback
-    }
+    } catch {}
 
     setLastRefreshedAt(new Date());
   }, []);
@@ -311,16 +284,21 @@ export function AdminHomeOverview({
   }, [submissions, intakeFilter, searchQuery]);
 
   const filteredSessions = useMemo(() => {
-    if (!searchQuery.trim()) return deviceSessions;
+    let list = deviceSessions;
+    if (ipStatusFilter !== 'ALL') {
+      list = list.filter(s => s.onlineState === ipStatusFilter);
+    }
+    if (!searchQuery.trim()) return list;
     const q = searchQuery.toLowerCase();
-    return deviceSessions.filter(s => 
+    return list.filter(s => 
       (s.ip && s.ip.toLowerCase().includes(q)) ||
       (s.machineName && s.machineName.toLowerCase().includes(q)) ||
       (s.portalName && s.portalName.toLowerCase().includes(q)) ||
       (s.browserInfo && s.browserInfo.toLowerCase().includes(q)) ||
-      (s.hwid && s.hwid.toLowerCase().includes(q))
+      (s.hwid && s.hwid.toLowerCase().includes(q)) ||
+      (s.username && s.username.toLowerCase().includes(q))
     );
-  }, [deviceSessions, searchQuery]);
+  }, [deviceSessions, ipStatusFilter, searchQuery]);
 
   const filteredLicenses = useMemo(() => {
     if (!searchQuery.trim()) return licenseKeys;
@@ -451,6 +429,110 @@ export function AdminHomeOverview({
         {/* Ambient subtle glow background */}
         <div className="absolute -top-24 -right-24 w-80 h-80 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-24 -left-24 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+      </section>
+
+      {/* 1-Click Direct Access Switchboard (All 9 Management Consoles) */}
+      <section className="bg-stone-900/70 border border-stone-800 rounded-2xl p-4 shadow-md space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] uppercase tracking-wider font-bold text-stone-400 flex items-center gap-1.5 font-mono">
+            <Layers className="w-3.5 h-3.5 text-amber-400" />
+            Direct Access Switchboard (Instant Section Navigation)
+          </span>
+          <span className="text-[11px] text-stone-500 hidden sm:inline">1-Click Jump to Any Console</span>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-2">
+          <button
+            onClick={() => onNavigateTab('scanner')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-emerald-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <Cpu className="w-5 h-5 text-emerald-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-emerald-300">OCR Engine</span>
+            <span className="text-[9px] text-stone-500 font-mono">Receipts</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('intake')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-amber-500/50 flex flex-col items-center text-center transition-all cursor-pointer group relative"
+          >
+            {queuedSubmissionsCount > 0 && (
+              <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-amber-500 text-stone-950 font-mono text-[9px] font-extrabold animate-pulse">
+                {queuedSubmissionsCount}
+              </span>
+            )}
+            <Inbox className="w-5 h-5 text-amber-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-amber-300">Client Intake</span>
+            <span className="text-[9px] text-stone-500 font-mono">{submissions.length} Total</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('tax_hub')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-purple-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <FileSpreadsheet className="w-5 h-5 text-purple-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-purple-300">Tax Hub</span>
+            <span className="text-[9px] text-stone-500 font-mono">W-2 &amp; 1099</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('qbo')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-emerald-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <Building2 className="w-5 h-5 text-[#2CA01C] mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-emerald-300">QuickBooks</span>
+            <span className="text-[9px] text-stone-500 font-mono">Intuit Sync</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('devices')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-emerald-500/50 flex flex-col items-center text-center transition-all cursor-pointer group relative"
+          >
+            {onlineDevicesCount > 0 && (
+              <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-emerald-500 text-stone-950 font-mono text-[9px] font-extrabold animate-pulse">
+                {onlineDevicesCount}
+              </span>
+            )}
+            <Radio className="w-5 h-5 text-emerald-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-emerald-300">IP Tracker</span>
+            <span className="text-[9px] text-stone-500 font-mono">{uniqueIpsCount} IPs</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('licensing')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-sky-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <Key className="w-5 h-5 text-sky-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-sky-300">Licensing</span>
+            <span className="text-[9px] text-stone-500 font-mono">{activeKeysCount} Active</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('updater')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-sky-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <RefreshCw className="w-5 h-5 text-sky-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-sky-300">Updater</span>
+            <span className="text-[9px] text-stone-500 font-mono">v{currentVersion}</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('guide')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-emerald-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <Layers className="w-5 h-5 text-emerald-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-emerald-300">Architecture</span>
+            <span className="text-[9px] text-stone-500 font-mono">Tech Spec</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('code')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-purple-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <FileCode2 className="w-5 h-5 text-purple-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-purple-300">Python Code</span>
+            <span className="text-[9px] text-stone-500 font-mono">Source</span>
+          </button>
+        </div>
       </section>
 
       {/* Vital Metric Statistics Grid (6 High-Density KPI Cards) */}
@@ -616,7 +698,7 @@ export function AdminHomeOverview({
             </div>
           </div>
 
-          {/* Card 5: Live Connected Devices & IP Telemetry */}
+          {/* Card 5: Real-Time Active IP Telemetry & Devices */}
           <div 
             onClick={() => onNavigateTab('devices')}
             className="p-5 rounded-xl bg-stone-900 border border-stone-800 hover:border-emerald-500/50 transition-all cursor-pointer shadow-md group relative overflow-hidden flex flex-col justify-between"
@@ -626,26 +708,42 @@ export function AdminHomeOverview({
                 <div className="w-10 h-10 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                   <Radio className="w-5 h-5 animate-pulse" />
                 </div>
-                <span className="px-2 py-0.5 rounded text-[11px] font-mono text-emerald-300 bg-emerald-500/10 border border-emerald-500/20">
-                  {onlineDevicesCount > 0 ? `${onlineDevicesCount} Online Now` : 'Stream Active'}
-                </span>
+                <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-bold ${
+                    onlineDevicesCount > 0
+                      ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                      : 'bg-stone-800 text-stone-400 border border-stone-700'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${onlineDevicesCount > 0 ? 'bg-emerald-400 animate-pulse' : 'bg-stone-500'}`} />
+                    {onlineDevicesCount} Online
+                  </span>
+                  {idleDevicesCount > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                      {idleDevicesCount} Idle
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div className="mt-4">
-                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors">
-                  {deviceSessions.length}
+                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors flex items-baseline gap-2">
+                  <span>{uniqueIpsCount}</span>
+                  <span className="text-xs font-normal text-stone-400 font-sans">Unique IP Network{uniqueIpsCount === 1 ? '' : 's'}</span>
                 </div>
-                <div className="text-xs font-bold text-stone-200 mt-1">Live Connected Client Sessions</div>
+                <div className="text-xs font-bold text-stone-200 mt-1">Live IP Address Tracker</div>
                 <div className="flex items-center gap-2 text-[11px] text-stone-400 mt-1">
-                  <span className="text-emerald-400 font-semibold">{uniqueIpsCount} unique IPs</span>
+                  <span className="text-emerald-400 font-semibold">{onlineDevicesCount} Online</span>
                   <span>·</span>
-                  <span className="text-stone-300">Continuous heartbeats</span>
+                  <span className="text-amber-400 font-semibold">{idleDevicesCount} Idle</span>
+                  <span>·</span>
+                  <span className="text-stone-400 font-medium">{offlineDevicesCount} Offline</span>
                 </div>
               </div>
             </div>
 
             <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-emerald-400 font-semibold">
-              <span>View Connected Devices</span>
+              <span>Open Full IP Monitor</span>
               <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
@@ -928,25 +1026,78 @@ export function AdminHomeOverview({
             <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
               <div className="flex items-center gap-2 text-stone-300">
                 <Radio className="w-4 h-4 text-emerald-400 animate-pulse" />
-                <span className="font-semibold">
-                  {onlineDevicesCount} Active Connected Client &amp; Admin Workstations
+                <span className="font-semibold text-stone-100">
+                  {uniqueIpsCount} Unique IP Networks Tracked
                 </span>
                 <span className="text-stone-500">·</span>
-                <span className="text-stone-400">{uniqueIpsCount} Unique IP Networks</span>
+                <span className="text-emerald-400 font-semibold">{onlineDevicesCount} Online</span>
+                <span className="text-stone-500">·</span>
+                <span className="text-amber-400 font-semibold">{idleDevicesCount} Idle</span>
+                <span className="text-stone-500">·</span>
+                <span className="text-stone-400">{offlineDevicesCount} Offline</span>
               </div>
 
-              <button
-                onClick={() => onNavigateTab('devices')}
-                className="text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
-              >
-                <span>Open Full Device Monitor</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+              {/* Status Filter Buttons */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  onClick={() => setIpStatusFilter('ALL')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                    ipStatusFilter === 'ALL'
+                      ? 'bg-stone-700 text-stone-100 font-bold'
+                      : 'bg-stone-800/80 text-stone-400 hover:text-stone-200'
+                  }`}
+                >
+                  All ({uniqueIpsCount})
+                </button>
+                <button
+                  onClick={() => setIpStatusFilter('ONLINE')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    ipStatusFilter === 'ONLINE'
+                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800 font-bold'
+                      : 'bg-stone-800/80 text-stone-400 hover:text-emerald-300'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Online ({onlineDevicesCount})</span>
+                </button>
+                <button
+                  onClick={() => setIpStatusFilter('IDLE')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    ipStatusFilter === 'IDLE'
+                      ? 'bg-amber-950 text-amber-300 border border-amber-800 font-bold'
+                      : 'bg-stone-800/80 text-stone-400 hover:text-amber-300'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                  <span>Idle ({idleDevicesCount})</span>
+                </button>
+                <button
+                  onClick={() => setIpStatusFilter('OFFLINE')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 ${
+                    ipStatusFilter === 'OFFLINE'
+                      ? 'bg-stone-800 text-stone-200 border border-stone-700 font-bold'
+                      : 'bg-stone-800/80 text-stone-400 hover:text-stone-200'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-stone-500" />
+                  <span>Offline ({offlineDevicesCount})</span>
+                </button>
+
+                <button
+                  onClick={() => onNavigateTab('devices')}
+                  className="ml-2 text-emerald-400 hover:text-emerald-300 font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <span>Open Full Device Monitor</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
             {filteredSessions.length === 0 ? (
               <div className="p-8 text-center rounded-xl bg-stone-950/60 border border-stone-800 text-xs text-stone-400">
-                No active device sessions detected right now. Sessions register automatically upon client activity.
+                {deviceSessions.length === 0
+                  ? 'No active IP networks detected yet. Telemetry registers automatically upon client activity.'
+                  : `No IP addresses matching "${ipStatusFilter}" filter.`}
               </div>
             ) : (
               <div className="overflow-x-auto border border-stone-800 rounded-xl">
@@ -954,22 +1105,74 @@ export function AdminHomeOverview({
                   <thead className="bg-stone-950/80 text-stone-400 text-[11px] uppercase tracking-wider font-mono border-b border-stone-800">
                     <tr>
                       <th className="px-4 py-3">IP Address</th>
+                      <th className="px-4 py-3">Network Status</th>
                       <th className="px-4 py-3">Portal Session</th>
                       <th className="px-4 py-3">Machine / Browser Info</th>
                       <th className="px-4 py-3">Heartbeats</th>
-                      <th className="px-4 py-3">Last Heartbeat Ping</th>
-                      <th className="px-4 py-3">Network State</th>
+                      <th className="px-4 py-3">Last Active</th>
                       <th className="px-4 py-3 text-right">Inspect</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-800 text-stone-200">
                     {filteredSessions.map((sess) => {
                       const isOnline = sess.onlineState === 'ONLINE';
+                      const isIdle = sess.onlineState === 'IDLE';
+                      const isMe = sess.isCurrentDevice || (myDetectedIp && sess.ip === myDetectedIp);
+                      const timeAgoStr = sess.secondsSinceLastPing !== undefined
+                        ? (sess.secondsSinceLastPing < 60
+                            ? `${sess.secondsSinceLastPing}s ago`
+                            : sess.secondsSinceLastPing < 3600
+                            ? `${Math.floor(sess.secondsSinceLastPing / 60)}m ago`
+                            : `${Math.floor(sess.secondsSinceLastPing / 3600)}h ago`)
+                        : 'Just now';
+
                       return (
                         <tr key={sess.id} className="hover:bg-stone-850/50 transition-colors">
-                          <td className="px-4 py-3 font-mono font-bold text-stone-100 flex items-center gap-2">
-                            <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-ping' : 'bg-stone-600'}`} />
-                            <span>{sess.ip}</span>
+                          <td className="px-4 py-3 font-mono font-bold text-stone-100">
+                            <div className="flex items-center gap-2">
+                              <span className={`w-2 h-2 rounded-full shrink-0 ${
+                                isOnline ? 'bg-emerald-400 animate-ping' : isIdle ? 'bg-amber-400' : 'bg-stone-600'
+                              }`} />
+                              <span>{sess.ip}</span>
+                              {isMe && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  You
+                                </span>
+                              )}
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(sess.ip);
+                                  setCopiedIp(sess.ip);
+                                  onToast(`Copied IP: ${sess.ip}`);
+                                  setTimeout(() => setCopiedIp(null), 2000);
+                                }}
+                                className="p-0.5 text-stone-500 hover:text-stone-300 transition-colors cursor-pointer"
+                                title="Copy IP"
+                              >
+                                {copiedIp === sess.ip ? (
+                                  <Check className="w-3 h-3 text-emerald-400" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                              </button>
+                            </div>
+                            <span className="text-[10px] text-stone-500 font-sans block mt-0.5">
+                              {sess.ip === '127.0.0.1' ? 'Local loopback' : 'Public IP Network'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                              isOnline
+                                ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-800'
+                                : isIdle
+                                ? 'bg-amber-950/80 text-amber-300 border border-amber-800'
+                                : 'bg-stone-800 text-stone-400 border border-stone-700'
+                            }`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                isOnline ? 'bg-emerald-400 animate-pulse' : isIdle ? 'bg-amber-400' : 'bg-stone-500'
+                              }`} />
+                              <span>{sess.onlineState}</span>
+                            </span>
                           </td>
                           <td className="px-4 py-3">
                             <span className="font-semibold text-stone-200">{sess.portalName || sess.sessionType}</span>
@@ -985,26 +1188,20 @@ export function AdminHomeOverview({
                             {sess.pingCount || 1} pings
                           </td>
                           <td className="px-4 py-3 text-stone-400 font-mono text-[11px]">
-                            {sess.lastPing ? new Date(sess.lastPing).toLocaleTimeString() : 'Just now'}
-                            {sess.secondsSinceLastPing !== undefined && (
-                              <span className="text-stone-500 ml-1">({sess.secondsSinceLastPing}s ago)</span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                              isOnline
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                : 'bg-stone-800 text-stone-400 border border-stone-700'
-                            }`}>
-                              {sess.onlineState || 'ONLINE'}
-                            </span>
+                            <div className={isOnline ? 'text-emerald-300 font-semibold' : isIdle ? 'text-amber-300' : 'text-stone-400'}>
+                              {timeAgoStr}
+                            </div>
+                            <div className="text-[10px] text-stone-500">
+                              {sess.lastPing ? new Date(sess.lastPing).toLocaleTimeString() : 'Just now'}
+                            </div>
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button
                               onClick={() => onNavigateTab('devices')}
-                              className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 hover:text-emerald-300 font-semibold text-[11px] transition-colors cursor-pointer"
+                              className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 hover:text-emerald-300 font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1"
                             >
-                              Track &rarr;
+                              <span>Track</span>
+                              <ArrowRight className="w-3 h-3" />
                             </button>
                           </td>
                         </tr>

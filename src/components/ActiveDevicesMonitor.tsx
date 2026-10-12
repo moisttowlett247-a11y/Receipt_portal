@@ -39,6 +39,12 @@ import {
   CLOUDFLARE_WORKER_URL
 } from '../licenseSyncService';
 import { sendPresenceHeartbeat } from '../webPresenceService';
+import {
+  fetchUnifiedIpTelemetry,
+  pruneOfflineIps,
+  clearAllIpSessions,
+  TrackedIpSession
+} from '../ipTrackerService';
 
 interface ActiveDevicesMonitorProps {
   licenseKeys: LicenseKeyRecord[];
@@ -80,160 +86,33 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       setIsLoading(true);
       setCfError(null);
     }
-    let loadedSessions: ActiveDeviceSession[] = [];
-    const now = Date.now();
-    const sessionMap = new Map<string, ActiveDeviceSession>();
 
-    // 1. Fetch from Cloudflare KV Edge API (Zero-latency global IP & machine tracker)
     try {
-      const [cfLicenses, cfSessions, health] = await Promise.all([
-        fetchCloudflareLicenses().catch(() => []),
-        fetchCloudflareSessions().catch(() => []),
-        fetchCloudflareHealth().catch(() => ({ online: false, hasDb: false }))
-      ]);
-      
-      if (health) setCfHealth(health as any);
-      if (!health.online && !silent) {
-        setCfError('Cloudflare Edge API unreachable. Verify worker deployment and URL.');
-      } else if (health.online && !(health as any).hasDb && !silent) {
-        setCfError('Cloudflare Worker active but KV database not bound. Check "LICENSES" KV binding.');
-      }
+      // Check Cloudflare health
+      fetchCloudflareHealth().then(health => {
+        if (health) setCfHealth(health as any);
+        if (!health.online && !silent) {
+          setCfError('Cloudflare Edge API unreachable. Using backend real-time telemetry.');
+        }
+      }).catch(() => {});
 
-      // Add actual live heartbeats first (highest priority)
-      if (Array.isArray(cfSessions) && cfSessions.length > 0) {
-        for (const s of cfSessions) {
-          const lastPingMs = s.lastPingMs || (s.lastPing ? new Date(s.lastPing).getTime() : 0);
-          const diffMs = Math.max(0, now - lastPingMs);
-          if (diffMs > 24 * 60 * 60 * 1000) continue; // Skip stale
+      // Fetch unified, deduplicated IP telemetry (strictly 1 entry per unique IP)
+      const telemetry = await fetchUnifiedIpTelemetry();
+      setSessions(telemetry.sessions as any);
+      setLastFetched(new Date());
 
-          const secondsSinceLastPing = Math.floor(diffMs / 1000);
-          let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
-          if (secondsSinceLastPing < 90) onlineState = 'ONLINE';
-          else if (secondsSinceLastPing < 600) onlineState = 'IDLE';
-
-          sessionMap.set(s.id, {
-            ...s,
-            ip: (s.ip && s.ip !== 'Pending Connection' && s.ip !== '127.0.0.1') ? s.ip : 'Detecting...',
-            onlineState,
-            secondsSinceLastPing,
-            isCloudflare: true
-          });
+      if (!silent) {
+        setIsLoading(false);
+        if (showToast) {
+          showToast(`IP Tracker: ${telemetry.onlineCount} Online, ${telemetry.idleCount} Idle, ${telemetry.offlineCount} Offline (${telemetry.uniqueIps} unique IP network(s))`);
         }
       }
-
-      // Add license-linked sessions (can overlap)
-      if (Array.isArray(cfLicenses) && cfLicenses.length > 0) {
-        for (const cf of cfLicenses) {
-          if (!cf.key || !cf.last_seen_at) continue;
-          const lastPingMs = new Date(cf.last_seen_at).getTime();
-          const diffMs = Math.max(0, now - lastPingMs);
-          if (diffMs > 24 * 60 * 60 * 1000) continue; // Skip stale
-
-          const secondsSinceLastPing = Math.floor(diffMs / 1000);
-          let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
-          if (secondsSinceLastPing < 90) onlineState = 'ONLINE';
-          else if (secondsSinceLastPing < 600) onlineState = 'IDLE';
-
-          const rawKey = cf.key;
-          const id = `cf_${rawKey}`;
-          
-          if (!sessionMap.has(id)) {
-            sessionMap.set(id, {
-              id,
-              ip: cf.last_ip && cf.last_ip !== 'Pending Connection' ? cf.last_ip : 'Pending Connection',
-              hash: '',
-              keyMasked: rawKey.length > 8 ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}` : rawKey,
-              rawKey,
-              hwid: cf.hwid || 'Pending HWID',
-              machineName: cf.last_machine || cf.first_activated_machine || 'Workstation',
-              appVersion: '2.4.0',
-              plan: cf.plan || 'Pro',
-              status: cf.status || 'ACTIVE',
-              lastPing: cf.last_seen_at,
-              lastPingMs,
-              firstSeen: cf.first_activated_at || cf.created_at || cf.last_seen_at,
-              pingCount: 5,
-              secondsSinceLastPing,
-              onlineState,
-              location: cf.last_location || undefined,
-              isCloudflare: true
-            });
-          } else {
-            // Merge IP if missing in session but present in license record
-            const existing = sessionMap.get(id)!;
-            if ((!existing.ip || existing.ip.includes('Pending') || existing.ip.includes('Detecting')) && cf.last_ip) {
-              existing.ip = cf.last_ip;
-              existing.location = cf.last_location || existing.location;
-            }
-          }
-        }
+    } catch (err: any) {
+      console.warn('IP telemetry fetch error:', err);
+      if (!silent) {
+        setIsLoading(false);
+        setCfError(err.message || 'Error updating IP telemetry');
       }
-    } catch (cfErr) {
-      console.warn('Cloudflare KV edge fetch notice:', cfErr);
-    }
-
-    // 2. Try server endpoint (local sessions)
-    try {
-      const res = await fetch(getBackendApiUrl() + `/api/licenses/sessions?_t=${now}`, {
-        headers: { 'Cache-Control': 'no-cache, no-store' }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && Array.isArray(data.sessions)) {
-          for (const s of data.sessions) {
-            const lastPingMs = s.lastPingMs || new Date(s.lastPing).getTime() || 0;
-            const diffMs = Math.max(0, now - lastPingMs);
-            if (diffMs > 24 * 60 * 60 * 1000) continue; // Skip stale sessions older than 24 hours
-
-            const secondsSinceLastPing = Math.max(0, Math.floor(diffMs / 1000));
-            let onlineState: 'ONLINE' | 'IDLE' | 'OFFLINE' = 'OFFLINE';
-            if (diffMs < 90000) {
-              onlineState = 'ONLINE';
-            } else if (diffMs < 600000) {
-              onlineState = 'IDLE';
-            }
-
-            const k = s.rawKey || s.keyMasked || s.id;
-            if (sessionMap.has(k)) {
-              // Merge details
-              const existing = sessionMap.get(k)!;
-              sessionMap.set(k, {
-                ...existing,
-                ip: (s.ip && s.ip !== '127.0.0.1' && s.ip !== 'Pending Connection' && s.ip !== 'Detecting...') ? s.ip : existing.ip,
-                machineName: s.machineName || existing.machineName,
-                hwid: (s.hwid && s.hwid !== 'Pending HWID' && !s.hwid.includes('PORTAL')) ? s.hwid : existing.hwid,
-                pingCount: Math.max(existing.pingCount, s.pingCount || 1),
-                secondsSinceLastPing: Math.min(existing.secondsSinceLastPing, secondsSinceLastPing),
-                onlineState: existing.onlineState === 'ONLINE' ? 'ONLINE' : onlineState
-              });
-            } else {
-              sessionMap.set(s.id || `${s.ip}_${s.hash}`, {
-                ...s,
-                ip: (s.ip && s.ip !== '127.0.0.1' && s.ip !== 'Pending Connection') ? s.ip : 'Detecting...',
-                onlineState: s.onlineState || onlineState,
-                secondsSinceLastPing
-              });
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('Local sessions endpoint unreachable:', err);
-    }
-
-    loadedSessions = Array.from(sessionMap.values());
-    // Sort online first, then by last ping
-    loadedSessions.sort((a, b) => {
-      if (a.onlineState === 'ONLINE' && b.onlineState !== 'ONLINE') return -1;
-      if (b.onlineState === 'ONLINE' && a.onlineState !== 'ONLINE') return 1;
-      return (b.lastPingMs || 0) - (a.lastPingMs || 0);
-    });
-
-    setSessions(loadedSessions);
-    setLastFetched(new Date());
-    if (!silent) {
-      setIsLoading(false);
-      if (showToast) showToast(`Device tracker refreshed (${loadedSessions.length} total workstation(s))`);
     }
   }, [showToast]);
 
@@ -245,7 +124,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
 
     const timer = setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) {
-        return; // Don't burn Cloudflare requests while tab is minimized or in background
+        return; // Don't burn requests while tab is minimized or in background
       }
       fetchSessions(true);
     }, autoRefreshInterval * 1000);
@@ -264,27 +143,24 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   // Prune offline or clear sessions
   const handlePruneSessions = async (clearAll = false) => {
     if (clearAll) {
-      if (!window.confirm('Are you sure you want to clear all workstation session history?')) {
+      if (!window.confirm('Are you sure you want to clear all IP telemetry records?')) {
         return;
       }
       setSessions([]);
     }
     setIsPruning(true);
     try {
-      // 1. Prune Cloudflare KV Edge sessions
-      pruneCloudflareSessions(clearAll).catch(err => console.warn('CF prune notice:', err));
-
-      // 2. Prune local backend sessions
-      const res = await fetch('/api/licenses/sessions/clear', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clearAll })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (showToast) showToast(data.message || (clearAll ? 'All sessions cleared' : 'Inactive sessions pruned'));
-        await fetchSessions(true);
+      if (clearAll) {
+        await clearAllIpSessions();
+        pruneCloudflareSessions(true).catch(() => {});
+      } else {
+        await pruneOfflineIps();
+        pruneCloudflareSessions(false).catch(() => {});
       }
+      if (showToast) {
+        showToast(clearAll ? 'All IP session history cleared' : 'Inactive offline IP records pruned');
+      }
+      await fetchSessions(true);
     } catch (err: any) {
       if (showToast) showToast(`Failed to update sessions: ${err.message}`);
     } finally {
