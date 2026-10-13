@@ -45,6 +45,12 @@ interface CompanyRecord {
   accessValidRemainingSec: number;
   rollingDaysRemaining: number;
   assignedToKey?: string | null;
+  isActiveWorking?: boolean;
+  syncedAccounts?: string[];
+  selectedWorkingAccount?: string;
+  targetChartOfAccounts?: string;
+  chartOfAccountsCategory?: 'FARM' | 'COMMERCIAL';
+  accountMappings?: Record<string, string>;
 }
 
 interface QboConfigState {
@@ -123,6 +129,18 @@ const DEFAULT_ACCOUNT_MAPPINGS: Record<string, string> = {
   'Line 25 (C)': 'Utilities',
   'Line 27 (C)': 'Other business expenses'
 };
+
+const STANDARD_SYNC_PRESETS = [
+  'Operating Checking (Acct ****4120)',
+  'Farm Operating & Expense Ledger',
+  'Commercial Fleet & Fuel Account (Acct ****6021)',
+  'Agricultural Payroll Reserve',
+  'Commercial Equipment Financing (Acct ****8812)',
+  'Grain & Crop Sales Settlement Acct',
+  'Livestock & Cattle Trading Ledger',
+  'Farm Improvements & Maintenance Reserve',
+  'General Business Operating Acct (Acct ****1092)'
+];
 
 async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
   try {
@@ -276,6 +294,16 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     return DEFAULT_ACCOUNT_MAPPINGS;
   });
   const [liveAccounts, setLiveAccounts] = useState<any[]>([]);
+  const [qboFarmAccounts, setQboFarmAccounts] = useState<any[]>([]);
+  const [qboBusinessAccounts, setQboBusinessAccounts] = useState<any[]>([]);
+  const [qboBankAccounts, setQboBankAccounts] = useState<any[]>([]);
+  const [targetChartType, setTargetChartType] = useState<'FARM' | 'COMMERCIAL' | 'CUSTOM'>('FARM');
+  const [selectedPaymentAccount, setSelectedPaymentAccount] = useState<string>('Operating Checking (Acct ****4120)');
+  const [defaultFallbackAccount, setDefaultFallbackAccount] = useState<string>('Other farm expenses');
+  const [newSyncedAccountInput, setNewSyncedAccountInput] = useState<string>('');
+  const [showAddAccountForRealm, setShowAddAccountForRealm] = useState<string | null>(null);
+  const [showChartExplorer, setShowChartExplorer] = useState(false);
+
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
   const [selectedPushRealmId, setSelectedPushRealmId] = useState<string>('');
   const [isPushingReceipts, setIsPushingReceipts] = useState(false);
@@ -327,18 +355,34 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
 
   const fetchCompanies = async () => {
     setIsRefreshing(true);
+    let loadedComps: CompanyRecord[] = [];
     const result = await safeFetchJson<{ companies: CompanyRecord[] }>('/api/qbo/companies');
-    if (result.ok && result.data?.companies) {
-      setCompanies(result.data.companies);
-      saveLocalCompanies(result.data.companies);
-      if (!selectedPushRealmId && result.data.companies.length > 0) {
-        setSelectedPushRealmId(result.data.companies[0].realmId);
-      }
+    if (result.ok && result.data?.companies && result.data.companies.length > 0) {
+      loadedComps = result.data.companies;
     } else {
-      const localComps = getLocalCompanies();
-      setCompanies(localComps);
-      if (!selectedPushRealmId && localComps.length > 0) {
-        setSelectedPushRealmId(localComps[0].realmId);
+      loadedComps = getLocalCompanies();
+    }
+
+    if (loadedComps.length > 0) {
+      setCompanies(loadedComps);
+      saveLocalCompanies(loadedComps);
+      const storedActiveRealm = localStorage.getItem('receipt_processor_qbo_active_realm_v1');
+      const active = (storedActiveRealm ? loadedComps.find(c => c.realmId === storedActiveRealm) : null)
+        || loadedComps.find(c => c.isActiveWorking)
+        || loadedComps.find(c => c.realmId === selectedPushRealmId)
+        || loadedComps[0];
+      if (active) {
+        setSelectedPushRealmId(active.realmId);
+        const storedActiveAccount = localStorage.getItem('receipt_processor_qbo_active_account_v1');
+        const currentAcc = (storedActiveAccount && active.syncedAccounts?.includes(storedActiveAccount))
+          ? storedActiveAccount
+          : (active.selectedWorkingAccount || (active.syncedAccounts && active.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)');
+        setSelectedPaymentAccount(currentAcc);
+        if (active.chartOfAccountsCategory === 'COMMERCIAL') {
+          setTargetChartType('COMMERCIAL');
+        } else {
+          setTargetChartType('FARM');
+        }
       }
     }
     setIsRefreshing(false);
@@ -366,6 +410,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     fetchConfig();
     fetchCompanies();
     fetchSyncLogs();
+    fetchLiveQboAccounts();
     refreshPendingReceipts();
     const interval = setInterval(() => {
       fetchCompanies();
@@ -915,9 +960,12 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     const targetRealm = selectedPushRealmId || (companies[0]?.realmId || '');
     try {
       const resp = await safeFetchJson<any>(`/api/qbo/accounts?realmId=${encodeURIComponent(targetRealm)}`);
-      if (resp.ok && resp.data?.liveAccounts && resp.data.liveAccounts.length > 0) {
-        setLiveAccounts(resp.data.liveAccounts);
-        showToast(`Loaded ${resp.data.liveAccounts.length} live accounts from QuickBooks!`);
+      if (resp.ok && resp.data) {
+        if (Array.isArray(resp.data.farmAccounts)) setQboFarmAccounts(resp.data.farmAccounts);
+        if (Array.isArray(resp.data.businessAccounts)) setQboBusinessAccounts(resp.data.businessAccounts);
+        if (Array.isArray(resp.data.bankAccounts)) setQboBankAccounts(resp.data.bankAccounts);
+        if (Array.isArray(resp.data.liveAccounts)) setLiveAccounts(resp.data.liveAccounts);
+        showToast(`Loaded ${resp.data.totalStandard || 34} standard & live Chart of Accounts!`);
       } else {
         showToast('Connected company has 28 standard Chart of Accounts mappings available.');
       }
@@ -926,6 +974,135 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     } finally {
       setIsLoadingAccounts(false);
     }
+  };
+
+  const handleSelectActiveCompany = async (realmId: string, customAccount?: string) => {
+    setSelectedPushRealmId(realmId);
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    const acc = customAccount || comp.selectedWorkingAccount || (comp.syncedAccounts && comp.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)';
+    setSelectedPaymentAccount(acc);
+    if (comp.chartOfAccountsCategory === 'COMMERCIAL') {
+      setTargetChartType('COMMERCIAL');
+    } else {
+      setTargetChartType('FARM');
+    }
+
+    try {
+      localStorage.setItem('receipt_processor_qbo_active_realm_v1', realmId);
+      localStorage.setItem('receipt_processor_qbo_active_account_v1', acc);
+    } catch {}
+
+    const updated = companies.map(c => ({
+      ...c,
+      isActiveWorking: c.realmId === realmId,
+      selectedWorkingAccount: c.realmId === realmId ? acc : c.selectedWorkingAccount
+    }));
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, selectedWorkingAccount: acc })
+      });
+    } catch {}
+
+    showToast(`Active working account set to: ${comp.companyName} (${acc})`);
+  };
+
+  const handleToggleSyncedAccount = async (realmId: string, accountName: string) => {
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    const currentAccounts = comp.syncedAccounts || [
+      'Operating Checking (Acct ****4120)',
+      'Farm Operating & Expense Ledger',
+      'Commercial Equipment Financing (Acct ****8812)',
+      'Agricultural Payroll Reserve'
+    ];
+
+    let nextAccounts: string[];
+    if (currentAccounts.includes(accountName)) {
+      if (currentAccounts.length <= 1) {
+        showToast('At least one account must remain synced.');
+        return;
+      }
+      nextAccounts = currentAccounts.filter(a => a !== accountName);
+      showToast(`Removed "${accountName}" from sync pipeline.`);
+    } else {
+      nextAccounts = [...currentAccounts, accountName];
+      showToast(`Added "${accountName}" to sync pipeline.`);
+    }
+
+    const updated = companies.map(c => 
+      c.realmId === realmId ? { ...c, syncedAccounts: nextAccounts } : c
+    );
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/update-synced-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, syncedAccounts: nextAccounts })
+      });
+    } catch {}
+  };
+
+  const handleAddCustomSyncedAccount = async (realmId: string, customName: string) => {
+    if (!customName.trim()) return;
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    const current = comp.syncedAccounts || [];
+    if (current.includes(customName.trim())) {
+      showToast('Account is already in synced list.');
+      return;
+    }
+
+    const next = [...current, customName.trim()];
+    const updated = companies.map(c => 
+      c.realmId === realmId ? { ...c, syncedAccounts: next } : c
+    );
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/update-synced-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, syncedAccounts: next })
+      });
+    } catch {}
+
+    setNewSyncedAccountInput('');
+    setShowAddAccountForRealm(null);
+    showToast(`Added "${customName.trim()}" to synced accounts pipeline.`);
+  };
+
+  const handleSelectTargetChartOfAccounts = async (realmId: string, chartName: string, category: 'FARM' | 'COMMERCIAL') => {
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    setTargetChartType(category);
+    const updated = companies.map(c => 
+      c.realmId === realmId ? { ...c, targetChartOfAccounts: chartName, chartOfAccountsCategory: category } : c
+    );
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/update-synced-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, targetChartOfAccounts: chartName, chartOfAccountsCategory: category })
+      });
+    } catch {}
+
+    showToast(`Target Chart of Accounts set to: ${chartName}`);
   };
 
   const handleSaveAccountMappings = () => {
@@ -951,6 +1128,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
 
   const pendingApprovedReceipts = pendingLedgerReceipts.filter((r: any) => r.status !== 'REJECTED');
   const pendingTotalAmount = pendingApprovedReceipts.reduce((sum: number, r: any) => sum + (parseFloat(r.total || '0') || 0), 0);
+  const activeWorkingCompany = companies.find(c => c.realmId === selectedPushRealmId) || companies[0];
 
   return (
     <div className="space-y-6">
@@ -1028,6 +1206,128 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         <div className="flex items-center gap-2 px-2 text-xs text-stone-400 font-mono hidden md:flex">
           <Lock className="w-3.5 h-3.5 text-emerald-400" />
           <span>OAuth 2.0 • Rolling 101 Days</span>
+        </div>
+      </div>
+
+      {/* PERSISTENT TOP-LEVEL ACTIVE WORKING COMPANY & ACCOUNT CONTROL BAR */}
+      <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-stone-900 via-stone-900 to-emerald-950/20 border border-emerald-500/30 shadow-lg flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="space-y-1.5 max-w-xl">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Active Working Account
+            </span>
+            {activeWorkingCompany && (
+              <span className="text-[11px] font-mono text-stone-400">
+                Realm: {activeWorkingCompany.realmId} • {activeWorkingCompany.environment.toUpperCase()}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Building2 className="w-5 h-5 text-[#2CA01C] shrink-0" />
+            <h3 className="text-base sm:text-lg font-bold text-stone-100 truncate">
+              {activeWorkingCompany ? activeWorkingCompany.companyName : 'Select QuickBooks Account to Work On'}
+            </h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-stone-400">
+            <span className="text-amber-300 font-semibold flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+              Active Ledger: {selectedPaymentAccount || 'Operating Checking (Acct ****4120)'}
+            </span>
+            <span>·</span>
+            <span className="text-sky-300 font-mono text-[11px]">
+              {activeWorkingCompany?.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)'}
+            </span>
+            <span>·</span>
+            <span className="text-stone-300 font-mono text-[11px]">
+              {activeWorkingCompany?.rollingDaysRemaining || 101}d rolling renewal
+            </span>
+          </div>
+        </div>
+
+        {/* Account Selector & Quick Action Controls */}
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          {companies.length > 0 && (
+            <div className="space-y-1">
+              <label className="text-[10px] font-mono uppercase tracking-wider text-stone-400 block font-semibold">
+                Choose Account to Work On:
+              </label>
+              <select
+                value={`${selectedPushRealmId}::${selectedPaymentAccount}`}
+                onChange={(e) => {
+                  const [realmId, acc] = e.target.value.split('::');
+                  if (realmId) handleSelectActiveCompany(realmId, acc);
+                }}
+                className="px-3 py-2 bg-stone-950 border border-emerald-500/50 hover:border-emerald-400 rounded-xl text-xs font-bold text-emerald-300 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer min-w-[240px]"
+                title="Select company and account to work on"
+              >
+                {companies.map((c) => (
+                  <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
+                    {(c.syncedAccounts && c.syncedAccounts.length > 0
+                      ? c.syncedAccounts
+                      : ['Operating Checking (Acct ****4120)']
+                    ).map((acc) => (
+                      <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                        {c.companyName} • {acc}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Quick Chart of Accounts to Sync To */}
+          <div className="space-y-1">
+            <label className="text-[10px] font-mono uppercase tracking-wider text-stone-400 block font-semibold">
+              Syncing To Chart:
+            </label>
+            <div className="flex items-center gap-1 bg-stone-950 border border-stone-800 rounded-xl p-1">
+              <button
+                type="button"
+                onClick={() => handleSelectTargetChartOfAccounts(selectedPushRealmId, 'Schedule F Agricultural Standard (28 Accounts)', 'FARM')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  targetChartType === 'FARM'
+                    ? 'bg-amber-600 text-white shadow'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+                title="Sync expenses to Schedule F Farm tax accounts"
+              >
+                🌾 Schedule F Farm
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectTargetChartOfAccounts(selectedPushRealmId, 'Schedule C Commercial Standard (24 Accounts)', 'COMMERCIAL')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  targetChartType === 'COMMERCIAL'
+                    ? 'bg-sky-600 text-white shadow'
+                    : 'text-stone-400 hover:text-stone-200'
+                }`}
+                title="Sync expenses to Schedule C Business tax accounts"
+              >
+                🏢 Schedule C Business
+              </button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 pt-2 sm:pt-0">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('sync')}
+              className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs transition-all shadow flex items-center gap-1.5 cursor-pointer"
+            >
+              <Send className="w-3.5 h-3.5" />
+              <span>Direct Push</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('mapping')}
+              className="px-3.5 py-2 rounded-xl bg-sky-700 hover:bg-sky-600 text-white font-bold text-xs transition-all shadow flex items-center gap-1.5 cursor-pointer"
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Chart of Accounts</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1693,123 +1993,292 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                     {companies.map((c) => {
                       const isConnected = c.status === 'CONNECTED';
                       const isTesting = testingRealmId === c.realmId;
+                      const isActiveWorking = c.realmId === selectedPushRealmId;
+                      const syncedAccs = c.syncedAccounts || [
+                        'Operating Checking (Acct ****4120)',
+                        'Farm Operating & Expense Ledger',
+                        'Commercial Equipment Financing (Acct ****8812)',
+                        'Agricultural Payroll Reserve'
+                      ];
+                      const targetChart = c.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)';
 
                       return (
-                        <tr key={c.realmId} className="hover:bg-stone-800/30 transition-colors">
-                          <td className="py-3 px-4">
-                            <div className="font-semibold text-stone-200 text-xs flex items-center gap-1.5">
-                              <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                              <span>{c.companyName}</span>
-                            </div>
-                            {c.legalName && c.legalName !== c.companyName && (
-                              <span className="text-[11px] text-stone-400 block mt-0.5">{c.legalName}</span>
-                            )}
-                            {c.email && (
-                              <span className="text-[10px] font-mono text-stone-500 block">{c.email}</span>
-                            )}
-                          </td>
-
-                          <td className="py-3 px-3 font-mono text-stone-300">
-                            <div className="flex items-center gap-1">
-                              <span>{c.realmId}</span>
-                              <button
-                                type="button"
-                                onClick={() => handleCopy(c.realmId, 'Realm ID')}
-                                className="text-stone-500 hover:text-stone-300 p-0.5 cursor-pointer"
-                                title="Copy Realm ID"
-                              >
-                                <Copy className="w-2.5 h-2.5" />
-                              </button>
-                            </div>
-                          </td>
-
-                          <td className="py-3 px-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
-                              <span className={`font-semibold text-[11px] ${isConnected ? 'text-emerald-300' : 'text-stone-400'}`}>
-                                {c.status}
-                              </span>
-                              <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-stone-800 text-stone-400 uppercase">
-                                {c.environment}
-                              </span>
-                            </div>
-                          </td>
-
-                          <td className="py-3 px-3">
-                            <div className="flex items-center gap-1 text-[11px] text-stone-300">
-                              <Clock className="w-3 h-3 text-emerald-400 shrink-0" />
-                              <span className="font-mono">{c.rollingDaysRemaining} days remaining</span>
-                            </div>
-                            <span className="text-[10px] text-stone-500 block">Resets on sync</span>
-                          </td>
-
-                          <td className="py-3 px-3">
-                            {isConnected ? (
-                              c.accessValidRemainingSec > 0 ? (
-                                <span className="text-emerald-400 font-mono text-[11px]">
-                                  Active ({Math.round(c.accessValidRemainingSec / 60)}m left)
-                                </span>
-                              ) : (
-                                <span className="text-amber-400 font-mono text-[11px]">
-                                  Auto-Refreshes On-Demand
-                                </span>
-                              )
-                            ) : (
-                              <span className="text-stone-500 text-[11px]">Revoked</span>
-                            )}
-                          </td>
-
-                          <td className="py-3 px-4 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              {isConnected && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => handlePushToCompany(c.realmId, c.companyName)}
-                                    disabled={isPushingReceipts}
-                                    className="px-2.5 py-1 rounded bg-[#2CA01C] hover:bg-[#238016] text-white text-[11px] font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1 border border-[#238016]"
-                                    title="Push approved scanned receipts directly to this QuickBooks company"
-                                  >
-                                    <Send className="w-3 h-3" />
-                                    <span>Push</span>
-                                  </button>
-
-                                  <a
-                                    href={c.environment === 'sandbox' ? `https://sandbox.qbo.intuit.com/app/homepage` : `https://app.qbo.intuit.com/app/homepage`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-sky-400 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
-                                    title="Open QuickBooks Online in new tab"
-                                  >
-                                    <ExternalLink className="w-3 h-3" />
-                                    <span>Intuit</span>
-                                  </a>
-
-                                  <button
-                                    type="button"
-                                    onClick={() => handleTestToken(c.realmId, c.companyName)}
-                                    disabled={isTesting}
-                                    className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
-                                    title="Test Token Broker handshake"
-                                  >
-                                    <RefreshCw className={`w-3 h-3 ${isTesting ? 'animate-spin' : ''}`} />
-                                    <span>Test</span>
-                                  </button>
-                                </>
+                        <React.Fragment key={c.realmId}>
+                          <tr className={`transition-colors ${isActiveWorking ? 'bg-emerald-950/20' : 'hover:bg-stone-800/30'}`}>
+                            <td className="py-3 px-4">
+                              <div className="flex items-center gap-2">
+                                <Building2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                <span className="font-semibold text-stone-200 text-xs">{c.companyName}</span>
+                                {isActiveWorking && (
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                    ACTIVE WORKING
+                                  </span>
+                                )}
+                              </div>
+                              {c.legalName && c.legalName !== c.companyName && (
+                                <span className="text-[11px] text-stone-400 block mt-0.5">{c.legalName}</span>
                               )}
+                              <div className="text-[10px] text-amber-300 font-mono mt-0.5">
+                                Active Account: {c.selectedWorkingAccount || syncedAccs[0]}
+                              </div>
+                            </td>
 
-                              <button
-                                type="button"
-                                onClick={() => handleDisconnect(c.realmId, c.companyName)}
-                                className="px-2.5 py-1 rounded bg-red-950/40 hover:bg-red-900/60 text-red-300 text-[11px] font-medium border border-red-800/40 transition-colors cursor-pointer flex items-center gap-1"
-                                title="Disconnect from QuickBooks & Revoke Token"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                                <span>Disconnect</span>
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
+                            <td className="py-3 px-3 font-mono text-stone-300">
+                              <div className="flex items-center gap-1">
+                                <span>{c.realmId}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(c.realmId, 'Realm ID')}
+                                  className="text-stone-500 hover:text-stone-300 p-0.5 cursor-pointer"
+                                  title="Copy Realm ID"
+                                >
+                                  <Copy className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            </td>
+
+                            <td className="py-3 px-3">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400 animate-pulse' : 'bg-red-400'}`} />
+                                <span className={`font-semibold text-[11px] ${isConnected ? 'text-emerald-300' : 'text-stone-400'}`}>
+                                  {c.status}
+                                </span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-stone-800 text-stone-400 uppercase">
+                                  {c.environment}
+                                </span>
+                              </div>
+                            </td>
+
+                            <td className="py-3 px-3">
+                              <div className="flex items-center gap-1 text-[11px] text-stone-300">
+                                <Clock className="w-3 h-3 text-emerald-400 shrink-0" />
+                                <span className="font-mono">{c.rollingDaysRemaining} days remaining</span>
+                              </div>
+                              <span className="text-[10px] text-stone-500 block">Resets on sync</span>
+                            </td>
+
+                            <td className="py-3 px-3">
+                              {isConnected ? (
+                                c.accessValidRemainingSec > 0 ? (
+                                  <span className="text-emerald-400 font-mono text-[11px]">
+                                    Active ({Math.round(c.accessValidRemainingSec / 60)}m left)
+                                  </span>
+                                ) : (
+                                  <span className="text-amber-400 font-mono text-[11px]">
+                                    Auto-Refreshes On-Demand
+                                  </span>
+                                )
+                              ) : (
+                                <span className="text-stone-500 text-[11px]">Revoked</span>
+                              )}
+                            </td>
+
+                            <td className="py-3 px-4 text-right">
+                              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                {!isActiveWorking && isConnected && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectActiveCompany(c.realmId)}
+                                    className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-300 text-[11px] font-semibold border border-stone-700 transition-colors cursor-pointer"
+                                  >
+                                    Set Active
+                                  </button>
+                                )}
+
+                                {isConnected && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => handlePushToCompany(c.realmId, c.companyName)}
+                                      disabled={isPushingReceipts}
+                                      className="px-2.5 py-1 rounded bg-[#2CA01C] hover:bg-[#238016] text-white text-[11px] font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1 border border-[#238016]"
+                                      title="Push approved scanned receipts directly to this QuickBooks company"
+                                    >
+                                      <Send className="w-3 h-3" />
+                                      <span>Push</span>
+                                    </button>
+
+                                    <a
+                                      href={c.environment === 'sandbox' ? `https://sandbox.qbo.intuit.com/app/homepage` : `https://app.qbo.intuit.com/app/homepage`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-sky-400 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                                      title="Open QuickBooks Online in new tab"
+                                    >
+                                      <ExternalLink className="w-3 h-3" />
+                                      <span>Intuit</span>
+                                    </a>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => handleTestToken(c.realmId, c.companyName)}
+                                      disabled={isTesting}
+                                      className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 text-[11px] font-medium transition-colors cursor-pointer flex items-center gap-1"
+                                      title="Test Token Broker handshake"
+                                    >
+                                      <RefreshCw className={`w-3 h-3 ${isTesting ? 'animate-spin' : ''}`} />
+                                      <span>Test</span>
+                                    </button>
+                                  </>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleDisconnect(c.realmId, c.companyName)}
+                                  className="px-2.5 py-1 rounded bg-red-950/40 hover:bg-red-900/60 text-red-300 text-[11px] font-medium border border-red-800/40 transition-colors cursor-pointer flex items-center gap-1"
+                                  title="Disconnect from QuickBooks & Revoke Token"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                  <span>Disconnect</span>
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {/* Sub-row: Synced Accounts Manager & Target Chart of Accounts */}
+                          <tr className="bg-stone-950/40 border-b border-stone-800/80">
+                            <td colSpan={6} className="px-4 py-2.5">
+                              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+                                <div className="space-y-1">
+                                  <span className="text-[10px] uppercase font-mono font-bold text-stone-400 flex items-center gap-1.5">
+                                    <Layers className="w-3 h-3 text-emerald-400" />
+                                    Choose What QuickBooks Accounts You Are Synced To ({syncedAccs.length}):
+                                  </span>
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    {syncedAccs.map((acc, aIdx) => {
+                                      const isAccActive = c.selectedWorkingAccount === acc || (!c.selectedWorkingAccount && aIdx === 0);
+                                      return (
+                                        <div
+                                          key={aIdx}
+                                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all border ${
+                                            isAccActive
+                                              ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-200'
+                                              : 'bg-stone-900 border-stone-700 text-stone-300'
+                                          }`}
+                                        >
+                                          <button
+                                            type="button"
+                                            onClick={() => handleSelectActiveCompany(c.realmId, acc)}
+                                            className="font-semibold hover:text-white flex items-center gap-1 cursor-pointer"
+                                            title="Click to work on this account"
+                                          >
+                                            <span className={`w-1.5 h-1.5 rounded-full ${isAccActive ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                                            <span>{acc}</span>
+                                            {isAccActive && <span className="text-[9px] text-amber-300">(Active)</span>}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleToggleSyncedAccount(c.realmId, acc)}
+                                            className="text-stone-500 hover:text-red-400 cursor-pointer ml-1"
+                                            title="Remove from sync pipeline"
+                                          >
+                                            <X className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      );
+                                    })}
+
+                                    {/* Add Synced Account Button / Form */}
+                                    {showAddAccountForRealm === c.realmId ? (
+                                      <div className="inline-flex items-center gap-1.5 bg-stone-900 p-1.5 rounded-lg border border-emerald-500/60 shadow-lg">
+                                        <select
+                                          onChange={e => {
+                                            if (e.target.value) handleAddCustomSyncedAccount(c.realmId, e.target.value);
+                                          }}
+                                          className="px-2 py-1 rounded bg-stone-950 border border-stone-700 text-stone-200 text-xs font-mono cursor-pointer"
+                                          defaultValue=""
+                                        >
+                                          <option value="" disabled>Choose Preset Account...</option>
+                                          {STANDARD_SYNC_PRESETS.filter(p => !syncedAccs.includes(p)).map((p, pIdx) => (
+                                            <option key={pIdx} value={p}>{p}</option>
+                                          ))}
+                                          {qboBankAccounts.filter((b: any) => !syncedAccs.includes(b.name)).map((b: any, bIdx: number) => (
+                                            <option key={`bank_${bIdx}`} value={b.name}>{b.name} ({b.subType || b.qboType})</option>
+                                          ))}
+                                        </select>
+                                        <input
+                                          type="text"
+                                          value={newSyncedAccountInput}
+                                          onChange={e => setNewSyncedAccountInput(e.target.value)}
+                                          placeholder="Or custom account name..."
+                                          className="px-2 py-1 rounded bg-stone-950 border border-stone-700 text-stone-200 text-xs font-mono focus:outline-none w-48"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => handleAddCustomSyncedAccount(c.realmId, newSyncedAccountInput)}
+                                          className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold cursor-pointer"
+                                        >
+                                          Add
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setShowAddAccountForRealm(null);
+                                            setNewSyncedAccountInput('');
+                                          }}
+                                          className="text-stone-500 hover:text-stone-300 text-xs cursor-pointer px-1"
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => setShowAddAccountForRealm(c.realmId)}
+                                        className="px-2 py-1 rounded bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-emerald-300 text-[10px] font-mono border border-stone-800 hover:border-stone-700 cursor-pointer"
+                                      >
+                                        + Add Account to Sync
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2.5 shrink-0 pt-1 lg:pt-0">
+                                  <div className="text-right">
+                                    <span className="text-[10px] uppercase font-mono text-stone-500 block">
+                                      What Chart of Accounts it Syncs to:
+                                    </span>
+                                    <div className="flex items-center gap-1 mt-0.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelectTargetChartOfAccounts(c.realmId, 'Schedule F Agricultural Standard (28 Accounts)', 'FARM')}
+                                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                                          targetChart.includes('Schedule F')
+                                            ? 'bg-amber-600/30 text-amber-300 border border-amber-500/50'
+                                            : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                                        }`}
+                                      >
+                                        🌾 Schedule F Farm
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelectTargetChartOfAccounts(c.realmId, 'Schedule C Commercial Standard (24 Accounts)', 'COMMERCIAL')}
+                                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-all cursor-pointer ${
+                                          targetChart.includes('Schedule C')
+                                            ? 'bg-sky-600/30 text-sky-300 border border-sky-500/50'
+                                            : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                                        }`}
+                                      >
+                                        🏢 Schedule C Business
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleSelectActiveCompany(c.realmId);
+                                      setActiveSubTab('mapping');
+                                    }}
+                                    className="px-2.5 py-1 rounded bg-sky-950/60 hover:bg-sky-900/60 text-sky-300 border border-sky-800/50 text-[11px] font-semibold transition-colors cursor-pointer flex items-center gap-1 shrink-0"
+                                  >
+                                    <Sliders className="w-3 h-3" />
+                                    <span>Map Accounts</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -1888,22 +2357,32 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
               </div>
             </div>
 
-            {/* Target Company Selector & Metric Cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6 pt-5 border-t border-stone-800">
+            {/* Target Company, Working Account & Chart of Accounts Selector Bar */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-5 border-t border-stone-800">
               <div className="p-4 rounded-xl bg-stone-950/80 border border-stone-800 space-y-1">
                 <label className="text-[11px] text-stone-400 uppercase tracking-wider block font-semibold">
-                  Target QuickBooks Company:
+                  Choose Account to Work On / Sync To:
                 </label>
                 {connectedList.length > 0 ? (
                   <select
-                    value={selectedPushRealmId || connectedList[0]?.realmId}
-                    onChange={(e) => setSelectedPushRealmId(e.target.value)}
-                    className="w-full mt-1 px-3 py-2 bg-stone-900 border border-stone-700 rounded-lg text-xs font-semibold text-emerald-300 focus:outline-none focus:border-emerald-500"
+                    value={`${selectedPushRealmId}::${selectedPaymentAccount}`}
+                    onChange={(e) => {
+                      const [realmId, acc] = e.target.value.split('::');
+                      if (realmId) handleSelectActiveCompany(realmId, acc);
+                    }}
+                    className="w-full mt-1 px-3 py-2 bg-stone-900 border border-stone-700 rounded-lg text-xs font-semibold text-emerald-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
                   >
                     {connectedList.map(c => (
-                      <option key={c.realmId} value={c.realmId}>
-                        {c.companyName} ({c.realmId}) - {c.environment}
-                      </option>
+                      <optgroup key={c.realmId} label={`${c.companyName} (${c.environment})`}>
+                        {(c.syncedAccounts && c.syncedAccounts.length > 0
+                          ? c.syncedAccounts
+                          : ['Operating Checking (Acct ****4120)']
+                        ).map(acc => (
+                          <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                            {c.companyName} • {acc}
+                          </option>
+                        ))}
+                      </optgroup>
                     ))}
                   </select>
                 ) : (
@@ -1913,24 +2392,155 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                 )}
               </div>
 
-              <div className="p-4 rounded-xl bg-stone-950/80 border border-stone-800">
-                <span className="text-[11px] text-stone-400 uppercase tracking-wider block font-semibold">
-                  Approved Receipts Ready
-                </span>
-                <div className="text-xl font-bold text-emerald-400 font-mono mt-1">
-                  {pendingApprovedReceipts.length} <span className="text-xs font-normal text-stone-400">transactions</span>
+              <div className="p-4 rounded-xl bg-stone-950/80 border border-stone-800 space-y-1">
+                <label className="text-[11px] text-stone-400 uppercase tracking-wider block font-semibold">
+                  What Chart of Accounts to Sync To:
+                </label>
+                <div className="flex items-center gap-1.5 mt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTargetChartOfAccounts(selectedPushRealmId, 'Schedule F Agricultural Standard (28 Accounts)', 'FARM')}
+                    className={`flex-1 py-2 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer text-center ${
+                      targetChartType === 'FARM'
+                        ? 'bg-amber-600 text-white shadow border border-amber-400'
+                        : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                    }`}
+                  >
+                    🌾 Schedule F Farm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTargetChartOfAccounts(selectedPushRealmId, 'Schedule C Commercial Standard (24 Accounts)', 'COMMERCIAL')}
+                    className={`flex-1 py-2 px-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer text-center ${
+                      targetChartType === 'COMMERCIAL'
+                        ? 'bg-sky-600 text-white shadow border border-sky-400'
+                        : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                    }`}
+                  >
+                    🏢 Schedule C Business
+                  </button>
                 </div>
               </div>
 
-              <div className="p-4 rounded-xl bg-stone-950/80 border border-stone-800">
-                <span className="text-[11px] text-stone-400 uppercase tracking-wider block font-semibold">
-                  Total Deductible Value
-                </span>
-                <div className="text-xl font-bold text-stone-100 font-mono mt-1">
-                  ${pendingTotalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <div className="p-4 rounded-xl bg-stone-950/80 border border-stone-800 flex items-center justify-between">
+                <div>
+                  <span className="text-[11px] text-stone-400 uppercase tracking-wider block font-semibold">
+                    Approved Receipts Ready
+                  </span>
+                  <div className="text-xl font-bold text-emerald-400 font-mono mt-0.5">
+                    {pendingApprovedReceipts.length} <span className="text-xs font-normal text-stone-400">transactions</span>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <span className="text-[11px] text-stone-400 uppercase tracking-wider block font-semibold">
+                    Deductible Total
+                  </span>
+                  <div className="text-xl font-bold text-stone-100 font-mono mt-0.5">
+                    ${pendingTotalAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
                 </div>
               </div>
             </div>
+
+            {/* Synced Accounts Pipeline Strip in Sub-Tab 2 */}
+            {(() => {
+              const currentComp = companies.find(c => c.realmId === selectedPushRealmId) || companies[0];
+              if (!currentComp) return null;
+              const syncedList = currentComp.syncedAccounts || ['Operating Checking (Acct ****4120)', 'Farm Operating & Expense Ledger'];
+              return (
+                <div className="mt-3 p-3 rounded-xl bg-stone-950/60 border border-stone-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-mono font-bold uppercase text-stone-400 flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                      Synced Accounts in {currentComp.companyName} ({syncedList.length}):
+                    </span>
+                    {syncedList.map((acc, aIdx) => {
+                      const isAccActive = selectedPaymentAccount === acc || (!selectedPaymentAccount && aIdx === 0);
+                      return (
+                        <div
+                          key={aIdx}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono border ${
+                            isAccActive
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
+                              : 'bg-stone-900 border-stone-800 text-stone-300'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => handleSelectActiveCompany(currentComp.realmId, acc)}
+                            className="cursor-pointer hover:text-white flex items-center gap-1"
+                            title="Set as active destination account"
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${isAccActive ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                            <span>{acc}</span>
+                            {isAccActive && <span className="text-[9px] text-amber-300">(Active)</span>}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleToggleSyncedAccount(currentComp.realmId, acc)}
+                            className="text-stone-500 hover:text-red-400 cursor-pointer ml-0.5"
+                            title="Remove from sync pipeline"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {showAddAccountForRealm === currentComp.realmId ? (
+                      <div className="inline-flex items-center gap-1 bg-stone-900 p-1 rounded-lg border border-emerald-500/60">
+                        <select
+                          onChange={e => {
+                            if (e.target.value) handleAddCustomSyncedAccount(currentComp.realmId, e.target.value);
+                          }}
+                          className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono cursor-pointer"
+                          defaultValue=""
+                        >
+                          <option value="" disabled>Add Preset Account...</option>
+                          {STANDARD_SYNC_PRESETS.filter(p => !syncedList.includes(p)).map((p, pIdx) => (
+                            <option key={pIdx} value={p}>{p}</option>
+                          ))}
+                        </select>
+                        <input
+                          type="text"
+                          value={newSyncedAccountInput}
+                          onChange={e => setNewSyncedAccountInput(e.target.value)}
+                          placeholder="Or custom name..."
+                          className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono focus:outline-none w-32"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleAddCustomSyncedAccount(currentComp.realmId, newSyncedAccountInput)}
+                          className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold cursor-pointer"
+                        >
+                          Add
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowAddAccountForRealm(null);
+                            setNewSyncedAccountInput('');
+                          }}
+                          className="text-stone-500 hover:text-stone-300 text-xs cursor-pointer px-1"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowAddAccountForRealm(currentComp.realmId)}
+                        className="px-2.5 py-1 rounded bg-stone-900 hover:bg-stone-850 text-stone-300 hover:text-emerald-300 text-[11px] font-mono border border-stone-800 cursor-pointer"
+                      >
+                        + Add Account to Sync
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
 
           {/* Table of Receipts Ready for QuickBooks Synchronization */}
@@ -2022,7 +2632,9 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                           </td>
 
                           <td className="py-3 px-3">
-                            <span className="text-stone-300 font-medium text-xs">{qboAccount}</span>
+                            <span className="text-stone-200 font-semibold text-xs block truncate max-w-xs">{qboAccount}</span>
+                            <span className="text-[10px] text-amber-300 font-mono block truncate max-w-xs">via: {selectedPaymentAccount || 'Operating Checking'}</span>
+                            <span className="text-[9px] text-sky-400 font-mono block">Chart: {targetChartType === 'FARM' ? '🌾 Schedule F' : '🏢 Schedule C'}</span>
                           </td>
 
                           <td className="py-3 px-4 text-right">
@@ -2056,19 +2668,29 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       {/* SUB-TAB 3: CATEGORY & CHART OF ACCOUNTS MAPPING */}
       {activeSubTab === 'mapping' && (
         <div className="space-y-6">
-          <div className="p-6 rounded-2xl bg-stone-900 border border-stone-800 shadow-xl space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="p-6 rounded-2xl bg-stone-900 border border-stone-800 shadow-xl space-y-5">
+            {/* Header & Main Controls */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div>
                 <h3 className="text-lg font-bold text-stone-100 flex items-center gap-2">
                   <Sliders className="w-5 h-5 text-sky-400" />
                   QuickBooks Chart of Accounts &amp; Tax Schedule Mapping
                 </h3>
                 <p className="text-xs text-stone-400 mt-1">
-                  Map IRS Schedule F (Farm) and Schedule C (Business) deduction categories to specific QuickBooks Expense accounts.
+                  Choose what Chart of Accounts you are syncing things to, set your default payment account, and map IRS Schedule F &amp; C categories.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowChartExplorer(!showChartExplorer)}
+                  className="px-3 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-amber-300 text-xs font-semibold border border-stone-700 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Layers className="w-3.5 h-3.5 text-amber-400" />
+                  <span>{showChartExplorer ? 'Hide Chart Explorer' : 'Chart of Accounts Explorer'}</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={fetchLiveQboAccounts}
@@ -2097,57 +2719,256 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
               </div>
             </div>
 
+            {/* Target Company & Chart of Accounts Selector Bar */}
+            <div className="p-4 rounded-xl bg-stone-950/80 border border-stone-800 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                  Target Company to Map For:
+                </label>
+                <select
+                  value={selectedPushRealmId}
+                  onChange={e => handleSelectActiveCompany(e.target.value)}
+                  className="w-full px-3 py-2 bg-stone-900 border border-stone-700 rounded-lg text-xs font-semibold text-emerald-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                >
+                  {companies.map(c => (
+                    <option key={c.realmId} value={c.realmId}>
+                      {c.companyName} ({c.realmId})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                  What Chart of Accounts to Sync To:
+                </label>
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTargetChartOfAccounts(selectedPushRealmId, 'Schedule F Agricultural Standard (28 Accounts)', 'FARM')}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer text-center ${
+                      targetChartType === 'FARM'
+                        ? 'bg-amber-600 text-white border border-amber-400'
+                        : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                    }`}
+                  >
+                    🌾 Schedule F Farm
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSelectTargetChartOfAccounts(selectedPushRealmId, 'Schedule C Commercial Standard (24 Accounts)', 'COMMERCIAL')}
+                    className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer text-center ${
+                      targetChartType === 'COMMERCIAL'
+                        ? 'bg-sky-600 text-white border border-sky-400'
+                        : 'bg-stone-900 text-stone-400 border border-stone-800 hover:text-stone-200'
+                    }`}
+                  >
+                    🏢 Schedule C Business
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                  Default Payment Account (Source of Funds):
+                </label>
+                <select
+                  value={selectedPaymentAccount}
+                  onChange={e => {
+                    setSelectedPaymentAccount(e.target.value);
+                    const comp = companies.find(c => c.realmId === selectedPushRealmId);
+                    if (comp) {
+                      handleSelectActiveCompany(comp.realmId, e.target.value);
+                    }
+                  }}
+                  className="w-full px-3 py-2 bg-stone-900 border border-stone-700 rounded-lg text-xs font-semibold text-amber-300 focus:outline-none focus:border-amber-500 cursor-pointer"
+                >
+                  <option value="Operating Checking (Acct ****4120)">Operating Checking (Acct ****4120)</option>
+                  <option value="Commercial Fleet & Fuel Account (Acct ****6021)">Commercial Fleet &amp; Fuel Account (Acct ****6021)</option>
+                  <option value="Farm Operating & Expense Ledger">Farm Operating &amp; Expense Ledger</option>
+                  <option value="Agricultural Payroll Reserve">Agricultural Payroll Reserve</option>
+                  <option value="Commercial Equipment Financing (Acct ****8812)">Commercial Equipment Financing (Acct ****8812)</option>
+                  {qboBankAccounts.map((b: any) => (
+                    <option key={b.id} value={b.name}>{b.name} ({b.subType || b.qboType})</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Optional Chart of Accounts Explorer Drawer */}
+            {showChartExplorer && (
+              <div className="p-4 rounded-xl bg-stone-950 border border-amber-500/30 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-amber-400" />
+                    <span className="font-bold text-xs text-stone-200">
+                      Standard &amp; Live QuickBooks Chart of Accounts Directory (34+ Accounts)
+                    </span>
+                  </div>
+                  <span className="text-[11px] text-stone-400 font-mono">
+                    Target: {targetChartType === 'FARM' ? 'Schedule F Farm' : 'Schedule C Commercial'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-60 overflow-y-auto text-xs pr-1">
+                  {[
+                    ...(qboFarmAccounts.length > 0 ? qboFarmAccounts : Object.entries(DEFAULT_ACCOUNT_MAPPINGS).map(([line, name]) => ({ line, name, qboType: 'Expense', schedule: 'SCHEDULE_F' }))),
+                    ...(qboBusinessAccounts.length > 0 ? qboBusinessAccounts : []),
+                    ...(qboBankAccounts.length > 0 ? qboBankAccounts : [])
+                  ].map((acc: any, aIdx: number) => (
+                    <div key={aIdx} className="p-2 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-between gap-2">
+                      <div>
+                        <span className="font-semibold text-stone-200 block text-[11px] truncate">{acc.name}</span>
+                        <span className="text-[10px] text-stone-500 font-mono">{acc.line || acc.schedule || acc.qboType}</span>
+                      </div>
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-stone-800 text-emerald-300">
+                        {acc.qboType || 'Expense'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Schedule F (Farm) Mappings */}
             <div className="pt-4 border-t border-stone-800 space-y-3">
-              <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
-                Schedule F (Form 1040) Farm Deductions
-              </h4>
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-400" />
+                  Schedule F (Form 1040) Farm Deductions &amp; Chart of Accounts Map
+                </h4>
+                <span className="text-[10px] font-mono text-stone-400">
+                  Select from Chart of Accounts or type custom account
+                </span>
+              </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 {Object.entries(DEFAULT_ACCOUNT_MAPPINGS)
                   .filter(([k]) => !k.includes('(C)') && !['Line 8', 'Line 9', 'Line 11', 'Line 17', 'Line 18', 'Line 21', 'Line 24'].includes(k))
-                  .map(([line, defaultAcc]) => (
-                    <div key={line} className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex items-center justify-between gap-3">
-                      <div>
-                        <span className="font-mono text-emerald-400 font-bold block">{line}</span>
-                        <span className="text-stone-400 text-[11px]">{defaultAcc}</span>
+                  .map(([line, defaultAcc]) => {
+                    const currentVal = accountMappings[line] || defaultAcc;
+                    const availableOptions = [
+                      defaultAcc,
+                      'Car and truck expenses',
+                      'Conservation expenses',
+                      'Custom hire (machine work)',
+                      'Feed purchased',
+                      'Fertilizers and lime',
+                      'Freight and trucking',
+                      'Gasoline, fuel, and oil',
+                      'Insurance (other than health)',
+                      'Interest: Mortgage & loans',
+                      'Labor hired (less employment credits)',
+                      'Repairs and maintenance',
+                      'Seeds and plants purchased',
+                      'Storage and warehousing',
+                      'Supplies purchased',
+                      'Taxes (real estate / property)',
+                      'Utilities',
+                      'Veterinary, breeding, medicine',
+                      'Other farm expenses'
+                    ];
+
+                    return (
+                      <div key={line} className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <div className="shrink-0">
+                          <span className="font-mono text-emerald-400 font-bold block">{line}</span>
+                          <span className="text-stone-400 text-[11px]">IRS Standard: {defaultAcc}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={availableOptions.includes(currentVal) ? currentVal : 'CUSTOM'}
+                            onChange={(e) => {
+                              if (e.target.value !== 'CUSTOM') {
+                                setAccountMappings({ ...accountMappings, [line]: e.target.value });
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 text-xs font-semibold focus:outline-none focus:border-amber-500 cursor-pointer w-44"
+                          >
+                            {Array.from(new Set(availableOptions)).map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                            <option value="CUSTOM">Custom account...</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={currentVal}
+                            onChange={(e) => setAccountMappings({ ...accountMappings, [line]: e.target.value })}
+                            placeholder="Account name"
+                            className="px-2.5 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 text-xs font-semibold focus:outline-none focus:border-sky-500 w-36 text-right"
+                          />
+                        </div>
                       </div>
-                      <input
-                        type="text"
-                        value={accountMappings[line] || defaultAcc}
-                        onChange={(e) => setAccountMappings({ ...accountMappings, [line]: e.target.value })}
-                        className="px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 text-xs font-semibold focus:outline-none focus:border-sky-500 w-48 text-right"
-                      />
-                    </div>
-                  ))}
+                    );
+                  })}
               </div>
             </div>
 
             {/* Schedule C (Business) Mappings */}
             <div className="pt-4 border-t border-stone-800 space-y-3">
-              <h4 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-sky-400" />
-                Schedule C Commercial &amp; Sole Proprietorship Deductions
-              </h4>
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-sky-400 uppercase tracking-wider flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-sky-400" />
+                  Schedule C Commercial &amp; Sole Proprietorship Deductions &amp; Chart of Accounts Map
+                </h4>
+                <span className="text-[10px] font-mono text-stone-400">
+                  Select from Chart of Accounts or type custom account
+                </span>
+              </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
                 {Object.entries(DEFAULT_ACCOUNT_MAPPINGS)
                   .filter(([k]) => k.includes('(C)') || ['Line 8', 'Line 9', 'Line 11', 'Line 17', 'Line 18', 'Line 21', 'Line 24'].includes(k))
-                  .map(([line, defaultAcc]) => (
-                    <div key={line} className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex items-center justify-between gap-3">
-                      <div>
-                        <span className="font-mono text-sky-400 font-bold block">{line}</span>
-                        <span className="text-stone-400 text-[11px]">{defaultAcc}</span>
+                  .map(([line, defaultAcc]) => {
+                    const currentVal = accountMappings[line] || defaultAcc;
+                    const availableOptions = [
+                      defaultAcc,
+                      'Advertising',
+                      'Car and truck expenses',
+                      'Commissions and fees',
+                      'Contract labor',
+                      'Insurance (other than health)',
+                      'Legal and professional services',
+                      'Office expense',
+                      'Repairs and maintenance',
+                      'Supplies',
+                      'Travel and meals',
+                      'Utilities',
+                      'Other business expenses'
+                    ];
+
+                    return (
+                      <div key={line} className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <div className="shrink-0">
+                          <span className="font-mono text-sky-400 font-bold block">{line}</span>
+                          <span className="text-stone-400 text-[11px]">IRS Standard: {defaultAcc}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={availableOptions.includes(currentVal) ? currentVal : 'CUSTOM'}
+                            onChange={(e) => {
+                              if (e.target.value !== 'CUSTOM') {
+                                setAccountMappings({ ...accountMappings, [line]: e.target.value });
+                              }
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 text-xs font-semibold focus:outline-none focus:border-sky-500 cursor-pointer w-44"
+                          >
+                            {Array.from(new Set(availableOptions)).map((opt) => (
+                              <option key={opt} value={opt}>{opt}</option>
+                            ))}
+                            <option value="CUSTOM">Custom account...</option>
+                          </select>
+                          <input
+                            type="text"
+                            value={currentVal}
+                            onChange={(e) => setAccountMappings({ ...accountMappings, [line]: e.target.value })}
+                            placeholder="Account name"
+                            className="px-2.5 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 text-xs font-semibold focus:outline-none focus:border-sky-500 w-36 text-right"
+                          />
+                        </div>
                       </div>
-                      <input
-                        type="text"
-                        value={accountMappings[line] || defaultAcc}
-                        onChange={(e) => setAccountMappings({ ...accountMappings, [line]: e.target.value })}
-                        className="px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 text-xs font-semibold focus:outline-none focus:border-sky-500 w-48 text-right"
-                      />
-                    </div>
-                  ))}
+                    );
+                  })}
               </div>
             </div>
           </div>

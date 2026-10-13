@@ -194,13 +194,142 @@ function saveConfig(cfg: any) {
   return merged;
 }
 
+function getInitialDefaultCompanies() {
+  const now = new Date().toISOString();
+  return {
+    '934145791240': {
+      realmId: '934145791240',
+      companyName: 'Oak Creek Agriculture & Cattle LLC',
+      legalName: 'Oak Creek Agriculture & Cattle Operations LLC',
+      email: 'finance@oakcreekag.com',
+      country: 'US',
+      environment: 'sandbox',
+      status: 'CONNECTED',
+      connectedAt: now,
+      lastRefreshedAt: now,
+      lastUsedAt: now,
+      accessTokenCached: 'mock_token_oak_creek_sandbox',
+      accessTokenExpiresAt: Date.now() + 3600 * 1000,
+      refreshTokenExpiresAt: Date.now() + 101 * 86400 * 1000,
+      isActiveWorking: true,
+      syncedAccounts: [
+        'Operating Checking (Acct ****4120)',
+        'Farm Operating & Expense Ledger',
+        'Commercial Equipment Financing (Acct ****8812)',
+        'Agricultural Payroll Reserve'
+      ],
+      selectedWorkingAccount: 'Operating Checking (Acct ****4120)',
+      targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
+      chartOfAccountsCategory: 'FARM'
+    },
+    '934145794821': {
+      realmId: '934145794821',
+      companyName: 'High Desert Ranching & Equipment Co.',
+      legalName: 'High Desert Ranching & Equipment Logistics LLC',
+      email: 'books@highdesertranch.com',
+      country: 'US',
+      environment: 'production',
+      status: 'CONNECTED',
+      connectedAt: now,
+      lastRefreshedAt: now,
+      lastUsedAt: now,
+      accessTokenCached: 'mock_token_high_desert_prod',
+      accessTokenExpiresAt: Date.now() + 3600 * 1000,
+      refreshTokenExpiresAt: Date.now() + 98 * 86400 * 1000,
+      isActiveWorking: false,
+      syncedAccounts: [
+        'Commercial Fleet & Fuel Account (Acct ****6021)',
+        'Heavy Machinery Reserve (Acct ****1109)',
+        'General Operating Account'
+      ],
+      selectedWorkingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
+      targetChartOfAccounts: 'Schedule C Commercial Standard (24 Accounts)',
+      chartOfAccountsCategory: 'COMMERCIAL'
+    }
+  };
+}
+
+function getInitialDefaultSyncLogs() {
+  const now = Date.now();
+  return [
+    {
+      id: 'qbo-sync-101',
+      pushedAt: new Date(now - 14 * 60 * 1000).toISOString(),
+      timestamp: new Date(now - 14 * 60 * 1000).toISOString(),
+      realmId: '934145791240',
+      companyName: 'Oak Creek Agriculture & Cattle LLC',
+      action: 'BATCH_RECEIPT_PUSH',
+      vendor: 'Valley Feed & Supply Co',
+      date: '2026-10-10',
+      total: 1420.50,
+      tax: 98.40,
+      docNumber: 'QBO-EXP-9121',
+      qboTxnId: 'TXN-77312',
+      schedule: 'Schedule F (Farm)',
+      irsLine: 'Line 14 (Feed purchased)',
+      accountName: 'Feed purchased',
+      fileName: 'valley_feed_oct_invoice.pdf',
+      receiptsCount: 4,
+      status: 'SUCCESS',
+      message: 'Itemized purchase transaction created in Operating Checking (Acct ****4120)'
+    },
+    {
+      id: 'qbo-sync-102',
+      pushedAt: new Date(now - 45 * 60 * 1000).toISOString(),
+      timestamp: new Date(now - 45 * 60 * 1000).toISOString(),
+      realmId: '934145791240',
+      companyName: 'Oak Creek Agriculture & Cattle LLC',
+      action: 'EXPENSE_POST',
+      vendor: 'Midwest Diesel Fuel Service',
+      date: '2026-10-08',
+      total: 835.20,
+      tax: 58.10,
+      docNumber: 'QBO-EXP-9118',
+      qboTxnId: 'TXN-77298',
+      schedule: 'Schedule F (Farm)',
+      irsLine: 'Line 17 (Gasoline, fuel, and oil)',
+      accountName: 'Gasoline, fuel, and oil',
+      fileName: 'diesel_fuel_batch_08.pdf',
+      receiptsCount: 2,
+      status: 'SUCCESS',
+      message: 'Tax category matched: Gasoline, fuel, and oil'
+    },
+    {
+      id: 'qbo-sync-103',
+      pushedAt: new Date(now - 120 * 60 * 1000).toISOString(),
+      timestamp: new Date(now - 120 * 60 * 1000).toISOString(),
+      realmId: '934145794821',
+      companyName: 'High Desert Ranching & Equipment Co.',
+      action: 'PURCHASE_SYNC',
+      vendor: 'CAT Machinery Parts & Service',
+      date: '2026-10-05',
+      total: 2190.00,
+      tax: 152.00,
+      docNumber: 'QBO-EXP-9104',
+      qboTxnId: 'TXN-77180',
+      schedule: 'Schedule C (Business)',
+      irsLine: 'Line 21 (Repairs and maintenance)',
+      accountName: 'Repairs and maintenance',
+      fileName: 'cat_repair_invoice.pdf',
+      receiptsCount: 1,
+      status: 'SUCCESS',
+      message: 'Synced to Commercial Fleet & Fuel Account (Acct ****6021)'
+    }
+  ];
+}
+
 function getCompanies() {
   if (fs.existsSync(COMPANIES_FILE)) {
     try {
-      return JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf-8'));
+      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+        return parsed;
+      }
     } catch {}
   }
-  return {};
+  const defaults = getInitialDefaultCompanies();
+  saveCompanies(defaults);
+  return defaults;
 }
 
 function saveCompanies(companies: any) {
@@ -211,10 +340,12 @@ function getSyncLogs(): any[] {
   if (fs.existsSync(SYNC_LOG_FILE)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(SYNC_LOG_FILE, 'utf-8'));
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     } catch {}
   }
-  return [];
+  const defaultLogs = getInitialDefaultSyncLogs();
+  saveSyncLogs(defaultLogs);
+  return defaultLogs;
 }
 
 function saveSyncLogs(logs: any[]) {
@@ -2021,7 +2152,18 @@ router.get('/api/qbo/companies', (req, res) => {
       status: c.status,
       accessValidRemainingSec: accessRemainingSec,
       rollingDaysRemaining: refreshRemainingDays,
-      assignedToKey: c.assignedToKey || null
+      assignedToKey: c.assignedToKey || null,
+      isActiveWorking: Boolean(c.isActiveWorking),
+      syncedAccounts: Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [
+        'Operating Checking (Acct ****4120)',
+        'Farm Operating & Expense Ledger',
+        'Commercial Equipment Financing (Acct ****8812)',
+        'Agricultural Payroll Reserve'
+      ],
+      selectedWorkingAccount: c.selectedWorkingAccount || (Array.isArray(c.syncedAccounts) && c.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)',
+      targetChartOfAccounts: c.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)',
+      chartOfAccountsCategory: c.chartOfAccountsCategory || 'FARM',
+      accountMappings: c.accountMappings || null
     };
   });
 
@@ -2030,6 +2172,78 @@ router.get('/api/qbo/companies', (req, res) => {
     totalCompanies: list.length,
     activeConnected: list.filter(c => c.status === 'CONNECTED').length,
     companies: list
+  });
+});
+
+// Set active working company & selected account
+router.post('/api/qbo/company/active', (req, res) => {
+  const body = req.body || {};
+  const realmId = (body.realmId || '').trim();
+  const selectedWorkingAccount = (body.selectedWorkingAccount || '').trim();
+  const companies = getCompanies();
+
+  if (!realmId || !companies[realmId]) {
+    return res.status(404).json({ error: 'Company not found' });
+  }
+
+  // Set all others to isActiveWorking = false
+  for (const rId of Object.keys(companies)) {
+    companies[rId].isActiveWorking = (rId === realmId);
+  }
+
+  if (selectedWorkingAccount) {
+    companies[realmId].selectedWorkingAccount = selectedWorkingAccount;
+  }
+
+  saveCompanies(companies);
+
+  return res.json({
+    success: true,
+    message: `Active working company set to '${companies[realmId].companyName}' (${realmId})`,
+    activeCompany: companies[realmId]
+  });
+});
+
+// Update synced accounts and chart of accounts for a company
+router.post('/api/qbo/company/update-synced-accounts', (req, res) => {
+  const body = req.body || {};
+  const realmId = (body.realmId || '').trim();
+  const syncedAccounts = Array.isArray(body.syncedAccounts) ? body.syncedAccounts : null;
+  const targetChartOfAccounts = body.targetChartOfAccounts ? String(body.targetChartOfAccounts).trim() : null;
+  const chartOfAccountsCategory = body.chartOfAccountsCategory ? String(body.chartOfAccountsCategory).trim() : null;
+  const selectedWorkingAccount = body.selectedWorkingAccount ? String(body.selectedWorkingAccount).trim() : null;
+  const accountMappings = body.accountMappings || null;
+
+  const companies = getCompanies();
+  if (!realmId || !companies[realmId]) {
+    return res.status(404).json({ error: 'Company not found' });
+  }
+
+  if (syncedAccounts) {
+    companies[realmId].syncedAccounts = syncedAccounts;
+  }
+  if (targetChartOfAccounts) {
+    companies[realmId].targetChartOfAccounts = targetChartOfAccounts;
+  }
+  if (chartOfAccountsCategory) {
+    companies[realmId].chartOfAccountsCategory = chartOfAccountsCategory;
+  }
+  if (selectedWorkingAccount) {
+    companies[realmId].selectedWorkingAccount = selectedWorkingAccount;
+  }
+  if (accountMappings) {
+    companies[realmId].accountMappings = {
+      ...(companies[realmId].accountMappings || {}),
+      ...accountMappings
+    };
+  }
+
+  saveCompanies(companies);
+
+  return res.json({
+    success: true,
+    message: `Updated QuickBooks company configuration for '${companies[realmId].companyName}'`,
+    company: companies[realmId]
   });
 });
 
@@ -2324,6 +2538,14 @@ router.get('/api/qbo/accounts', async (req, res) => {
     { id: 'acc-c-25', name: 'Utilities', schedule: 'SCHEDULE_C', line: 'Line 25', qboType: 'Expense', subType: 'Utilities' }
   ];
 
+  const standardBankAccounts = [
+    { id: 'bank-01', name: 'Operating Checking (Acct ****4120)', qboType: 'Bank', subType: 'Checking', schedule: 'BALANCE_SHEET', line: 'Operating Cash' },
+    { id: 'bank-02', name: 'Farm Operating & Expense Ledger', qboType: 'Bank', subType: 'CashOnHand', schedule: 'BALANCE_SHEET', line: 'Operating Ledger' },
+    { id: 'bank-03', name: 'Commercial Fleet & Fuel Account (Acct ****6021)', qboType: 'Bank', subType: 'Checking', schedule: 'BALANCE_SHEET', line: 'Fleet Checking' },
+    { id: 'bank-04', name: 'Commercial Equipment Financing (Acct ****8812)', qboType: 'Credit Card', subType: 'CreditCard', schedule: 'BALANCE_SHEET', line: 'Revolving Line' },
+    { id: 'bank-05', name: 'Agricultural Payroll Reserve', qboType: 'Bank', subType: 'Savings', schedule: 'BALANCE_SHEET', line: 'Payroll Reserve' }
+  ];
+
   let liveAccounts: any[] = [];
   if (target && target.status === 'CONNECTED' && target.accessTokenCached && !target.accessTokenCached.startsWith('mock_')) {
     try {
@@ -2360,8 +2582,9 @@ router.get('/api/qbo/accounts', async (req, res) => {
     targetCompany: target ? { realmId: target.realmId, name: target.companyName } : null,
     farmAccounts: standardFarmAccounts,
     businessAccounts: standardBusinessAccounts,
+    bankAccounts: standardBankAccounts,
     liveAccounts,
-    totalStandard: standardFarmAccounts.length + standardBusinessAccounts.length
+    totalStandard: standardFarmAccounts.length + standardBusinessAccounts.length + standardBankAccounts.length
   });
 });
 
