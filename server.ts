@@ -2503,47 +2503,129 @@ router.get('/api/qbo/accounts', async (req, res) => {
   const companies = getCompanies();
   const target = realmId ? companies[realmId] : Object.values(companies).find((c: any) => c.status === 'CONNECTED');
 
-  const standardFarmAccounts = [
-    { id: 'acc-10', name: 'Car and truck expenses', schedule: 'SCHEDULE_F', line: 'Line 10', qboType: 'Expense', subType: 'Auto' },
-    { id: 'acc-12', name: 'Conservation expenses', schedule: 'SCHEDULE_F', line: 'Line 12', qboType: 'Expense', subType: 'OtherBusinessExpenses' },
-    { id: 'acc-13', name: 'Custom hire (machine work)', schedule: 'SCHEDULE_F', line: 'Line 13', qboType: 'Expense', subType: 'EquipmentRental' },
-    { id: 'acc-14', name: 'Feed purchased', schedule: 'SCHEDULE_F', line: 'Line 14', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs' },
-    { id: 'acc-15', name: 'Fertilizers and lime', schedule: 'SCHEDULE_F', line: 'Line 15', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs' },
-    { id: 'acc-16', name: 'Freight and trucking', schedule: 'SCHEDULE_F', line: 'Line 16', qboType: 'Expense', subType: 'ShippingFreightDelivery' },
-    { id: 'acc-17', name: 'Gasoline, fuel, and oil', schedule: 'SCHEDULE_F', line: 'Line 17', qboType: 'Expense', subType: 'Auto' },
-    { id: 'acc-18', name: 'Insurance (other than health)', schedule: 'SCHEDULE_F', line: 'Line 18', qboType: 'Expense', subType: 'Insurance' },
-    { id: 'acc-19', name: 'Interest: Mortgage & loans', schedule: 'SCHEDULE_F', line: 'Line 19', qboType: 'Expense', subType: 'InterestPaid' },
-    { id: 'acc-20', name: 'Labor hired (less employment credits)', schedule: 'SCHEDULE_F', line: 'Line 20', qboType: 'Expense', subType: 'PayrollExpenses' },
-    { id: 'acc-22', name: 'Repairs and maintenance', schedule: 'SCHEDULE_F', line: 'Line 22', qboType: 'Expense', subType: 'RepairMaintenance' },
-    { id: 'acc-23', name: 'Seeds and plants purchased', schedule: 'SCHEDULE_F', line: 'Line 23', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs' },
-    { id: 'acc-24', name: 'Storage and warehousing', schedule: 'SCHEDULE_F', line: 'Line 24', qboType: 'Expense', subType: 'RentOrLeaseOfBuildings' },
-    { id: 'acc-25', name: 'Supplies purchased', schedule: 'SCHEDULE_F', line: 'Line 25', qboType: 'Expense', subType: 'Supplies' },
-    { id: 'acc-26', name: 'Taxes (real estate / property)', schedule: 'SCHEDULE_F', line: 'Line 26', qboType: 'Expense', subType: 'TaxesPaid' },
-    { id: 'acc-27', name: 'Utilities', schedule: 'SCHEDULE_F', line: 'Line 27', qboType: 'Expense', subType: 'Utilities' },
-    { id: 'acc-28', name: 'Veterinary, breeding, medicine', schedule: 'SCHEDULE_F', line: 'Line 28', qboType: 'Expense', subType: 'OtherBusinessExpenses' },
-    { id: 'acc-32', name: 'Other farm expenses', schedule: 'SCHEDULE_F', line: 'Line 32', qboType: 'Expense', subType: 'OtherBusinessExpenses' }
-  ];
-
-  const standardBusinessAccounts = [
-    { id: 'acc-c-08', name: 'Advertising', schedule: 'SCHEDULE_C', line: 'Line 8', qboType: 'Expense', subType: 'AdvertisingPromotional' },
-    { id: 'acc-c-09', name: 'Car and truck expenses', schedule: 'SCHEDULE_C', line: 'Line 9', qboType: 'Expense', subType: 'Auto' },
-    { id: 'acc-c-10', name: 'Commissions and fees', schedule: 'SCHEDULE_C', line: 'Line 10', qboType: 'Expense', subType: 'CommissionsAndFees' },
-    { id: 'acc-c-11', name: 'Contract labor', schedule: 'SCHEDULE_C', line: 'Line 11', qboType: 'Expense', subType: 'CostOfLabor' },
-    { id: 'acc-c-15', name: 'Insurance (other than health)', schedule: 'SCHEDULE_C', line: 'Line 15', qboType: 'Expense', subType: 'Insurance' },
-    { id: 'acc-c-17', name: 'Legal and professional services', schedule: 'SCHEDULE_C', line: 'Line 17', qboType: 'Expense', subType: 'LegalProfessionalFees' },
-    { id: 'acc-c-18', name: 'Office expense', schedule: 'SCHEDULE_C', line: 'Line 18', qboType: 'Expense', subType: 'OfficeGeneralAdministrativeExpenses' },
-    { id: 'acc-c-21', name: 'Repairs and maintenance', schedule: 'SCHEDULE_C', line: 'Line 21', qboType: 'Expense', subType: 'RepairMaintenance' },
-    { id: 'acc-c-22', name: 'Supplies', schedule: 'SCHEDULE_C', line: 'Line 22', qboType: 'Expense', subType: 'Supplies' },
-    { id: 'acc-c-24', name: 'Travel and meals', schedule: 'SCHEDULE_C', line: 'Line 24', qboType: 'Expense', subType: 'TravelMeals' },
-    { id: 'acc-c-25', name: 'Utilities', schedule: 'SCHEDULE_C', line: 'Line 25', qboType: 'Expense', subType: 'Utilities' }
-  ];
-
   const standardBankAccounts = [
-    { id: 'bank-01', name: 'Operating Checking (Acct ****4120)', qboType: 'Bank', subType: 'Checking', schedule: 'BALANCE_SHEET', line: 'Operating Cash' },
-    { id: 'bank-02', name: 'Farm Operating & Expense Ledger', qboType: 'Bank', subType: 'CashOnHand', schedule: 'BALANCE_SHEET', line: 'Operating Ledger' },
-    { id: 'bank-03', name: 'Commercial Fleet & Fuel Account (Acct ****6021)', qboType: 'Bank', subType: 'Checking', schedule: 'BALANCE_SHEET', line: 'Fleet Checking' },
-    { id: 'bank-04', name: 'Commercial Equipment Financing (Acct ****8812)', qboType: 'Credit Card', subType: 'CreditCard', schedule: 'BALANCE_SHEET', line: 'Revolving Line' },
-    { id: 'bank-05', name: 'Agricultural Payroll Reserve', qboType: 'Bank', subType: 'Savings', schedule: 'BALANCE_SHEET', line: 'Payroll Reserve' }
+    { id: 'bank-1010', accountNumber: '1010', name: 'Operating Checking (Acct ****4120)', qboType: 'Bank', subType: 'Checking', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Operating Cash', description: 'Primary working business checking account' },
+    { id: 'bank-1020', accountNumber: '1020', name: 'Farm Operating & Expense Ledger', qboType: 'Bank', subType: 'CashOnHand', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Operating Ledger', description: 'Agricultural operational expense disbursements' },
+    { id: 'bank-1030', accountNumber: '1030', name: 'Commercial Fleet & Fuel Account (Acct ****6021)', qboType: 'Bank', subType: 'Checking', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Fleet Checking', description: 'Commercial vehicle & freight fuel ledger' },
+    { id: 'bank-1040', accountNumber: '1040', name: 'Agricultural Payroll Reserve', qboType: 'Bank', subType: 'Savings', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Payroll Reserve', description: 'Dedicated payroll & tax withholding reserve' },
+    { id: 'bank-1050', accountNumber: '1050', name: 'Grain & Crop Sales Settlement Escrow', qboType: 'Bank', subType: 'MoneyMarket', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Escrow Reserve', description: 'Harvest proceeds & elevator settlement account' },
+    { id: 'bank-1060', accountNumber: '1060', name: 'Livestock Trading & Auction Cash Ledger', qboType: 'Bank', subType: 'Checking', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Auction Cash', description: 'Livestock buying & sale barn clearing account' },
+    { id: 'bank-1070', accountNumber: '1070', name: 'Petty Cash & Field Till', qboType: 'Bank', subType: 'CashOnHand', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Petty Cash', description: 'On-farm cash box and field change till' }
+  ];
+
+  const standardAssetAccounts = [
+    { id: 'ast-1100', accountNumber: '1100', name: 'Accounts Receivable (A/R)', qboType: 'Accounts Receivable', subType: 'AccountsReceivable', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'A/R', description: 'Customer invoices & grain delivery receivables' },
+    { id: 'ast-1200', accountNumber: '1200', name: 'Undeposited Funds / Payment Clearing', qboType: 'Other Current Asset', subType: 'UndepositedFunds', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Undeposited Funds', description: 'Receipt payments awaiting bank deposit' },
+    { id: 'ast-1310', accountNumber: '1310', name: 'Inventory Asset - Grain & Harvested Crops', qboType: 'Other Current Asset', subType: 'Inventory', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Crop Inventory', description: 'Corn, wheat, soybeans, and grain stored on-farm' },
+    { id: 'ast-1320', accountNumber: '1320', name: 'Inventory Asset - Cattle & Livestock Held for Sale', qboType: 'Other Current Asset', subType: 'Inventory', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Livestock Inventory', description: 'Feeder cattle, calves, and market animals' },
+    { id: 'ast-1330', accountNumber: '1330', name: 'Inventory Asset - Feed & Bulk Hay Reserves', qboType: 'Other Current Asset', subType: 'Inventory', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Feed Inventory', description: 'Stored silage, hay bales, and mineral supplements' },
+    { id: 'ast-1340', accountNumber: '1340', name: 'Inventory Asset - Fertilizer & Chemical Reserves', qboType: 'Other Current Asset', subType: 'Inventory', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Chemical Inventory', description: 'Pre-purchased bulk fertilizer, seed, and chemical' },
+    { id: 'ast-1410', accountNumber: '1410', name: 'Prepaid Farm Insurance & Policies', qboType: 'Other Current Asset', subType: 'PrepaidExpenses', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Prepaids', description: 'Prepaid multi-peril crop and casualty insurance' },
+    { id: 'ast-1510', accountNumber: '1510', name: 'Land & Farm Real Estate Holdings', qboType: 'Fixed Asset', subType: 'Land', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Land', description: 'Deeded acreage, pastures, and farm ground' },
+    { id: 'ast-1520', accountNumber: '1520', name: 'Buildings, Barns & Storage Structures', qboType: 'Fixed Asset', subType: 'Buildings', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Buildings', description: 'Barns, grain bins, machine sheds, and shop buildings' },
+    { id: 'ast-1530', accountNumber: '1530', name: 'Tractors & Heavy Agricultural Machinery', qboType: 'Fixed Asset', subType: 'MachineryAndEquipment', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Machinery', description: 'Combines, tractors, planters, sprayers, and tillage' },
+    { id: 'ast-1540', accountNumber: '1540', name: 'Commercial Trucks, Haulers & Trailers', qboType: 'Fixed Asset', subType: 'Vehicles', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Vehicles', description: 'Semi-trucks, grain trailers, and service pickups' },
+    { id: 'ast-1550', accountNumber: '1550', name: 'Breeding Livestock Herd (Depreciable Asset)', qboType: 'Fixed Asset', subType: 'OtherFixedAssets', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Breeding Herd', description: 'Beef breeding cows, bulls, and dairy stock' },
+    { id: 'ast-1560', accountNumber: '1560', name: 'Irrigation Pivots & Deep Well Systems', qboType: 'Fixed Asset', subType: 'MachineryAndEquipment', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Irrigation', description: 'Center pivots, irrigation pumps, and motors' },
+    { id: 'ast-1600', accountNumber: '1600', name: 'Accumulated Depreciation - Farm Property', qboType: 'Fixed Asset', subType: 'AccumulatedDepreciation', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Depreciation', description: 'Contra-asset cumulative tax depreciation' }
+  ];
+
+  const standardLiabilityAccounts = [
+    { id: 'lia-2010', accountNumber: '2010', name: 'Accounts Payable (A/P)', qboType: 'Accounts Payable', subType: 'AccountsPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'A/P', description: 'Vendor invoices & co-op billings due' },
+    { id: 'lia-2020', accountNumber: '2020', name: 'Commercial Equipment Financing (Acct ****8812)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Revolving Line', description: 'Equipment dealer credit and revolving line' },
+    { id: 'lia-2030', accountNumber: '2030', name: 'Commercial Fleet Fuel Card (Acct ****7714)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Fleet Card', description: 'Universal bulk fuel station charge card' },
+    { id: 'lia-2100', accountNumber: '2100', name: 'Agricultural Operating Line of Credit (LOC)', qboType: 'Other Current Liability', subType: 'LineOfCredit', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'LOC', description: 'Seasonal bank crop input line of credit' },
+    { id: 'lia-2210', accountNumber: '2210', name: 'Federal Payroll Taxes Payable (941/943)', qboType: 'Other Current Liability', subType: 'PayrollTaxPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Payroll Taxes', description: 'FICA and federal income tax withholding' },
+    { id: 'lia-2220', accountNumber: '2220', name: 'State Payroll & Ag Withholding Payable', qboType: 'Other Current Liability', subType: 'PayrollTaxPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'State Payroll', description: 'State income tax and UI withholding' },
+    { id: 'lia-2240', accountNumber: '2240', name: 'Sales & Use Tax Payable', qboType: 'Other Current Liability', subType: 'SalesTaxPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Sales Tax', description: 'Collected commercial retail sales tax' },
+    { id: 'lia-2300', accountNumber: '2300', name: 'Accrued Interest & Vendor Liabilities', qboType: 'Other Current Liability', subType: 'OtherCurrentLiabilities', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Accrued', description: 'Accrued seasonal notes and expenses' },
+    { id: 'lia-2510', accountNumber: '2510', name: 'Long-Term Machinery & Tractor Notes Payable', qboType: 'Long Term Liability', subType: 'NotesPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Machinery Loans', description: 'Multi-year equipment term financing' },
+    { id: 'lia-2520', accountNumber: '2520', name: 'Farm Real Estate & Land Mortgage Payable', qboType: 'Long Term Liability', subType: 'MortgagePayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Mortgage', description: 'Farm Credit / bank real estate mortgage note' },
+    { id: 'lia-2530', accountNumber: '2530', name: 'USDA / FSA Direct Agricultural Loan', qboType: 'Long Term Liability', subType: 'OtherLongTermLiabilities', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'FSA Loan', description: 'Government agricultural development term note' }
+  ];
+
+  const standardEquityAccounts = [
+    { id: 'eq-3010', accountNumber: '3010', name: "Owner's Capital / Equity", qboType: 'Equity', subType: 'OwnersEquity', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Equity', description: 'Cumulative owner investment and capital contributions' },
+    { id: 'eq-3020', accountNumber: '3020', name: "Owner's Draws & Personal Distributions", qboType: 'Equity', subType: 'PartnerDraw', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Draws', description: 'Non-deductible personal funds drawn from business' },
+    { id: 'eq-3100', accountNumber: '3100', name: 'Retained Earnings', qboType: 'Equity', subType: 'RetainedEarnings', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Retained Earnings', description: 'Cumulative historical net profit retained' },
+    { id: 'eq-3200', accountNumber: '3200', name: 'Opening Balance Equity', qboType: 'Equity', subType: 'OpeningBalanceEquity', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Opening Equity', description: 'Initial setup reconciliation equity' }
+  ];
+
+  const standardIncomeAccounts = [
+    { id: 'inc-4010', accountNumber: '4010', name: 'Livestock & Cattle Market Gross Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 1', description: 'Revenue from sale of livestock, cattle, calves, and hogs' },
+    { id: 'inc-4020', accountNumber: '4020', name: 'Grain, Hay & Crop Harvest Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 2', description: 'Revenue from sale of harvested grain, corn, beans, and hay' },
+    { id: 'inc-4030', accountNumber: '4030', name: 'Custom Hire & Contract Machine Income', qboType: 'Income', subType: 'ServiceFeeIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 7', description: 'Income earned providing planting, harvesting, or custom baling' },
+    { id: 'inc-4040', accountNumber: '4040', name: 'USDA / FSA Government Program Payments', qboType: 'Income', subType: 'OtherPrimaryIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 4', description: 'ARC/PLC payments, CRP subsidies, and disaster aid' },
+    { id: 'inc-4050', accountNumber: '4050', name: 'Crop Insurance & Disaster Indemnity Proceeds', qboType: 'Income', subType: 'OtherPrimaryIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 6', description: 'Insurance payouts received for damaged or lost crops' },
+    { id: 'inc-4100', accountNumber: '4100', name: 'Commercial Product & Freight Gross Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_C', line: 'Schedule C Line 1', description: 'Retail commercial sales and hauled freight transport' },
+    { id: 'inc-4200', accountNumber: '4200', name: 'Professional Services & Consulting Income', qboType: 'Income', subType: 'ServiceFeeIncome', classification: 'Revenue', schedule: 'SCHEDULE_C', line: 'Schedule C Line 1', description: 'Consulting, management fees, and ag advisory billing' },
+    { id: 'inc-4300', accountNumber: '4300', name: 'Other Farm & Miscellaneous Business Revenue', qboType: 'Income', subType: 'OtherPrimaryIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 8', description: 'Patronage dividends, refunds, and miscellaneous receipts' }
+  ];
+
+  const standardCogsAccounts = [
+    { id: 'cogs-5010', accountNumber: '5010', name: 'Feed Purchased (Grain, Silage, Supplements)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 14', description: 'Feed, hay, protein tubs, and salt licks for livestock' },
+    { id: 'cogs-5020', accountNumber: '5020', name: 'Fertilizers and Lime (Anhydrous, Dry, Liquid)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 15', description: 'Crop nutrients, anhydrous ammonia, potash, and lime' },
+    { id: 'cogs-5030', accountNumber: '5030', name: 'Seeds and Plants Purchased (Hybrid Seed, Cover Crop)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 23', description: 'Certified seed corn, soybean seed, alfalfa, and pasture grass' },
+    { id: 'cogs-5040', accountNumber: '5040', name: 'Chemicals and Crop Protectants (Herbicides, Insecticides)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 11', description: 'Pre-emerge chemicals, fungicides, and crop spraying products' },
+    { id: 'cogs-5050', accountNumber: '5050', name: 'Breeding Fees & Artificial Insemination Supplies', qboType: 'Cost of Goods Sold', subType: 'OtherCostsOfServiceCos', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 28', description: 'Semen straws, ultrasound testing, and bull breeding service' },
+    { id: 'cogs-5060', accountNumber: '5060', name: 'Freight and Trucking (Livestock & Grain Hauling)', qboType: 'Cost of Goods Sold', subType: 'ShippingFreightDeliveryCos', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 16', description: 'Inbound cattle trucking and grain transport to market' },
+    { id: 'cogs-5070', accountNumber: '5070', name: 'Custom Hire Machine Work (Planting & Combining)', qboType: 'Cost of Goods Sold', subType: 'CostOfLaborCos', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 13', description: 'Third-party custom combining, spraying, or forage chopping' },
+    { id: 'cogs-5080', accountNumber: '5080', name: 'Direct Field & Production Labor COGS', qboType: 'Cost of Goods Sold', subType: 'CostOfLaborCos', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 20', description: 'Direct seasonal labor wages directly tied to harvest' }
+  ];
+
+  const standardExpenseAccounts = [
+    { id: 'exp-6010', accountNumber: '6010', name: 'Car and Truck Expenses (Mileage & Service)', qboType: 'Expense', subType: 'Auto', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 10', description: 'Operating vehicles, tires, oil changes, and farm trucks' },
+    { id: 'exp-6020', accountNumber: '6020', name: 'Gasoline, Fuel, and Oil (Bulk Diesel & Def)', qboType: 'Expense', subType: 'Auto', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 17', description: 'Off-road farm diesel, on-road fuel, hydraulic fluid, DEF' },
+    { id: 'exp-6030', accountNumber: '6030', name: 'Repairs and Maintenance - Machinery & Tractors', qboType: 'Expense', subType: 'RepairMaintenance', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 22', description: 'Parts, bearings, combine repairs, and dealership work' },
+    { id: 'exp-6040', accountNumber: '6040', name: 'Repairs and Maintenance - Barns, Fences & Buildings', qboType: 'Expense', subType: 'RepairMaintenance', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 22', description: 'Fence wire, posts, bin repairs, and corral maintenance' },
+    { id: 'exp-6050', accountNumber: '6050', name: 'Supplies Purchased (Baler Twine, Net Wrap, Tools)', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 25', description: 'Baling twine, wrap, mineral feeders, grease, and shop supplies' },
+    { id: 'exp-6060', accountNumber: '6060', name: 'Utilities - Electricity & Farm Power', qboType: 'Expense', subType: 'Utilities', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 27', description: 'Grain drying power, shop electricity, and stock tanks' },
+    { id: 'exp-6070', accountNumber: '6070', name: 'Utilities - Water, Irrigation Pumping & Well Power', qboType: 'Expense', subType: 'Utilities', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 27', description: 'Irrigation well electricity, water district fees, rural water' },
+    { id: 'exp-6080', accountNumber: '6080', name: 'Utilities - Propane & Heating Fuel', qboType: 'Expense', subType: 'Utilities', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 27', description: 'LP gas for grain dryers and shop furnace heating' },
+    { id: 'exp-6090', accountNumber: '6090', name: 'Telephone & Internet Communications', qboType: 'Expense', subType: 'Utilities', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 27', description: 'Farm office internet, field cellular, and GPS data plan' },
+    { id: 'exp-6100', accountNumber: '6100', name: 'Insurance (Other than Health) - Farm Property & Liability', qboType: 'Expense', subType: 'Insurance', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 18', description: 'Multi-peril farm property, umbrella liability, machinery floater' },
+    { id: 'exp-6110', accountNumber: '6110', name: 'Insurance - Crop Hail & Revenue Protection', qboType: 'Expense', subType: 'Insurance', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 18', description: 'Crop revenue insurance premiums and supplemental hail' },
+    { id: 'exp-6120', accountNumber: '6120', name: 'Interest: Mortgage on Farm Real Estate', qboType: 'Expense', subType: 'InterestPaid', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 19', description: 'Mortgage interest on farmland and deeded pastures' },
+    { id: 'exp-6130', accountNumber: '6130', name: 'Interest: Operating Notes & Equipment Loans', qboType: 'Expense', subType: 'InterestPaid', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 19', description: 'Interest on crop operating loans and tractor financing' },
+    { id: 'exp-6140', accountNumber: '6140', name: 'Labor Hired (Agricultural & Farm Hand Payroll)', qboType: 'Expense', subType: 'PayrollExpenses', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 20', description: 'Wages paid to farm hands, equipment operators, and workers' },
+    { id: 'exp-6150', accountNumber: '6150', name: 'Pension and Profit-Sharing Plans (Employee)', qboType: 'Expense', subType: 'PayrollExpenses', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 21', description: 'Employer retirement contributions for farm personnel' },
+    { id: 'exp-6160', accountNumber: '6160', name: 'Rent and Lease - Machinery & Heavy Equipment', qboType: 'Expense', subType: 'EquipmentRental', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 24', description: 'Lease payments on tractors, skid steers, and implements' },
+    { id: 'exp-6170', accountNumber: '6170', name: 'Rent and Lease - Farm Land & Pasture Ground', qboType: 'Expense', subType: 'RentOrLeaseOfBuildings', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 24', description: 'Cash rent paid to landlords for crop acreage & grazing' },
+    { id: 'exp-6180', accountNumber: '6180', name: 'Storage and Warehousing (Grain Elevator Storage)', qboType: 'Expense', subType: 'RentOrLeaseOfBuildings', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 24', description: 'Commercial elevator drying charges and storage tariffs' },
+    { id: 'exp-6190', accountNumber: '6190', name: 'Taxes - Real Estate & Property Taxes on Farm Ground', qboType: 'Expense', subType: 'TaxesPaid', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 26', description: 'County real estate and personal property tax assessments' },
+    { id: 'exp-6200', accountNumber: '6200', name: 'Taxes - Employer Payroll & FICA Taxes', qboType: 'Expense', subType: 'TaxesPaid', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 26', description: 'Employer share of Social Security and Medicare on Form 943' },
+    { id: 'exp-6210', accountNumber: '6210', name: 'Veterinary, Breeding, and Medicine for Livestock', qboType: 'Expense', subType: 'OtherBusinessExpenses', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 28', description: 'Vaccines, antibiotics, vet herd health checks, and supplies' },
+    { id: 'exp-6220', accountNumber: '6220', name: 'Conservation Expenses (Terraces, Waterways, Soil)', qboType: 'Expense', subType: 'OtherBusinessExpenses', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 12', description: 'Soil conservation, tiling, grass waterways, and grading' },
+    { id: 'exp-6230', accountNumber: '6230', name: 'Advertising & Marketing Promotions', qboType: 'Expense', subType: 'AdvertisingPromotional', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 8', description: 'Classified ads, bull sale catalogs, websites, and signage' },
+    { id: 'exp-6240', accountNumber: '6240', name: 'Commissions and Brokerage Fees', qboType: 'Expense', subType: 'CommissionsAndFees', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 10', description: 'Grain broker commissions and cattle auction fees' },
+    { id: 'exp-6250', accountNumber: '6250', name: 'Contract Labor (1099 Independent Contractors)', qboType: 'Expense', subType: 'CostOfLabor', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 11', description: 'Non-employee independent contractor labor' },
+    { id: 'exp-6260', accountNumber: '6260', name: 'Legal and Professional Fees (Attorneys & Advisors)', qboType: 'Expense', subType: 'LegalProfessionalFees', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 17', description: 'Legal contracts, estate planning, and farm dispute counsel' },
+    { id: 'exp-6270', accountNumber: '6270', name: 'Accounting, Bookkeeping & Tax Prep Services', qboType: 'Expense', subType: 'LegalProfessionalFees', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 17', description: 'CPA tax return preparation and bookkeeping services' },
+    { id: 'exp-6280', accountNumber: '6280', name: 'Office Expense & Administrative Supplies', qboType: 'Expense', subType: 'OfficeGeneralAdministrativeExpenses', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 18', description: 'Computer software, printer toner, paper, and postage' },
+    { id: 'exp-6290', accountNumber: '6290', name: 'Travel, Meals & Agricultural Convention Lodging', qboType: 'Expense', subType: 'TravelMeals', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 24', description: 'Commodity conferences, farm shows, and business travel' },
+    { id: 'exp-6300', accountNumber: '6300', name: 'Dues, Memberships & Farm Bureau Fees', qboType: 'Expense', subType: 'DuesSubscriptions', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 32', description: 'Livestock association dues, Farm Bureau, and checkoff fees' },
+    { id: 'exp-6310', accountNumber: '6310', name: 'Bank Charges & Merchant Processing Fees', qboType: 'Expense', subType: 'BankCharges', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 32', description: 'Wire transfer fees, account service charges, and card fees' },
+    { id: 'exp-6320', accountNumber: '6320', name: 'Small Tools & De Minimis Farm Equipment (< $2,500)', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 32', description: 'Hand tools, impact wrenches, chains, and shop hardware' },
+    { id: 'exp-6330', accountNumber: '6330', name: 'Other Farm Expenses (Miscellaneous Deductions)', qboType: 'Expense', subType: 'OtherBusinessExpenses', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 32', description: 'Itemized Schedule F Line 32 other deductible expenses' },
+    { id: 'exp-6340', accountNumber: '6340', name: 'Other Business Expenses (Miscellaneous Deductions)', qboType: 'Expense', subType: 'OtherBusinessExpenses', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 27', description: 'Itemized Schedule C Line 27 other deductible expenses' }
+  ];
+
+  const standardOtherAccounts = [
+    { id: 'oth-7010', accountNumber: '7010', name: 'Depreciation Expense & Section 179 Deduction', qboType: 'Other Expense', subType: 'Depreciation', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 14', description: 'Annual tax depreciation from Form 4562' },
+    { id: 'oth-7100', accountNumber: '7100', name: 'Interest Income on Operating Reserves', qboType: 'Other Income', subType: 'InterestEarned', classification: 'Revenue', schedule: 'FORM_1040', line: 'Interest Income', description: 'Interest earned on bank savings and certificates of deposit' },
+    { id: 'oth-7200', accountNumber: '7200', name: 'Gain or Loss on Sale of Farm Capital Assets', qboType: 'Other Income', subType: 'OtherMiscellaneousIncome', classification: 'Revenue', schedule: 'FORM_1040', line: 'Form 4797', description: 'Net capital gains/losses on tractor and machinery trades' }
+  ];
+
+  // Combine all standard accounts
+  const allCategorizedStandard = [
+    ...standardBankAccounts,
+    ...standardAssetAccounts,
+    ...standardLiabilityAccounts,
+    ...standardEquityAccounts,
+    ...standardIncomeAccounts,
+    ...standardCogsAccounts,
+    ...standardExpenseAccounts,
+    ...standardOtherAccounts
   ];
 
   let liveAccounts: any[] = [];
@@ -2553,7 +2635,7 @@ router.get('/api/qbo/accounts', async (req, res) => {
       const baseApi = cfg.environment === 'sandbox'
         ? 'https://sandbox-quickbooks.api.intuit.com'
         : 'https://quickbooks.api.intuit.com';
-      const q = encodeURIComponent("select * from Account where AccountType in ('Expense', 'Cost of Goods Sold', 'Other Expense') maxresults 100");
+      const q = encodeURIComponent("select * from Account maxresults 500");
       const resp = await fetch(`${baseApi}/v3/company/${target.realmId}/query?query=${q}`, {
         headers: {
           'Authorization': `Bearer ${target.accessTokenCached}`,
@@ -2565,11 +2647,15 @@ router.get('/api/qbo/accounts', async (req, res) => {
         const accs = data?.QueryResponse?.Account || [];
         liveAccounts = accs.map((a: any) => ({
           id: a.Id,
+          accountNumber: a.AcctNum || a.Id,
           name: a.Name,
           qboType: a.AccountType,
-          subType: a.AccountSubType,
-          classification: a.Classification,
-          active: a.Active
+          subType: a.AccountSubType || a.AccountType,
+          classification: a.Classification || (['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(a.AccountType) ? 'Expense' : ['Revenue', 'Income', 'Other Income'].includes(a.AccountType) ? 'Revenue' : 'Asset'),
+          schedule: a.AccountType === 'Cost of Goods Sold' || a.Name.toLowerCase().includes('farm') || a.Name.toLowerCase().includes('feed') ? 'SCHEDULE_F' : ['Expense'].includes(a.AccountType) ? 'SCHEDULE_C' : 'BALANCE_SHEET',
+          line: a.AccountType,
+          active: a.Active !== false,
+          currentBalance: a.CurrentBalance || 0
         }));
       }
     } catch (e) {
@@ -2580,12 +2666,47 @@ router.get('/api/qbo/accounts', async (req, res) => {
   return res.json({
     success: true,
     targetCompany: target ? { realmId: target.realmId, name: target.companyName } : null,
-    farmAccounts: standardFarmAccounts,
-    businessAccounts: standardBusinessAccounts,
+    totalAccounts: allCategorizedStandard.length + liveAccounts.length,
+    allAccounts: [
+      ...liveAccounts,
+      ...allCategorizedStandard.filter(std => !liveAccounts.some(l => l.name.toLowerCase() === std.name.toLowerCase()))
+    ],
     bankAccounts: standardBankAccounts,
+    assetAccounts: standardAssetAccounts,
+    liabilityAccounts: standardLiabilityAccounts,
+    equityAccounts: standardEquityAccounts,
+    incomeAccounts: standardIncomeAccounts,
+    cogsAccounts: standardCogsAccounts,
+    expenseAccounts: standardExpenseAccounts,
+    otherAccounts: standardOtherAccounts,
+    farmAccounts: standardExpenseAccounts.filter(a => a.schedule === 'SCHEDULE_F').concat(standardCogsAccounts),
+    businessAccounts: standardExpenseAccounts.filter(a => a.schedule === 'SCHEDULE_C'),
     liveAccounts,
-    totalStandard: standardFarmAccounts.length + standardBusinessAccounts.length + standardBankAccounts.length
+    totalStandard: allCategorizedStandard.length
   });
+});
+
+// Create Custom QuickBooks Account
+router.post('/api/qbo/accounts/custom', (req, res) => {
+  const body = req.body || {};
+  const name = (body.name || '').toString().trim();
+  if (!name) {
+    return res.status(400).json({ success: false, error: 'Account name is required' });
+  }
+  const customAccount = {
+    id: `custom-${Date.now()}`,
+    accountNumber: (body.accountNumber || '').toString().trim() || `${Math.floor(6000 + Math.random() * 999)}`,
+    name,
+    qboType: body.qboType || 'Expense',
+    subType: body.subType || 'Supplies',
+    classification: body.classification || 'Expense',
+    schedule: body.schedule || 'SCHEDULE_F',
+    line: body.line || 'Line 32',
+    description: (body.description || '').toString().trim() || 'Custom user-created QuickBooks account',
+    active: true,
+    isCustom: true
+  };
+  return res.json({ success: true, account: customAccount });
 });
 
 // Push Processed Receipts to QuickBooks Online (Create Purchases/Expenses)

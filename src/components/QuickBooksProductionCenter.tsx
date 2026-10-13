@@ -27,9 +27,21 @@ import {
   ListFilter,
   FileText,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Search,
+  Plus,
+  Tag,
+  BookOpen,
+  Filter,
+  CheckCheck
 } from 'lucide-react';
 import { getBackendApiUrl } from '../urlUtils';
+import {
+  QboAccountItem,
+  getAllStandardQboAccounts,
+  searchQboAccounts,
+  QBO_CHART_CATEGORIES
+} from '../quickbooksChartOfAccounts';
 
 interface CompanyRecord {
   realmId: string;
@@ -302,7 +314,33 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [defaultFallbackAccount, setDefaultFallbackAccount] = useState<string>('Other farm expenses');
   const [newSyncedAccountInput, setNewSyncedAccountInput] = useState<string>('');
   const [showAddAccountForRealm, setShowAddAccountForRealm] = useState<string | null>(null);
-  const [showChartExplorer, setShowChartExplorer] = useState(false);
+  const [showChartExplorer, setShowChartExplorer] = useState(true);
+
+  // Comprehensive Chart of Accounts & Search states
+  const [allAccounts, setAllAccounts] = useState<QboAccountItem[]>(() => {
+    try {
+      const raw = localStorage.getItem('receipt_processor_qbo_all_accounts_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return getAllStandardQboAccounts(parsed);
+      }
+    } catch {}
+    return getAllStandardQboAccounts();
+  });
+  const [chartSearchQuery, setChartSearchQuery] = useState<string>('');
+  const [chartCategoryFilter, setChartCategoryFilter] = useState<string>('ALL');
+  const [selectedChartAccountDetails, setSelectedChartAccountDetails] = useState<QboAccountItem | null>(null);
+  const [showAddAccountModal, setShowAddAccountModal] = useState<boolean>(false);
+  const [newCustomAccount, setNewCustomAccount] = useState({
+    name: '',
+    accountNumber: '',
+    qboType: 'Expense',
+    subType: 'Supplies',
+    classification: 'Expense' as 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense',
+    schedule: 'SCHEDULE_F' as 'SCHEDULE_F' | 'SCHEDULE_C' | 'BALANCE_SHEET',
+    line: 'Line 32',
+    description: ''
+  });
 
   const [isLoadingAccounts, setIsLoadingAccounts] = useState(false);
   const [selectedPushRealmId, setSelectedPushRealmId] = useState<string>('');
@@ -965,15 +1003,76 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         if (Array.isArray(resp.data.businessAccounts)) setQboBusinessAccounts(resp.data.businessAccounts);
         if (Array.isArray(resp.data.bankAccounts)) setQboBankAccounts(resp.data.bankAccounts);
         if (Array.isArray(resp.data.liveAccounts)) setLiveAccounts(resp.data.liveAccounts);
-        showToast(`Loaded ${resp.data.totalStandard || 34} standard & live Chart of Accounts!`);
+
+        const incomingAll = Array.isArray(resp.data.allAccounts) ? resp.data.allAccounts : [];
+        const mergedAll = getAllStandardQboAccounts([
+          ...incomingAll,
+          ...(Array.isArray(resp.data.liveAccounts) ? resp.data.liveAccounts : [])
+        ]);
+        setAllAccounts(mergedAll);
+        try {
+          localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(mergedAll));
+        } catch {}
+
+        showToast(`Populated all ${mergedAll.length} standard & live QuickBooks Chart of Accounts!`);
       } else {
-        showToast('Connected company has 28 standard Chart of Accounts mappings available.');
+        const standardAll = getAllStandardQboAccounts();
+        setAllAccounts(standardAll);
+        showToast(`Populated ${standardAll.length} standard QuickBooks Chart of Accounts.`);
       }
     } catch {
-      showToast('Loaded standard Chart of Accounts mappings.');
+      const standardAll = getAllStandardQboAccounts();
+      setAllAccounts(standardAll);
+      showToast(`Populated ${standardAll.length} standard QuickBooks Chart of Accounts.`);
     } finally {
       setIsLoadingAccounts(false);
     }
+  };
+
+  const handleAddCustomChartAccount = async () => {
+    if (!newCustomAccount.name.trim()) {
+      showToast('Please provide an account name.');
+      return;
+    }
+    const item: QboAccountItem = {
+      id: `custom-${Date.now()}`,
+      accountNumber: newCustomAccount.accountNumber.trim() || `${Math.floor(6000 + Math.random() * 999)}`,
+      name: newCustomAccount.name.trim(),
+      qboType: newCustomAccount.qboType,
+      subType: newCustomAccount.subType,
+      classification: newCustomAccount.classification,
+      schedule: newCustomAccount.schedule,
+      line: newCustomAccount.line,
+      description: newCustomAccount.description.trim() || 'Custom user-defined QuickBooks account',
+      active: true,
+      isCustom: true
+    };
+    const updated = [item, ...allAccounts];
+    setAllAccounts(updated);
+    try {
+      localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(updated));
+    } catch {}
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/accounts/custom`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item)
+      });
+    } catch {}
+
+    setShowAddAccountModal(false);
+    setNewCustomAccount({
+      name: '',
+      accountNumber: '',
+      qboType: 'Expense',
+      subType: 'Supplies',
+      classification: 'Expense',
+      schedule: 'SCHEDULE_F',
+      line: 'Line 32',
+      description: ''
+    });
+    showToast(`Added custom account "${item.name}" (#${item.accountNumber}) to Chart of Accounts!`);
   };
 
   const handleSelectActiveCompany = async (realmId: string, customAccount?: string) => {
@@ -2795,40 +2894,329 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
               </div>
             </div>
 
-            {/* Optional Chart of Accounts Explorer Drawer */}
-            {showChartExplorer && (
-              <div className="p-4 rounded-xl bg-stone-950 border border-amber-500/30 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Layers className="w-4 h-4 text-amber-400" />
-                    <span className="font-bold text-xs text-stone-200">
-                      Standard &amp; Live QuickBooks Chart of Accounts Directory (34+ Accounts)
-                    </span>
-                  </div>
-                  <span className="text-[11px] text-stone-400 font-mono">
-                    Target: {targetChartType === 'FARM' ? 'Schedule F Farm' : 'Schedule C Commercial'}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2 max-h-60 overflow-y-auto text-xs pr-1">
-                  {[
-                    ...(qboFarmAccounts.length > 0 ? qboFarmAccounts : Object.entries(DEFAULT_ACCOUNT_MAPPINGS).map(([line, name]) => ({ line, name, qboType: 'Expense', schedule: 'SCHEDULE_F' }))),
-                    ...(qboBusinessAccounts.length > 0 ? qboBusinessAccounts : []),
-                    ...(qboBankAccounts.length > 0 ? qboBankAccounts : [])
-                  ].map((acc: any, aIdx: number) => (
-                    <div key={aIdx} className="p-2 rounded-lg bg-stone-900 border border-stone-800 flex items-center justify-between gap-2">
-                      <div>
-                        <span className="font-semibold text-stone-200 block text-[11px] truncate">{acc.name}</span>
-                        <span className="text-[10px] text-stone-500 font-mono">{acc.line || acc.schedule || acc.qboType}</span>
+            {/* Comprehensive Chart of Accounts Explorer & Search Directory */}
+            {showChartExplorer && (() => {
+              const searchedAccounts = searchQboAccounts(allAccounts, chartSearchQuery, chartCategoryFilter);
+              return (
+                <div className="p-5 rounded-2xl bg-stone-950 border border-amber-500/40 shadow-2xl space-y-4">
+                  {/* Title & Quick Stats */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                        <Layers className="w-4 h-4" />
                       </div>
-                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-stone-800 text-emerald-300">
-                        {acc.qboType || 'Expense'}
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="font-bold text-sm text-stone-100">
+                            QuickBooks Chart of Accounts Directory
+                          </h4>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            {allAccounts.length} Total Accounts Populated
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-stone-400">
+                          Search all bank, asset, liability, equity, income, COGS, and expense accounts across Schedule F &amp; C.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddAccountModal(true)}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>Add Custom Account</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Search Bar & Category Filters */}
+                  <div className="space-y-3 pt-1">
+                    <div className="flex flex-col sm:flex-row gap-2.5">
+                      <div className="relative flex-1">
+                        <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={chartSearchQuery}
+                          onChange={e => setChartSearchQuery(e.target.value)}
+                          placeholder="Search accounts by name, number (#1010), type (Bank, Asset, Expense), IRS schedule line, description..."
+                          className="w-full pl-9 pr-9 py-2 bg-stone-900 border border-stone-700 hover:border-stone-600 rounded-xl text-xs text-stone-100 placeholder-stone-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
+                        />
+                        {chartSearchQuery && (
+                          <button
+                            type="button"
+                            onClick={() => setChartSearchQuery('')}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-200 text-xs px-1 cursor-pointer"
+                            title="Clear search"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+
+                      {chartSearchQuery && (
+                        <div className="flex items-center text-xs text-amber-300 bg-amber-950/40 border border-amber-800/60 px-3 py-1.5 rounded-xl font-mono shrink-0">
+                          Found {searchedAccounts.length} match{searchedAccounts.length === 1 ? '' : 'es'}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Category Filter Pills */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] uppercase font-mono font-bold text-stone-400 mr-1 flex items-center gap-1">
+                        <Filter className="w-3 h-3 text-stone-400" />
+                        Filter:
+                      </span>
+                      {QBO_CHART_CATEGORIES.map(cat => {
+                        const isSelected = chartCategoryFilter === cat.key;
+                        const count = searchQboAccounts(allAccounts, '', cat.key).length;
+                        return (
+                          <button
+                            key={cat.key}
+                            type="button"
+                            onClick={() => setChartCategoryFilter(cat.key)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                              isSelected
+                                ? 'bg-amber-500 text-stone-950 font-bold shadow'
+                                : 'bg-stone-900 text-stone-400 hover:bg-stone-850 hover:text-stone-200 border border-stone-800'
+                            }`}
+                          >
+                            <span>{cat.label}</span>
+                            <span className={`text-[10px] font-mono px-1 rounded ${isSelected ? 'bg-stone-950/30 text-stone-950' : 'bg-stone-800 text-stone-400'}`}>
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Account List Display */}
+                  <div className="border border-stone-800 rounded-xl overflow-hidden bg-stone-900/50">
+                    <div className="px-3.5 py-2 bg-stone-900/90 border-b border-stone-800 flex items-center justify-between text-[11px] text-stone-400">
+                      <span>
+                        Showing <strong className="text-stone-200">{searchedAccounts.length}</strong> of {allAccounts.length} accounts
+                        {chartCategoryFilter !== 'ALL' && <span className="text-amber-400 ml-1">in {chartCategoryFilter}</span>}
+                        {chartSearchQuery && <span className="text-sky-400 ml-1">matching &quot;{chartSearchQuery}&quot;</span>}
+                      </span>
+                      <span className="font-mono text-[10px] text-stone-500">
+                        Click any account card to view details or assign as default payment
                       </span>
                     </div>
-                  ))}
+
+                    {searchedAccounts.length === 0 ? (
+                      <div className="p-8 text-center space-y-2">
+                        <div className="w-10 h-10 rounded-full bg-stone-800 flex items-center justify-center mx-auto text-stone-400">
+                          <Search className="w-5 h-5" />
+                        </div>
+                        <p className="text-xs text-stone-300 font-semibold">
+                          No QuickBooks accounts match &quot;{chartSearchQuery}&quot;
+                        </p>
+                        <p className="text-[11px] text-stone-500">
+                          Try searching for a different keyword, account number (e.g. 1010, 6020), or clear filters.
+                        </p>
+                        <div className="pt-2 flex justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => { setChartSearchQuery(''); setChartCategoryFilter('ALL'); }}
+                            className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-semibold cursor-pointer"
+                          >
+                            Reset Search &amp; Filters
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setNewCustomAccount(prev => ({ ...prev, name: chartSearchQuery }));
+                              setShowAddAccountModal(true);
+                            }}
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Add &quot;{chartSearchQuery}&quot; as New Account</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5 p-3 max-h-[460px] overflow-y-auto">
+                        {searchedAccounts.map((acc, aIdx) => {
+                          const isPayment = selectedPaymentAccount === acc.name;
+                          const isSelected = selectedChartAccountDetails?.id === acc.id;
+
+                          let typeBadgeClass = 'bg-stone-800 text-stone-300';
+                          if (acc.qboType === 'Bank') typeBadgeClass = 'bg-amber-500/20 text-amber-300 border border-amber-500/40';
+                          else if (acc.classification === 'Asset') typeBadgeClass = 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40';
+                          else if (acc.classification === 'Liability') typeBadgeClass = 'bg-red-500/20 text-red-300 border border-red-500/40';
+                          else if (acc.classification === 'Equity') typeBadgeClass = 'bg-purple-500/20 text-purple-300 border border-purple-500/40';
+                          else if (acc.classification === 'Revenue') typeBadgeClass = 'bg-teal-500/20 text-teal-300 border border-teal-500/40';
+                          else if (acc.qboType === 'Cost of Goods Sold') typeBadgeClass = 'bg-orange-500/20 text-orange-300 border border-orange-500/40';
+                          else if (acc.classification === 'Expense') typeBadgeClass = 'bg-sky-500/20 text-sky-300 border border-sky-500/40';
+
+                          return (
+                            <div
+                              key={acc.id || aIdx}
+                              onClick={() => setSelectedChartAccountDetails(isSelected ? null : acc)}
+                              className={`p-3 rounded-xl transition-all cursor-pointer border flex flex-col justify-between gap-2 ${
+                                isSelected
+                                  ? 'bg-stone-900 border-amber-400 ring-1 ring-amber-400 shadow-md'
+                                  : isPayment
+                                  ? 'bg-stone-900/90 border-amber-500/40 hover:border-amber-400'
+                                  : 'bg-stone-950/70 border-stone-800/80 hover:bg-stone-900/80 hover:border-stone-700'
+                              }`}
+                            >
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between gap-1.5">
+                                  <div className="flex items-center gap-1.5 truncate">
+                                    {acc.accountNumber && (
+                                      <span className="font-mono text-[10px] font-bold text-amber-400/90 bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-800/40 shrink-0">
+                                        #{acc.accountNumber}
+                                      </span>
+                                    )}
+                                    <span className="font-bold text-xs text-stone-100 truncate" title={acc.name}>
+                                      {acc.name}
+                                    </span>
+                                  </div>
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono shrink-0 ${typeBadgeClass}`}>
+                                    {acc.qboType || acc.classification}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 text-[10px] text-stone-400 font-mono">
+                                  <span>{acc.subType || acc.classification}</span>
+                                  {acc.line && (
+                                    <>
+                                      <span>•</span>
+                                      <span className="text-emerald-400">{acc.line}</span>
+                                    </>
+                                  )}
+                                  {acc.schedule && acc.schedule !== 'BALANCE_SHEET' && (
+                                    <>
+                                      <span>•</span>
+                                      <span className={acc.schedule === 'SCHEDULE_F' ? 'text-amber-400' : 'text-sky-400'}>
+                                        {acc.schedule === 'SCHEDULE_F' ? 'Sched F' : 'Sched C'}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+
+                                {acc.description && (
+                                  <p className="text-[11px] text-stone-400 line-clamp-2 leading-relaxed">
+                                    {acc.description}
+                                  </p>
+                                )}
+                              </div>
+
+                              <div className="pt-2 border-t border-stone-800/60 flex items-center justify-between gap-2 text-[10px]">
+                                {isPayment ? (
+                                  <span className="text-amber-300 font-bold flex items-center gap-1">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                                    Active Payment Account
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelectedPaymentAccount(acc.name);
+                                      if (selectedPushRealmId) {
+                                        handleSelectActiveCompany(selectedPushRealmId, acc.name);
+                                      }
+                                      showToast(`Set "${acc.name}" as active payment source.`);
+                                    }}
+                                    className="text-stone-400 hover:text-amber-300 font-semibold cursor-pointer"
+                                  >
+                                    Use as Payment Source
+                                  </button>
+                                )}
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(acc.name);
+                                    showToast(`Copied "${acc.name}" to clipboard`);
+                                  }}
+                                  className="text-stone-400 hover:text-stone-200 cursor-pointer"
+                                  title="Copy account name"
+                                >
+                                  Copy Name
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Selected Account Inspector Drawer */}
+                  {selectedChartAccountDetails && (
+                    <div className="p-4 rounded-xl bg-stone-900 border border-amber-400/50 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <BookOpen className="w-4 h-4 text-amber-400" />
+                          <h5 className="font-bold text-xs text-stone-100">
+                            Account Inspector: {selectedChartAccountDetails.name}
+                          </h5>
+                          {selectedChartAccountDetails.accountNumber && (
+                            <span className="font-mono text-xs text-amber-300">
+                              (#{selectedChartAccountDetails.accountNumber})
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedChartAccountDetails(null)}
+                          className="text-stone-400 hover:text-stone-200 text-xs px-1 cursor-pointer"
+                        >
+                          ✕
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                        <div className="p-2 rounded bg-stone-950 border border-stone-800">
+                          <span className="text-[10px] text-stone-500 font-mono block">Type</span>
+                          <span className="font-semibold text-stone-200">{selectedChartAccountDetails.qboType}</span>
+                        </div>
+                        <div className="p-2 rounded bg-stone-950 border border-stone-800">
+                          <span className="text-[10px] text-stone-500 font-mono block">Sub-Type</span>
+                          <span className="font-semibold text-stone-200">{selectedChartAccountDetails.subType || 'General'}</span>
+                        </div>
+                        <div className="p-2 rounded bg-stone-950 border border-stone-800">
+                          <span className="text-[10px] text-stone-500 font-mono block">Classification</span>
+                          <span className="font-semibold text-stone-200">{selectedChartAccountDetails.classification}</span>
+                        </div>
+                        <div className="p-2 rounded bg-stone-950 border border-stone-800">
+                          <span className="text-[10px] text-stone-500 font-mono block">IRS Tax Line</span>
+                          <span className="font-semibold text-emerald-300">{selectedChartAccountDetails.line || 'Standard'}</span>
+                        </div>
+                      </div>
+
+                      {selectedChartAccountDetails.description && (
+                        <p className="text-xs text-stone-300 bg-stone-950/60 p-2 rounded border border-stone-800">
+                          {selectedChartAccountDetails.description}
+                        </p>
+                      )}
+
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPaymentAccount(selectedChartAccountDetails.name);
+                            if (selectedPushRealmId) handleSelectActiveCompany(selectedPushRealmId, selectedChartAccountDetails.name);
+                            showToast(`Set "${selectedChartAccountDetails.name}" as active payment source.`);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs cursor-pointer"
+                        >
+                          Set as Default Working Payment Account
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* Schedule F (Farm) Mappings */}
             <div className="pt-4 border-t border-stone-800 space-y-3">
@@ -2847,27 +3235,12 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                   .filter(([k]) => !k.includes('(C)') && !['Line 8', 'Line 9', 'Line 11', 'Line 17', 'Line 18', 'Line 21', 'Line 24'].includes(k))
                   .map(([line, defaultAcc]) => {
                     const currentVal = accountMappings[line] || defaultAcc;
-                    const availableOptions = [
+                    const availableOptions = Array.from(new Set([
                       defaultAcc,
-                      'Car and truck expenses',
-                      'Conservation expenses',
-                      'Custom hire (machine work)',
-                      'Feed purchased',
-                      'Fertilizers and lime',
-                      'Freight and trucking',
-                      'Gasoline, fuel, and oil',
-                      'Insurance (other than health)',
-                      'Interest: Mortgage & loans',
-                      'Labor hired (less employment credits)',
-                      'Repairs and maintenance',
-                      'Seeds and plants purchased',
-                      'Storage and warehousing',
-                      'Supplies purchased',
-                      'Taxes (real estate / property)',
-                      'Utilities',
-                      'Veterinary, breeding, medicine',
-                      'Other farm expenses'
-                    ];
+                      ...allAccounts
+                        .filter(a => a.classification === 'Expense' || a.schedule === 'SCHEDULE_F' || a.qboType === 'Cost of Goods Sold')
+                        .map(a => a.name)
+                    ]));
 
                     return (
                       <div key={line} className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -2921,21 +3294,12 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                   .filter(([k]) => k.includes('(C)') || ['Line 8', 'Line 9', 'Line 11', 'Line 17', 'Line 18', 'Line 21', 'Line 24'].includes(k))
                   .map(([line, defaultAcc]) => {
                     const currentVal = accountMappings[line] || defaultAcc;
-                    const availableOptions = [
+                    const availableOptions = Array.from(new Set([
                       defaultAcc,
-                      'Advertising',
-                      'Car and truck expenses',
-                      'Commissions and fees',
-                      'Contract labor',
-                      'Insurance (other than health)',
-                      'Legal and professional services',
-                      'Office expense',
-                      'Repairs and maintenance',
-                      'Supplies',
-                      'Travel and meals',
-                      'Utilities',
-                      'Other business expenses'
-                    ];
+                      ...allAccounts
+                        .filter(a => a.classification === 'Expense' || a.schedule === 'SCHEDULE_C' || a.schedule === 'ALL')
+                        .map(a => a.name)
+                    ]));
 
                     return (
                       <div key={line} className="p-3 rounded-xl bg-stone-950/80 border border-stone-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -3329,6 +3693,154 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                   </a>
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add Custom Account to Chart of Accounts */}
+      {showAddAccountModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-stone-900 border border-stone-800 rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-5 border-b border-stone-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                  <Plus className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-stone-100">Add Account to Chart of Accounts</h3>
+                  <p className="text-[11px] text-stone-400">Create a new standardized or custom account for syncing</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddAccountModal(false)}
+                className="text-stone-400 hover:text-stone-200 p-1 rounded-lg cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                  Account Name <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={newCustomAccount.name}
+                  onChange={e => setNewCustomAccount({ ...newCustomAccount, name: e.target.value })}
+                  placeholder="e.g. Field Seed Corn & Alfalfa Mix"
+                  className="w-full px-3 py-2 bg-stone-950 border border-stone-700 rounded-xl text-xs text-stone-100 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                    Account Number (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={newCustomAccount.accountNumber}
+                    onChange={e => setNewCustomAccount({ ...newCustomAccount, accountNumber: e.target.value })}
+                    placeholder="e.g. 6055"
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-700 rounded-xl text-xs text-stone-100 font-mono focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                    QuickBooks Account Type
+                  </label>
+                  <select
+                    value={newCustomAccount.qboType}
+                    onChange={e => {
+                      const t = e.target.value;
+                      let cls: 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense' = 'Expense';
+                      if (['Bank', 'Other Current Asset', 'Fixed Asset', 'Accounts Receivable'].includes(t)) cls = 'Asset';
+                      else if (['Accounts Payable', 'Credit Card', 'Other Current Liability', 'Long Term Liability'].includes(t)) cls = 'Liability';
+                      else if (t === 'Equity') cls = 'Equity';
+                      else if (['Income', 'Other Income'].includes(t)) cls = 'Revenue';
+                      setNewCustomAccount({ ...newCustomAccount, qboType: t, classification: cls });
+                    }}
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-700 rounded-xl text-xs text-stone-100 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="Expense">Expense</option>
+                    <option value="Cost of Goods Sold">Cost of Goods Sold</option>
+                    <option value="Bank">Bank / Cash</option>
+                    <option value="Other Current Asset">Other Current Asset</option>
+                    <option value="Fixed Asset">Fixed Asset</option>
+                    <option value="Accounts Payable">Accounts Payable (A/P)</option>
+                    <option value="Credit Card">Credit Card</option>
+                    <option value="Other Current Liability">Other Current Liability</option>
+                    <option value="Long Term Liability">Long Term Liability</option>
+                    <option value="Equity">Equity</option>
+                    <option value="Income">Income / Revenue</option>
+                    <option value="Other Expense">Other Expense</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                    IRS Tax Schedule
+                  </label>
+                  <select
+                    value={newCustomAccount.schedule}
+                    onChange={e => setNewCustomAccount({ ...newCustomAccount, schedule: e.target.value as any })}
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-700 rounded-xl text-xs text-stone-100 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                  >
+                    <option value="SCHEDULE_F">Schedule F (Farm)</option>
+                    <option value="SCHEDULE_C">Schedule C (Commercial)</option>
+                    <option value="BALANCE_SHEET">Balance Sheet / Operating</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                    Tax Schedule Line
+                  </label>
+                  <input
+                    type="text"
+                    value={newCustomAccount.line}
+                    onChange={e => setNewCustomAccount({ ...newCustomAccount, line: e.target.value })}
+                    placeholder="e.g. Line 25 or Line 32"
+                    className="w-full px-3 py-2 bg-stone-950 border border-stone-700 rounded-xl text-xs text-stone-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[11px] uppercase font-mono font-bold text-stone-400 block mb-1">
+                  Description / Operational Notes
+                </label>
+                <textarea
+                  value={newCustomAccount.description}
+                  onChange={e => setNewCustomAccount({ ...newCustomAccount, description: e.target.value })}
+                  placeholder="Explain what receipts or expenses will map into this account..."
+                  rows={2}
+                  className="w-full px-3 py-2 bg-stone-950 border border-stone-700 rounded-xl text-xs text-stone-100 focus:outline-none focus:border-emerald-500 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 bg-stone-950 border-t border-stone-800 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setShowAddAccountModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-stone-400 hover:text-stone-200 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAddCustomChartAccount}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow cursor-pointer"
+              >
+                Add Account
+              </button>
             </div>
           </div>
         </div>

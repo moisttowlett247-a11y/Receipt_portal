@@ -50,6 +50,12 @@ import { getW2Records, get1099Records, subscribeToTaxDocuments } from '../taxDoc
 import { W2Record, Form1099Record } from '../taxDocumentTypes';
 import { getBackendApiUrl } from '../urlUtils';
 import { fetchUnifiedIpTelemetry, TrackedIpSession, detectMyIp, IpOnlineState } from '../ipTrackerService';
+import {
+  QboAccountItem,
+  getAllStandardQboAccounts,
+  searchQboAccounts,
+  QBO_CHART_CATEGORIES
+} from '../quickbooksChartOfAccounts';
 
 interface QboSyncLogItem {
   id?: string;
@@ -170,6 +176,20 @@ export function AdminHomeOverview({
 
   const [showAddAccountForRealm, setShowAddAccountForRealm] = useState<string | null>(null);
   const [newAccountInput, setNewAccountInput] = useState<string>('');
+
+  // Chart of accounts search & directory states
+  const [qboChartSearchQuery, setQboChartSearchQuery] = useState('');
+  const [qboChartCategoryFilter, setQboChartCategoryFilter] = useState('ALL');
+  const [qboAllAccounts, setQboAllAccounts] = useState<QboAccountItem[]>(() => {
+    try {
+      const raw = localStorage.getItem('receipt_processor_qbo_all_accounts_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return getAllStandardQboAccounts(parsed);
+      }
+    } catch {}
+    return getAllStandardQboAccounts();
+  });
   const STANDARD_SYNC_PRESETS = [
     'Operating Checking (Acct ****4120)',
     'Farm Operating & Expense Ledger',
@@ -365,6 +385,23 @@ export function AdminHomeOverview({
         
         setQboActiveAccount(currentAcc);
         setQboActiveChart(active.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)');
+      }
+    } catch {}
+
+    try {
+      // 2b. Fetch QuickBooks Chart of Accounts
+      const resAccounts = await fetch(`${backendBase}/api/qbo/accounts`);
+      if (resAccounts.ok) {
+        const accData = await resAccounts.json();
+        const incoming = Array.isArray(accData.allAccounts) ? accData.allAccounts : [];
+        const merged = getAllStandardQboAccounts([
+          ...incoming,
+          ...(Array.isArray(accData.liveAccounts) ? accData.liveAccounts : [])
+        ]);
+        setQboAllAccounts(merged);
+        try {
+          localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+        } catch {}
       }
     } catch {}
 
@@ -1752,64 +1789,170 @@ export function AdminHomeOverview({
               </div>
             </div>
 
-            {/* Target Chart of Accounts Mapping Quick Preview */}
-            <div className="p-4 rounded-xl bg-stone-900/60 border border-stone-800 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-sky-400" />
-                  <span className="text-xs font-bold text-stone-200">
-                    Active Chart of Accounts Mapping: {qboActiveChart}
-                  </span>
-                </div>
-                <button
-                  onClick={() => onNavigateTab('qbo')}
-                  className="text-xs text-sky-400 hover:text-sky-300 font-semibold flex items-center gap-1 cursor-pointer"
-                >
-                  <span>Configure Full Mappings</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
+            {/* Target Chart of Accounts Mapping & Interactive Directory with Search */}
+            {(() => {
+              const searchedAccounts = searchQboAccounts(qboAllAccounts, qboChartSearchQuery, qboChartCategoryFilter);
+              return (
+                <div className="p-4 rounded-xl bg-stone-900/70 border border-stone-800 space-y-3.5 shadow-lg">
+                  {/* Header */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-sky-400" />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-stone-200">
+                            QuickBooks Chart of Accounts Directory &amp; Search
+                          </span>
+                          <span className="px-1.5 py-0.2 rounded font-mono text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                            {qboAllAccounts.length} Populated
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-stone-400">
+                          Active Target: <span className="text-amber-300 font-semibold">{qboActiveChart}</span>
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => onNavigateTab('qbo')}
+                      className="text-xs text-sky-400 hover:text-sky-300 font-semibold flex items-center gap-1 cursor-pointer self-start sm:self-auto"
+                    >
+                      <span>Full QBO Production Center</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
 
-              {qboActiveChart.includes('Schedule C') ? (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-sky-400 font-mono font-bold block text-[11px]">Line 8 (Ads)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Advertising & marketing</span>
+                  {/* Real-time Account Search Bar */}
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <div className="relative flex-1">
+                      <Search className="w-4 h-4 text-stone-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={qboChartSearchQuery}
+                        onChange={e => setQboChartSearchQuery(e.target.value)}
+                        placeholder="Search accounts by name, number (#1010, #6020), type, IRS line, description..."
+                        className="w-full pl-9 pr-8 py-1.5 bg-stone-950 border border-stone-700 hover:border-stone-600 rounded-lg text-xs text-stone-100 placeholder-stone-500 focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400"
+                      />
+                      {qboChartSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setQboChartSearchQuery('')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-200 text-xs px-1 cursor-pointer"
+                          title="Clear search"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Category Filter Dropdown or Pills */}
+                    <div className="flex items-center gap-1 shrink-0 overflow-x-auto pb-1 sm:pb-0">
+                      {['ALL', 'Bank', 'Expense', 'Asset', 'Liability', 'SCHEDULE_F', 'SCHEDULE_C'].map(catKey => {
+                        const isSel = qboChartCategoryFilter === catKey;
+                        const label = catKey === 'ALL' ? 'All' : catKey === 'SCHEDULE_F' ? 'Sched F' : catKey === 'SCHEDULE_C' ? 'Sched C' : catKey;
+                        return (
+                          <button
+                            key={catKey}
+                            type="button"
+                            onClick={() => setQboChartCategoryFilter(catKey)}
+                            className={`px-2 py-1 rounded text-[10px] font-semibold transition-all cursor-pointer ${
+                              isSel
+                                ? 'bg-amber-500 text-stone-950 font-bold'
+                                : 'bg-stone-950 text-stone-400 hover:text-stone-200 border border-stone-800'
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-sky-400 font-mono font-bold block text-[11px]">Line 9 (Auto)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Car and truck expenses</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-sky-400 font-mono font-bold block text-[11px]">Line 18 (Office)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Office & admin expenses</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-sky-400 font-mono font-bold block text-[11px]">Line 22 (Supplies)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Supplies & materials</span>
+
+                  {/* Search Results / Account Cards Grid */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-stone-400 font-mono px-1">
+                      <span>Showing {searchedAccounts.length} of {qboAllAccounts.length} accounts</span>
+                      {qboChartSearchQuery && (
+                        <span className="text-amber-300 font-bold">Matching &quot;{qboChartSearchQuery}&quot;</span>
+                      )}
+                    </div>
+
+                    {searchedAccounts.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-stone-400 bg-stone-950/60 rounded-lg border border-stone-800">
+                        No accounts match &quot;{qboChartSearchQuery}&quot;. Try searching for another name or number.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-56 overflow-y-auto pr-1">
+                        {searchedAccounts.slice(0, 32).map((acc, aIdx) => {
+                          const isActiveAcc = qboActiveAccount === acc.name;
+                          return (
+                            <div
+                              key={acc.id || aIdx}
+                              className={`p-2 rounded-lg border flex flex-col justify-between gap-1 transition-all ${
+                                isActiveAcc
+                                  ? 'bg-amber-950/30 border-amber-500/50 text-amber-200'
+                                  : 'bg-stone-950/80 border-stone-800 hover:border-stone-700 text-stone-300'
+                              }`}
+                            >
+                              <div className="space-y-0.5">
+                                <div className="flex items-center justify-between gap-1">
+                                  <div className="flex items-center gap-1 truncate">
+                                    {acc.accountNumber && (
+                                      <span className="font-mono text-[9px] text-amber-400/90 font-bold">
+                                        #{acc.accountNumber}
+                                      </span>
+                                    )}
+                                    <span className="font-semibold text-[11px] truncate text-stone-100" title={acc.name}>
+                                      {acc.name}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-1 text-[9px] font-mono text-stone-400">
+                                  <span className="px-1 py-0.2 rounded bg-stone-900 border border-stone-800 text-stone-300">
+                                    {acc.qboType}
+                                  </span>
+                                  {acc.line && (
+                                    <span className="text-emerald-400 truncate">{acc.line}</span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="pt-1 border-t border-stone-800/60 flex items-center justify-between text-[9px]">
+                                {isActiveAcc ? (
+                                  <span className="text-amber-400 font-bold">Active Working</span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (selectedQboRealmId) {
+                                        handleSwitchWorkingQboCompany(selectedQboRealmId, acc.name);
+                                      }
+                                    }}
+                                    className="text-stone-400 hover:text-amber-300 font-semibold cursor-pointer"
+                                  >
+                                    Switch To
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(acc.name);
+                                    onToast(`Copied "${acc.name}"`);
+                                  }}
+                                  className="text-stone-400 hover:text-stone-200 cursor-pointer"
+                                  title="Copy"
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-emerald-400 font-mono font-bold block text-[11px]">Line 14 (Feed)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Feed purchased</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-emerald-400 font-mono font-bold block text-[11px]">Line 17 (Fuel)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Gasoline, fuel, &amp; oil</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-emerald-400 font-mono font-bold block text-[11px]">Line 22 (Repairs)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Repairs &amp; maintenance</span>
-                  </div>
-                  <div className="p-2 rounded-lg bg-stone-950/80 border border-stone-800">
-                    <span className="text-emerald-400 font-mono font-bold block text-[11px]">Line 25 (Supplies)</span>
-                    <span className="text-stone-300 text-[11px] truncate block">Supplies purchased</span>
-                  </div>
-                </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* QuickBooks Synchronization Audit Log */}
             <div className="space-y-3">
