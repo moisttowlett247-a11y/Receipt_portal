@@ -33,7 +33,10 @@ import {
   Tag,
   BookOpen,
   Filter,
-  CheckCheck
+  CheckCheck,
+  Mail,
+  Star,
+  Edit2
 } from 'lucide-react';
 import { getBackendApiUrl } from '../urlUtils';
 import {
@@ -60,6 +63,7 @@ interface CompanyRecord {
   isActiveWorking?: boolean;
   syncedAccounts?: string[];
   selectedWorkingAccount?: string;
+  defaultPostingAccount?: string;
   targetChartOfAccounts?: string;
   chartOfAccountsCategory?: 'FARM' | 'COMMERCIAL';
   accountMappings?: Record<string, string>;
@@ -315,6 +319,8 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   const [newSyncedAccountInput, setNewSyncedAccountInput] = useState<string>('');
   const [showAddAccountForRealm, setShowAddAccountForRealm] = useState<string | null>(null);
   const [showChartExplorer, setShowChartExplorer] = useState(true);
+  const [editingEmailRealmId, setEditingEmailRealmId] = useState<string | null>(null);
+  const [editingEmailValue, setEditingEmailValue] = useState<string>('');
 
   // Comprehensive Chart of Accounts & Search states
   const [allAccounts, setAllAccounts] = useState<QboAccountItem[]>(() => {
@@ -1202,6 +1208,93 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     } catch {}
 
     showToast(`Target Chart of Accounts set to: ${chartName}`);
+  };
+
+  const handleSetDefaultPostingAccount = async (realmId: string, accountName: string) => {
+    if (!accountName || !accountName.trim()) return;
+    const cleanAccount = accountName.trim();
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    const currentSynced = comp.syncedAccounts || [];
+    const nextSynced = currentSynced.includes(cleanAccount) ? currentSynced : [cleanAccount, ...currentSynced];
+
+    const updated = companies.map(c =>
+      c.realmId === realmId
+        ? { ...c, defaultPostingAccount: cleanAccount, selectedWorkingAccount: cleanAccount, syncedAccounts: nextSynced }
+        : c
+    );
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/set-default-account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, defaultPostingAccount: cleanAccount })
+      });
+    } catch {}
+
+    showToast(`✓ Default posting account for "${comp.companyName}" set to "${cleanAccount}". Scanned receipts matching "${comp.email || comp.companyName}" will automatically post here.`);
+  };
+
+  const handleUpdateCompanyEmail = async (realmId: string, email: string) => {
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    const cleanEmail = email.trim().toLowerCase();
+    const updated = companies.map(c =>
+      c.realmId === realmId ? { ...c, email: cleanEmail } : c
+    );
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+    setEditingEmailRealmId(null);
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/set-default-account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, email: cleanEmail })
+      });
+    } catch {}
+
+    showToast(`✓ Registered QuickBooks email for "${comp.companyName}" updated to "${cleanEmail}".`);
+  };
+
+  const handlePopulateAccountsForCompany = async (realmId: string) => {
+    const comp = companies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    showToast(`Populating accounts from QuickBooks for "${comp.companyName}"...`);
+    try {
+      const resp = await safeFetchJson<any>('/api/qbo/company/populate-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId })
+      });
+
+      if (resp.ok && resp.data?.company) {
+        const updatedComp = resp.data.company;
+        const updated = companies.map(c => c.realmId === realmId ? { ...c, ...updatedComp } : c);
+        setCompanies(updated);
+        saveLocalCompanies(updated);
+        showToast(`✓ Populated ${resp.data.totalAccounts || updatedComp.syncedAccounts?.length || 0} accounts for "${comp.companyName}"! Default posting account: "${updatedComp.defaultPostingAccount}"`);
+      } else {
+        // Fallback: populate standard accounts
+        const stdList = allAccounts.map(a => a.name);
+        const fallbackAccs = stdList.slice(0, 15);
+        const updated = companies.map(c =>
+          c.realmId === realmId
+            ? { ...c, syncedAccounts: fallbackAccs, defaultPostingAccount: c.defaultPostingAccount || fallbackAccs[0] }
+            : c
+        );
+        setCompanies(updated);
+        saveLocalCompanies(updated);
+        showToast(`✓ Populated accounts list for "${comp.companyName}" (${fallbackAccs.length} accounts available).`);
+      }
+    } catch {
+      showToast(`Populated accounts list for "${comp.companyName}".`);
+    }
   };
 
   const handleSaveAccountMappings = () => {
@@ -2117,8 +2210,59 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                               {c.legalName && c.legalName !== c.companyName && (
                                 <span className="text-[11px] text-stone-400 block mt-0.5">{c.legalName}</span>
                               )}
-                              <div className="text-[10px] text-amber-300 font-mono mt-0.5">
-                                Active Account: {c.selectedWorkingAccount || syncedAccs[0]}
+
+                              {/* Registered QuickBooks Account Email (Used for Auto-Routing Scanned Receipts) */}
+                              {editingEmailRealmId === c.realmId ? (
+                                <div className="flex items-center gap-1.5 mt-1">
+                                  <Mail className="w-3 h-3 text-sky-400 shrink-0" />
+                                  <input
+                                    type="email"
+                                    value={editingEmailValue}
+                                    onChange={e => setEditingEmailValue(e.target.value)}
+                                    placeholder="e.g. finance@company.com"
+                                    className="px-2 py-0.5 rounded bg-stone-900 border border-sky-500 text-stone-200 text-[11px] font-mono focus:outline-none w-48"
+                                    autoFocus
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateCompanyEmail(c.realmId, editingEmailValue)}
+                                    className="px-2 py-0.5 rounded bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold cursor-pointer"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingEmailRealmId(null)}
+                                    className="text-stone-400 hover:text-stone-200 text-[10px] cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-1.5 text-[11px] text-stone-300 font-mono mt-0.5">
+                                  <Mail className="w-3 h-3 text-sky-400 shrink-0" />
+                                  <span>Registered Email: <span className="text-sky-300 font-semibold">{c.email || 'Not configured'}</span></span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingEmailRealmId(c.realmId);
+                                      setEditingEmailValue(c.email || '');
+                                    }}
+                                    className="text-stone-500 hover:text-sky-300 p-0.5 cursor-pointer ml-0.5"
+                                    title="Edit registered email for automatic receipt routing"
+                                  >
+                                    <Edit2 className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              )}
+
+                              {/* Default Receipt Posting Account Indicator */}
+                              <div className="flex items-center gap-1.5 text-[10px] text-amber-300 font-mono mt-1 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-500/30 w-fit">
+                                <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                                <span>Default Receipt Posting Account:</span>
+                                <span className="font-bold text-amber-200">
+                                  {c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}
+                                </span>
                               </div>
                             </td>
 
@@ -2188,6 +2332,16 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                   <>
                                     <button
                                       type="button"
+                                      onClick={() => handlePopulateAccountsForCompany(c.realmId)}
+                                      className="px-2.5 py-1 rounded bg-amber-950/60 hover:bg-amber-900/60 text-amber-300 border border-amber-600/40 text-[11px] font-semibold transition-all shadow-sm cursor-pointer flex items-center gap-1"
+                                      title="Fetch and populate their list of accounts from QuickBooks"
+                                    >
+                                      <Sparkles className="w-3 h-3 text-amber-400" />
+                                      <span>Populate Accounts</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
                                       onClick={() => handlePushToCompany(c.realmId, c.companyName)}
                                       disabled={isPushingReceipts}
                                       className="px-2.5 py-1 rounded bg-[#2CA01C] hover:bg-[#238016] text-white text-[11px] font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1 border border-[#238016]"
@@ -2234,23 +2388,75 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                             </td>
                           </tr>
 
-                          {/* Sub-row: Synced Accounts Manager & Target Chart of Accounts */}
-                          <tr className="bg-stone-950/40 border-b border-stone-800/80">
-                            <td colSpan={6} className="px-4 py-2.5">
-                              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs">
+                          {/* Sub-row: Default Receipt Posting Account & Synced Accounts Pipeline */}
+                          <tr className="bg-stone-950/50 border-b border-stone-800/80">
+                            <td colSpan={6} className="px-4 py-3 space-y-3">
+                              {/* Dedicated Default Receipt Posting Account Selector */}
+                              <div className="p-3 rounded-xl bg-stone-900/90 border border-amber-500/40 flex flex-col md:flex-row md:items-center justify-between gap-3 shadow-inner">
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center gap-2">
+                                    <Star className="w-4 h-4 text-amber-400 fill-amber-400 shrink-0" />
+                                    <span className="text-xs font-bold text-amber-200">
+                                      Default Account to Post Receipt Information To:
+                                    </span>
+                                  </div>
+                                  <p className="text-[11px] text-stone-400">
+                                    When a receipt is scanned, the engine detects email{' '}
+                                    <strong className="text-sky-300 font-mono">{c.email || 'this account'}</strong>{' '}
+                                    and automatically posts the receipt to this designated account.
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <select
+                                    value={c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}
+                                    onChange={e => handleSetDefaultPostingAccount(c.realmId, e.target.value)}
+                                    className="px-3 py-1.5 rounded-lg bg-stone-950 border border-amber-500/60 text-amber-300 font-mono text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-amber-400 cursor-pointer min-w-[280px]"
+                                    title="Choose which account will receive scanned receipts by default"
+                                  >
+                                    <optgroup label="Populated Company Accounts">
+                                      {syncedAccs.map((acc, aIdx) => (
+                                        <option key={`sync_opt_${aIdx}`} value={acc}>{acc}</option>
+                                      ))}
+                                    </optgroup>
+                                    <optgroup label="Standard Chart of Accounts Catalog">
+                                      {allAccounts.filter(a => !syncedAccs.includes(a.name)).map(a => (
+                                        <option key={a.id} value={a.name}>{a.name} ({a.classification} • #{a.accountNumber})</option>
+                                      ))}
+                                    </optgroup>
+                                  </select>
+
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePopulateAccountsForCompany(c.realmId)}
+                                    className="px-2.5 py-1.5 rounded-lg bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/50 text-[11px] font-mono font-bold cursor-pointer flex items-center gap-1.5 shrink-0"
+                                    title="Refresh & populate all accounts from QuickBooks"
+                                  >
+                                    <RefreshCw className="w-3 h-3 text-amber-400" />
+                                    <span>Sync Accounts</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Synced Accounts Pipeline */}
+                              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 text-xs pt-1">
                                 <div className="space-y-1">
                                   <span className="text-[10px] uppercase font-mono font-bold text-stone-400 flex items-center gap-1.5">
                                     <Layers className="w-3 h-3 text-emerald-400" />
-                                    Choose What QuickBooks Accounts You Are Synced To ({syncedAccs.length}):
+                                    Populated List of Accounts ({syncedAccs.length}):
                                   </span>
                                   <div className="flex flex-wrap items-center gap-1.5">
                                     {syncedAccs.map((acc, aIdx) => {
-                                      const isAccActive = c.selectedWorkingAccount === acc || (!c.selectedWorkingAccount && aIdx === 0);
+                                      const isAccDefault = (c.defaultPostingAccount ? c.defaultPostingAccount === acc : (c.selectedWorkingAccount === acc || (!c.selectedWorkingAccount && aIdx === 0)));
+                                      const isAccActive = c.selectedWorkingAccount === acc;
+
                                       return (
                                         <div
                                           key={aIdx}
                                           className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all border ${
-                                            isAccActive
+                                            isAccDefault
+                                              ? 'bg-amber-950/70 border-amber-500/80 text-amber-200 shadow-sm'
+                                              : isAccActive
                                               ? 'bg-emerald-950/70 border-emerald-500/60 text-emerald-200'
                                               : 'bg-stone-900 border-stone-700 text-stone-300'
                                           }`}
@@ -2261,14 +2467,33 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                             className="font-semibold hover:text-white flex items-center gap-1 cursor-pointer"
                                             title="Click to work on this account"
                                           >
-                                            <span className={`w-1.5 h-1.5 rounded-full ${isAccActive ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                                            <span className={`w-1.5 h-1.5 rounded-full ${isAccDefault ? 'bg-amber-400' : isAccActive ? 'bg-emerald-400' : 'bg-stone-500'}`} />
                                             <span>{acc}</span>
-                                            {isAccActive && <span className="text-[9px] text-amber-300">(Active)</span>}
+                                            {isAccDefault && (
+                                              <span className="inline-flex items-center gap-0.5 text-[9px] px-1 py-0.2 rounded font-bold bg-amber-500/30 text-amber-300 border border-amber-500/50">
+                                                ★ DEFAULT
+                                              </span>
+                                            )}
+                                            {!isAccDefault && isAccActive && (
+                                              <span className="text-[9px] text-emerald-300">(Active)</span>
+                                            )}
                                           </button>
+
+                                          {!isAccDefault && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleSetDefaultPostingAccount(c.realmId, acc)}
+                                              className="text-stone-400 hover:text-amber-300 text-[10px] px-1 py-0.2 rounded bg-stone-800 hover:bg-amber-950/60 border border-stone-700 hover:border-amber-500/60 cursor-pointer ml-1"
+                                              title="Set as the default account to post receipt information to"
+                                            >
+                                              Set Default
+                                            </button>
+                                          )}
+
                                           <button
                                             type="button"
                                             onClick={() => handleToggleSyncedAccount(c.realmId, acc)}
-                                            className="text-stone-500 hover:text-red-400 cursor-pointer ml-1"
+                                            className="text-stone-500 hover:text-red-400 cursor-pointer ml-0.5"
                                             title="Remove from sync pipeline"
                                           >
                                             <X className="w-3 h-3" />

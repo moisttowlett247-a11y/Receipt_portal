@@ -219,6 +219,7 @@ function getInitialDefaultCompanies() {
         'Agricultural Payroll Reserve'
       ],
       selectedWorkingAccount: 'Operating Checking (Acct ****4120)',
+      defaultPostingAccount: 'Operating Checking (Acct ****4120)',
       targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
       chartOfAccountsCategory: 'FARM'
     },
@@ -243,6 +244,7 @@ function getInitialDefaultCompanies() {
         'General Operating Account'
       ],
       selectedWorkingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
+      defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
       targetChartOfAccounts: 'Schedule C Commercial Standard (24 Accounts)',
       chartOfAccountsCategory: 'COMMERCIAL'
     }
@@ -658,7 +660,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     }
   }
 
-  const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
+  const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), any email address printed on the document, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
 
   const systemInstructionText = 
     `You are a forensic-grade accounting OCR vision engine specialized in extracting 100% accurate financial data from store, farm, and commercial receipts for IRS Tax and QuickBooks reconciliation.\n` +
@@ -673,7 +675,8 @@ router.post('/api/scan/receipt', async (req, res) => {
     `   - 'transaction_number': Strictly the register, POS, cashier, or terminal sequence transaction number (e.g. labeled 'TRANS #', 'TRAN #', 'TRANSACTION', 'TXN #', 'CHECK #', 'TICKET #', or 'SEQ #'). DO NOT put this into reference_id!\n` +
     `   - 'reference_id': Strictly the credit card processor, payment gateway, host, or terminal authorization reference code (e.g. labeled 'REF #', 'REF ID', 'REFERENCE', 'HOST REF #', 'ACQ REF', 'TRACE #', or 'AUTH/REF'). NEVER confuse with Trans #!\n` +
     `   - 'invoice_number': The formal billing invoice number or master receipt number (e.g. labeled 'INVOICE #', 'INV #', 'RECEIPT #', or 'ORDER #'). If none, leave empty string.\n` +
-    `8. Return strictly valid JSON conforming to the schema.`;
+    `8. EMAIL DETECTION: Look for any billing email, account email, customer email, or company email printed or written anywhere on the receipt or invoice (e.g. 'finance@oakcreekag.com', 'books@highdesertranch.com', etc.). Extract into 'email' field or empty string if not found.\n` +
+    `9. Return strictly valid JSON conforming to the schema.`;
 
   const receiptSchema = {
     type: "OBJECT",
@@ -694,6 +697,7 @@ router.post('/api/scan/receipt', async (req, res) => {
             transaction_number: { type: "STRING", description: "Register, POS, or cashier sequence/transaction number (e.g. Trans #, Tran #, Txn #). Distinct from Ref ID." },
             reference_id: { type: "STRING", description: "Merchant processor or card authorization reference code (e.g. Ref #, Ref ID, Reference). Distinct from Trans #." },
             invoice_number: { type: "STRING", description: "Formal Invoice or Receipt number (e.g. Inv #, Receipt #, Order #). Distinct from Trans # or Ref ID." },
+            email: { type: "STRING", description: "Detected customer, billing, or registered account email address on receipt if present, or empty string" },
             category: {
               type: "STRING",
               enum: ["Supplies & Materials", "Farm:Cows", "Farm:Chickens", "Farm:General", "Repairs & Maintenance", "Fuel", "Tools"]
@@ -954,6 +958,38 @@ router.post('/api/scan/receipt', async (req, res) => {
       else if (cleanRef) cleanInv = `REF-${cleanRef}`;
     }
 
+    let detectedEmail = String(rawItem.email || rawItem.detected_email || '').trim().toLowerCase();
+    if (!detectedEmail) {
+      const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/;
+      const searchBlob = `${rawItem.memo || ''} ${sourceFileName || ''} ${rawItem.vendor || ''}`;
+      const match = searchBlob.match(emailRegex);
+      if (match) detectedEmail = match[0].toLowerCase();
+    }
+
+    // Match detected email against synced QuickBooks companies
+    let matchedQboRealmId: string | undefined = undefined;
+    let matchedQboCompanyName: string | undefined = undefined;
+    let targetDefaultAccount: string | undefined = undefined;
+
+    try {
+      const allCompanies = getCompanies();
+      const connected = Object.values(allCompanies).filter((c: any) => c.status === 'CONNECTED');
+      if (detectedEmail && connected.length > 0) {
+        const found = connected.find((c: any) => 
+          c.email && (
+            c.email.trim().toLowerCase() === detectedEmail ||
+            detectedEmail.includes(c.email.trim().toLowerCase()) ||
+            c.email.trim().toLowerCase().includes(detectedEmail)
+          )
+        ) as any;
+        if (found) {
+          matchedQboRealmId = found.realmId;
+          matchedQboCompanyName = found.companyName;
+          targetDefaultAccount = found.defaultPostingAccount || found.selectedWorkingAccount || (Array.isArray(found.syncedAccounts) && found.syncedAccounts[0]);
+        }
+      }
+    } catch {}
+
     return {
       vendor: rawItem.vendor || 'Unknown Vendor',
       date: dateStr,
@@ -966,6 +1002,10 @@ router.post('/api/scan/receipt', async (req, res) => {
       transactionNumber: cleanTrans || undefined,
       referenceId: cleanRef || undefined,
       invoiceNumber: cleanInv || undefined,
+      detectedEmail: detectedEmail || undefined,
+      matchedQboRealmId,
+      matchedQboCompanyName,
+      targetDefaultAccount,
       category: rawItem.category || 'Supplies & Materials',
       items: rawItem.items || [],
       memo: rawItem.memo || `AI-OCR Scanned (${sourceFileName})`,
@@ -2054,6 +2094,40 @@ router.get('/api/qbo/callback', async (req, res) => {
       console.warn('Could not fetch QBO CompanyInfo:', err);
     }
 
+    let populatedSyncedAccounts: string[] = [];
+    try {
+      const q = encodeURIComponent("select * from Account maxresults 500");
+      const accResp = await fetch(`${baseApi}/v3/company/${realmId}/query?query=${q}`, {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+      if (accResp.ok) {
+        const accData: any = await accResp.json();
+        const accList = accData?.QueryResponse?.Account || [];
+        populatedSyncedAccounts = accList.map((a: any) => a.Name);
+      }
+    } catch (e) {
+      console.warn('Could not auto-fetch QBO accounts during OAuth callback:', e);
+    }
+
+    if (populatedSyncedAccounts.length === 0) {
+      populatedSyncedAccounts = [
+        'Operating Checking (Acct ****4120)',
+        'Farm Operating & Expense Ledger',
+        'Commercial Fleet & Fuel Account (Acct ****6021)',
+        'Agricultural Payroll Reserve',
+        'Commercial Equipment Financing (Acct ****8812)',
+        'Feed Purchased',
+        'Gasoline, Fuel, and Oil (Bulk Diesel & Def)',
+        'Repairs and Maintenance - Machinery & Tractors',
+        'Supplies Purchased (Baler Twine, Net Wrap, Tools)',
+        'Veterinary, Breeding, and Medicine for Livestock',
+        'General Business Operating Acct (Acct ****1092)'
+      ];
+    }
+
     const now = new Date();
     const companies = getCompanies();
     companies[realmId] = {
@@ -2068,6 +2142,9 @@ router.get('/api/qbo/callback', async (req, res) => {
       lastUsedAt: now.toISOString(),
       environment: cfg.environment,
       status: 'CONNECTED',
+      syncedAccounts: populatedSyncedAccounts,
+      selectedWorkingAccount: populatedSyncedAccounts[0],
+      defaultPostingAccount: populatedSyncedAccounts[0],
       refreshTokenEncrypted: encryptToken(refreshToken),
       accessTokenCached: accessToken,
       accessTokenExpiresAt: now.getTime() + (expiresIn * 1000),
@@ -2154,13 +2231,17 @@ router.get('/api/qbo/companies', (req, res) => {
       rollingDaysRemaining: refreshRemainingDays,
       assignedToKey: c.assignedToKey || null,
       isActiveWorking: Boolean(c.isActiveWorking),
-      syncedAccounts: Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [
+      syncedAccounts: Array.isArray(c.syncedAccounts) && c.syncedAccounts.length > 0 ? c.syncedAccounts : [
         'Operating Checking (Acct ****4120)',
         'Farm Operating & Expense Ledger',
         'Commercial Equipment Financing (Acct ****8812)',
-        'Agricultural Payroll Reserve'
+        'Agricultural Payroll Reserve',
+        'Gasoline, Fuel, and Oil (Bulk Diesel & Def)',
+        'Supplies Purchased (Baler Twine, Net Wrap, Tools)',
+        'Repairs and Maintenance - Machinery & Tractors'
       ],
       selectedWorkingAccount: c.selectedWorkingAccount || (Array.isArray(c.syncedAccounts) && c.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)',
+      defaultPostingAccount: c.defaultPostingAccount || c.selectedWorkingAccount || (Array.isArray(c.syncedAccounts) && c.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)',
       targetChartOfAccounts: c.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)',
       chartOfAccountsCategory: c.chartOfAccountsCategory || 'FARM',
       accountMappings: c.accountMappings || null
@@ -2193,6 +2274,9 @@ router.post('/api/qbo/company/active', (req, res) => {
 
   if (selectedWorkingAccount) {
     companies[realmId].selectedWorkingAccount = selectedWorkingAccount;
+    if (!companies[realmId].defaultPostingAccount) {
+      companies[realmId].defaultPostingAccount = selectedWorkingAccount;
+    }
   }
 
   saveCompanies(companies);
@@ -2204,6 +2288,116 @@ router.post('/api/qbo/company/active', (req, res) => {
   });
 });
 
+// Set Default Account and/or Registered Email for a QuickBooks company
+router.post('/api/qbo/company/set-default-account', (req, res) => {
+  const body = req.body || {};
+  const realmId = (body.realmId || '').trim();
+  const defaultPostingAccount = (body.defaultPostingAccount || body.defaultAccount || '').trim();
+  const email = body.email !== undefined ? String(body.email).trim() : null;
+  const companies = getCompanies();
+
+  if (!realmId || !companies[realmId]) {
+    return res.status(404).json({ error: 'Company not found' });
+  }
+
+  if (defaultPostingAccount) {
+    companies[realmId].defaultPostingAccount = defaultPostingAccount;
+    companies[realmId].selectedWorkingAccount = defaultPostingAccount;
+    // Ensure it is in syncedAccounts
+    const currentSynced = Array.isArray(companies[realmId].syncedAccounts) ? companies[realmId].syncedAccounts : [];
+    if (!currentSynced.includes(defaultPostingAccount)) {
+      companies[realmId].syncedAccounts = [defaultPostingAccount, ...currentSynced];
+    }
+  }
+
+  if (email !== null) {
+    companies[realmId].email = email;
+  }
+
+  saveCompanies(companies);
+
+  return res.json({
+    success: true,
+    message: `Default receipt posting account for '${companies[realmId].companyName}' set to '${companies[realmId].defaultPostingAccount}'`,
+    company: companies[realmId]
+  });
+});
+
+// Populate list of accounts for a synced QuickBooks company
+router.post('/api/qbo/company/populate-accounts', async (req, res) => {
+  const body = req.body || {};
+  const realmId = (body.realmId || '').trim();
+  const companies = getCompanies();
+
+  if (!realmId || !companies[realmId]) {
+    return res.status(404).json({ error: 'Company not found' });
+  }
+
+  const target = companies[realmId];
+  let populatedAccounts: string[] = [];
+  const cfg = getStoredConfig();
+
+  // If live access token is available and not mock, query QuickBooks Live API
+  if (target.status === 'CONNECTED' && target.accessTokenCached && !target.accessTokenCached.startsWith('mock_')) {
+    try {
+      const baseApi = cfg.environment === 'sandbox'
+        ? 'https://sandbox-quickbooks.api.intuit.com'
+        : 'https://quickbooks.api.intuit.com';
+      const q = encodeURIComponent("select * from Account maxresults 500");
+      const resp = await fetch(`${baseApi}/v3/company/${realmId}/query?query=${q}`, {
+        headers: {
+          'Authorization': `Bearer ${target.accessTokenCached}`,
+          'Accept': 'application/json'
+        }
+      });
+      if (resp.ok) {
+        const data: any = await resp.json();
+        const accs = data?.QueryResponse?.Account || [];
+        populatedAccounts = accs.map((a: any) => a.Name);
+      }
+    } catch (e: any) {
+      console.warn('Could not query live accounts for company:', e.message);
+    }
+  }
+
+  // If mock, sandbox, or API returned empty, use rich standard chart of accounts
+  if (populatedAccounts.length === 0) {
+    populatedAccounts = [
+      'Operating Checking (Acct ****4120)',
+      'Farm Operating & Expense Ledger',
+      'Commercial Fleet & Fuel Account (Acct ****6021)',
+      'Agricultural Payroll Reserve',
+      'Commercial Equipment Financing (Acct ****8812)',
+      'Feed Purchased',
+      'Gasoline, Fuel, and Oil (Bulk Diesel & Def)',
+      'Repairs and Maintenance - Machinery & Tractors',
+      'Supplies Purchased (Baler Twine, Net Wrap, Tools)',
+      'Veterinary, Breeding, and Medicine for Livestock',
+      'Utilities - Electricity & Farm Power',
+      'General Business Operating Acct (Acct ****1092)'
+    ];
+  }
+
+  target.syncedAccounts = populatedAccounts;
+  if (!target.defaultPostingAccount) {
+    target.defaultPostingAccount = populatedAccounts[0];
+  }
+  if (!target.selectedWorkingAccount) {
+    target.selectedWorkingAccount = populatedAccounts[0];
+  }
+
+  companies[realmId] = target;
+  saveCompanies(companies);
+
+  return res.json({
+    success: true,
+    message: `Populated ${populatedAccounts.length} QuickBooks accounts for '${target.companyName}'`,
+    totalAccounts: populatedAccounts.length,
+    defaultPostingAccount: target.defaultPostingAccount,
+    company: target
+  });
+});
+
 // Update synced accounts and chart of accounts for a company
 router.post('/api/qbo/company/update-synced-accounts', (req, res) => {
   const body = req.body || {};
@@ -2212,6 +2406,8 @@ router.post('/api/qbo/company/update-synced-accounts', (req, res) => {
   const targetChartOfAccounts = body.targetChartOfAccounts ? String(body.targetChartOfAccounts).trim() : null;
   const chartOfAccountsCategory = body.chartOfAccountsCategory ? String(body.chartOfAccountsCategory).trim() : null;
   const selectedWorkingAccount = body.selectedWorkingAccount ? String(body.selectedWorkingAccount).trim() : null;
+  const defaultPostingAccount = body.defaultPostingAccount ? String(body.defaultPostingAccount).trim() : null;
+  const email = body.email !== undefined ? String(body.email).trim() : null;
   const accountMappings = body.accountMappings || null;
 
   const companies = getCompanies();
@@ -2230,6 +2426,12 @@ router.post('/api/qbo/company/update-synced-accounts', (req, res) => {
   }
   if (selectedWorkingAccount) {
     companies[realmId].selectedWorkingAccount = selectedWorkingAccount;
+  }
+  if (defaultPostingAccount) {
+    companies[realmId].defaultPostingAccount = defaultPostingAccount;
+  }
+  if (email !== null) {
+    companies[realmId].email = email;
   }
   if (accountMappings) {
     companies[realmId].accountMappings = {
@@ -2751,6 +2953,29 @@ router.post('/api/qbo/push', async (req, res) => {
   const nowStr = new Date().toISOString();
 
   for (const rcpt of rawReceipts) {
+    const rcptEmail = (rcpt.detectedEmail || rcpt.clientEmail || rcpt.email || '').toString().trim().toLowerCase();
+    let activeCompany = target;
+    let activeRealmId = realmId;
+    let matchedByEmail = false;
+
+    // Detect email registered to QuickBooks account and route to that company
+    if (rcptEmail) {
+      const connectedList = Object.values(companies).filter((c: any) => c.status === 'CONNECTED');
+      const emailMatch = connectedList.find((c: any) =>
+        c.email && (
+          c.email.trim().toLowerCase() === rcptEmail ||
+          rcptEmail.includes(c.email.trim().toLowerCase()) ||
+          c.email.trim().toLowerCase().includes(rcptEmail)
+        )
+      ) as any;
+
+      if (emailMatch) {
+        activeCompany = emailMatch;
+        activeRealmId = emailMatch.realmId;
+        matchedByEmail = true;
+      }
+    }
+
     const vendor = (rcpt.vendor || rcpt.merchant || rcpt.store || 'Unknown Vendor').toString().trim();
     const date = rcpt.date || nowStr.split('T')[0];
     const total = parseFloat(rcpt.total || '0') || 0;
@@ -2759,21 +2984,25 @@ router.post('/api/qbo/push', async (req, res) => {
     const lineTitle = rcpt.irsLineTitle || rcpt.irsCategory || 'Operating Expenses';
     const schedule = rcpt.schedule || rcpt.irsSchedule || 'SCHEDULE_F';
     const irsLine = rcpt.irsLineNumber || rcpt.line || (schedule === 'SCHEDULE_F' ? 'Line 32' : 'Line 27');
-    const memo = `Worker Ingested: ${rcpt.fileName || 'Document'} | Tax Deduction: ${schedule} ${irsLine} (${lineTitle}) | Card: ${rcpt.cardLast4 || 'N/A'}`;
+    const memo = `Worker Ingested: ${rcpt.fileName || 'Document'} | Tax Deduction: ${schedule} ${irsLine} (${lineTitle}) | Card: ${rcpt.cardLast4 || 'N/A'}${rcptEmail ? ` | Email: ${rcptEmail}` : ''}`;
 
-    // Target QBO Account Name
-    const targetAccountName = accountMapping[irsLine] || lineTitle || (schedule === 'SCHEDULE_F' ? 'Farm Operating Expenses' : 'General Business Expenses');
+    // Target QBO Account Name: prioritize default account selected for this QuickBooks company
+    const designatedDefault = activeCompany.defaultPostingAccount || activeCompany.selectedWorkingAccount || (Array.isArray(activeCompany.syncedAccounts) && activeCompany.syncedAccounts[0]);
+    const targetAccountName = rcpt.targetDefaultAccount || designatedDefault || accountMapping[irsLine] || lineTitle || (schedule === 'SCHEDULE_F' ? 'Farm Operating Expenses' : 'General Business Expenses');
 
     let pushedTxnId = `QBO-PURCH-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
     let status = 'SUCCESS';
     let errorMessage = '';
 
-    if (!isMock && target.accessTokenCached) {
+    const companyIsMock = !activeCompany.accessTokenCached || activeCompany.accessTokenCached.startsWith('mock_');
+    if (!companyIsMock && activeCompany.accessTokenCached) {
       try {
         const purchasePayload = {
           PaymentType: 'CreditCard',
           AccountRef: {
-            name: 'Checking Account'
+            name: targetAccountName.toLowerCase().includes('checking') || targetAccountName.toLowerCase().includes('operating')
+              ? targetAccountName
+              : (activeCompany.selectedWorkingAccount || 'Operating Checking')
           },
           EntityRef: {
             name: vendor,
@@ -2797,10 +3026,10 @@ router.post('/api/qbo/push', async (req, res) => {
           ]
         };
 
-        const qboResp = await fetch(`${baseApi}/v3/company/${realmId}/purchase?minorversion=65`, {
+        const qboResp = await fetch(`${baseApi}/v3/company/${activeRealmId}/purchase?minorversion=65`, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${target.accessTokenCached}`,
+            'Authorization': `Bearer ${activeCompany.accessTokenCached}`,
             'Content-Type': 'application/json',
             'Accept': 'application/json'
           },
@@ -2827,8 +3056,8 @@ router.post('/api/qbo/push', async (req, res) => {
     const logEntry = {
       id: `sync_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       pushedAt: nowStr,
-      realmId,
-      companyName: target.companyName,
+      realmId: activeRealmId,
+      companyName: activeCompany.companyName,
       vendor,
       date,
       total,
@@ -2838,6 +3067,8 @@ router.post('/api/qbo/push', async (req, res) => {
       schedule,
       irsLine,
       accountName: targetAccountName,
+      detectedEmail: rcptEmail || undefined,
+      matchedByEmail,
       fileName: rcpt.fileName || 'scanned_receipt.jpg',
       status,
       error: errorMessage || undefined

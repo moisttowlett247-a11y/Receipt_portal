@@ -51,6 +51,10 @@ export interface ProcessedReceipt {
   invoiceNumber?: string;
   transactionNumber?: string;
   referenceId?: string;
+  detectedEmail?: string;
+  matchedQboRealmId?: string;
+  matchedQboCompanyName?: string;
+  targetDefaultAccount?: string;
   category: string;
   schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
   irsLineNumber: string;
@@ -810,6 +814,10 @@ export type ExtractedReceiptMetadata = {
   invoiceNumber?: string;
   transactionNumber?: string;
   referenceId?: string;
+  detectedEmail?: string;
+  matchedQboRealmId?: string;
+  matchedQboCompanyName?: string;
+  targetDefaultAccount?: string;
   category?: string;
   schedule?: 'SCHEDULE_F' | 'SCHEDULE_C';
   irsLineNumber?: string;
@@ -915,6 +923,7 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
             transaction_number: { type: "STRING", description: "Register, POS, or cashier sequence/transaction number (e.g. Trans #, Tran #, Txn #). Distinct from Ref ID." },
             reference_id: { type: "STRING", description: "Merchant processor or card authorization reference code (e.g. Ref #, Ref ID, Reference). Distinct from Trans #." },
             invoice_number: { type: "STRING", description: "Formal Invoice or Receipt number (e.g. Inv #, Receipt #, Order #). Distinct from Trans # or Ref ID." },
+            email: { type: "STRING", description: "Customer, billing, or account email printed on receipt if any, or empty string" },
             category: {
               type: "STRING",
               description: "QuickBooks category or IRS classification"
@@ -1095,6 +1104,39 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     const memo = rawResult.memo || `AI-OCR Processed (${fileName})`;
     const taxCls = classifyExtractedTaxSchedule(vendor, rawResult.category || '', memo, fileName);
 
+    let detectedEmail = String(rawResult.email || rawResult.detected_email || rawResult.detectedEmail || '').trim().toLowerCase();
+    if (!detectedEmail) {
+      const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/;
+      const searchBlob = `${memo} ${fileName} ${vendor}`;
+      const match = searchBlob.match(emailRegex);
+      if (match) detectedEmail = match[0].toLowerCase();
+    }
+
+    let matchedQboRealmId: string | undefined = rawResult.matchedQboRealmId;
+    let matchedQboCompanyName: string | undefined = rawResult.matchedQboCompanyName;
+    let targetDefaultAccount: string | undefined = rawResult.targetDefaultAccount;
+
+    if (!matchedQboRealmId && detectedEmail) {
+      try {
+        const rawComps = localStorage.getItem('receipt_processor_qbo_companies_v1');
+        if (rawComps) {
+          const comps = JSON.parse(rawComps);
+          const found = comps.find((c: any) =>
+            c.status === 'CONNECTED' && c.email && (
+              c.email.trim().toLowerCase() === detectedEmail ||
+              detectedEmail.includes(c.email.trim().toLowerCase()) ||
+              c.email.trim().toLowerCase().includes(detectedEmail)
+            )
+          );
+          if (found) {
+            matchedQboRealmId = found.realmId;
+            matchedQboCompanyName = found.companyName;
+            targetDefaultAccount = found.defaultPostingAccount || found.selectedWorkingAccount || (Array.isArray(found.syncedAccounts) && found.syncedAccounts[0]);
+          }
+        }
+      } catch {}
+    }
+
     return {
       success: true,
       source: sourceName,
@@ -1116,6 +1158,10 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
         invoiceNumber: cleanInv || undefined,
         transactionNumber: cleanTrans || undefined,
         referenceId: cleanRef || undefined,
+        detectedEmail: detectedEmail || undefined,
+        matchedQboRealmId,
+        matchedQboCompanyName,
+        targetDefaultAccount,
         category: taxCls.categoryName,
         schedule: taxCls.schedule,
         irsLineNumber: taxCls.lineNumber,
@@ -1749,6 +1795,10 @@ export async function runParallelBatchScan(
           invoiceNumber: receiptItem.invoiceNumber,
           transactionNumber: receiptItem.transactionNumber,
           referenceId: receiptItem.referenceId,
+          detectedEmail: receiptItem.detectedEmail || item.clientEmail,
+          matchedQboRealmId: receiptItem.matchedQboRealmId,
+          matchedQboCompanyName: receiptItem.matchedQboCompanyName,
+          targetDefaultAccount: receiptItem.targetDefaultAccount,
           category: taxCls.categoryName,
           schedule: taxCls.schedule,
           irsLineNumber: taxCls.lineNumber,

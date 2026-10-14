@@ -37,7 +37,9 @@ import {
   Cloud,
   WifiOff,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Mail,
+  Star
 } from 'lucide-react';
 import {
   ProcessedReceipt,
@@ -1531,7 +1533,52 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
     const targetCompany = activeList[0];
     setIsPushingToQBO(true);
-    if (onToast) onToast(`Syncing ${valid.length} transactions to QuickBooks (${targetCompany.companyName})...`);
+
+    // Resolve per-receipt email matches against all synced QuickBooks accounts
+    const routedReceipts = valid.map(r => {
+      let detectedEmail = (r.detectedEmail || r.clientEmail || '').trim().toLowerCase();
+      if (!detectedEmail) {
+        const textToSearch = `${r.memo || ''} ${r.fileName || ''} ${r.clientName || ''} ${r.vendor || ''}`;
+        const match = textToSearch.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/);
+        if (match) detectedEmail = match[0].toLowerCase();
+      }
+
+      let matchedRealmId = r.matchedQboRealmId;
+      let targetAccount = r.targetDefaultAccount;
+      let matchedCompName = r.matchedQboCompanyName;
+
+      if (detectedEmail) {
+        const found = activeList.find((c: any) =>
+          c.email && (
+            c.email.trim().toLowerCase() === detectedEmail ||
+            detectedEmail.includes(c.email.trim().toLowerCase()) ||
+            c.email.trim().toLowerCase().includes(detectedEmail)
+          )
+        );
+        if (found) {
+          matchedRealmId = found.realmId;
+          matchedCompName = found.companyName;
+          targetAccount = found.defaultPostingAccount || found.selectedWorkingAccount || (found.syncedAccounts && found.syncedAccounts[0]);
+        }
+      }
+
+      return {
+        ...r,
+        detectedEmail: detectedEmail || undefined,
+        matchedQboRealmId: matchedRealmId || targetCompany.realmId,
+        matchedQboCompanyName: matchedCompName || targetCompany.companyName,
+        targetDefaultAccount: targetAccount || targetCompany.defaultPostingAccount || targetCompany.selectedWorkingAccount
+      };
+    });
+
+    const emailMatchedCount = routedReceipts.filter(r => r.detectedEmail).length;
+    if (onToast) {
+      if (emailMatchedCount > 0) {
+        onToast(`Auto-detecting email on ${emailMatchedCount} receipt(s) & posting to default QuickBooks accounts...`);
+      } else {
+        onToast(`Syncing ${valid.length} transactions to QuickBooks (${targetCompany.companyName})...`);
+      }
+    }
 
     try {
       const pushResp = await fetch('/api/qbo/push', {
@@ -1539,7 +1586,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           realmId: targetCompany.realmId,
-          receipts: valid
+          receipts: routedReceipts
         })
       });
 
@@ -1549,23 +1596,37 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       }
 
       // Mark submissions as SYNCED_QBO in client intake
-      valid.forEach(r => {
+      routedReceipts.forEach(r => {
         updateSubmissionStatus(r.fileName, 'SYNCED_QBO', {
           qboDocNumber: r.invoiceNumber || r.transactionNumber || r.referenceId,
           qboSyncedAt: new Date().toISOString()
         });
       });
 
-      // Update local state to verified
+      // Update local state to verified with matched company and target default account
       setReceipts(prev => prev.map(r => {
-        if (valid.some(v => v.id === r.id)) {
-          return { ...r, status: 'VERIFIED' };
+        const found = routedReceipts.find(v => v.id === r.id);
+        if (found) {
+          return {
+            ...r,
+            status: 'VERIFIED',
+            detectedEmail: found.detectedEmail,
+            matchedQboRealmId: found.matchedQboRealmId,
+            matchedQboCompanyName: found.matchedQboCompanyName,
+            targetDefaultAccount: found.targetDefaultAccount
+          };
         }
         return r;
       }));
 
       const count = pushData?.pushedCount || valid.length;
-      if (onToast) onToast(`✓ Successfully pushed ${count} transaction(s) directly into QuickBooks Online (${targetCompany.companyName})!`);
+      if (onToast) {
+        if (emailMatchedCount > 0) {
+          onToast(`✓ Successfully posted ${count} receipt(s) to QuickBooks! Detected emails routed directly to selected default accounts.`);
+        } else {
+          onToast(`✓ Successfully pushed ${count} transaction(s) directly into QuickBooks Online (${targetCompany.companyName})!`);
+        }
+      }
     } catch (err: any) {
       console.warn('QBO push fallback:', err);
       if (onToast) onToast(`✓ Reconciled & pushed ${valid.length} transactions into QuickBooks (${targetCompany.companyName})!`);
@@ -2792,6 +2853,29 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                             )}
                           </span>
                           <span className="text-[10px] font-mono text-stone-500">{r.fileName}</span>
+
+                          {/* Detected Email & Matched QuickBooks Route */}
+                          {(r.detectedEmail || r.matchedQboCompanyName) && (
+                            <div className="flex flex-wrap items-center gap-1 mt-1 text-[9px] font-mono">
+                              {r.detectedEmail && (
+                                <span className="px-1.5 py-0.2 rounded bg-sky-950/70 border border-sky-500/50 text-sky-300 flex items-center gap-1" title="Detected email on receipt">
+                                  <Mail className="w-2.5 h-2.5 text-sky-400" />
+                                  <span>{r.detectedEmail}</span>
+                                </span>
+                              )}
+                              {r.matchedQboCompanyName && (
+                                <span className="px-1.5 py-0.2 rounded bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 flex items-center gap-1" title="Matched to synced QuickBooks account">
+                                  <span>➔ {r.matchedQboCompanyName}</span>
+                                </span>
+                              )}
+                              {r.targetDefaultAccount && (
+                                <span className="px-1.5 py-0.2 rounded bg-amber-950/70 border border-amber-500/50 text-amber-300 flex items-center gap-1" title="Default posting account">
+                                  <Star className="w-2.5 h-2.5 text-amber-400 fill-amber-400" />
+                                  <span className="truncate max-w-[130px]">{r.targetDefaultAccount}</span>
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </td>
 

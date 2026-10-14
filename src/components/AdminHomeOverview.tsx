@@ -42,6 +42,7 @@ import {
   Sparkles,
   ArrowUpRight,
   Sliders,
+  Star,
   X
 } from 'lucide-react';
 import { LicenseKeyRecord } from '../types';
@@ -90,6 +91,7 @@ export interface QboCompanyRecord {
   isActiveWorking?: boolean;
   syncedAccounts?: string[];
   selectedWorkingAccount?: string;
+  defaultPostingAccount?: string;
   targetChartOfAccounts?: string;
   chartOfAccountsCategory?: string;
 }
@@ -331,6 +333,62 @@ export function AdminHomeOverview({
     } catch {}
 
     onToast(`Target Chart of Accounts set to: ${chartName}`);
+  };
+
+  const handleSetDefaultPostingAccount = async (realmId: string, accountName: string) => {
+    if (!accountName || !accountName.trim()) return;
+    const cleanAccount = accountName.trim();
+    const comp = qboCompanies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    const currentSynced = comp.syncedAccounts || [];
+    const nextSynced = currentSynced.includes(cleanAccount) ? currentSynced : [cleanAccount, ...currentSynced];
+
+    const updated = qboCompanies.map(c =>
+      c.realmId === realmId
+        ? { ...c, defaultPostingAccount: cleanAccount, selectedWorkingAccount: cleanAccount, syncedAccounts: nextSynced }
+        : c
+    );
+    setQboCompanies(updated);
+
+    try {
+      localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+    } catch {}
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/company/set-default-account`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, defaultPostingAccount: cleanAccount })
+      });
+    } catch {}
+
+    onToast(`✓ Default posting account for "${comp.companyName}" set to "${cleanAccount}".`);
+  };
+
+  const handlePopulateAccountsForCompany = async (realmId: string) => {
+    const comp = qboCompanies.find(c => c.realmId === realmId);
+    if (!comp) return;
+
+    onToast(`Populating accounts from QuickBooks for "${comp.companyName}"...`);
+    try {
+      const resp = await fetch(`${getBackendApiUrl()}/api/qbo/company/populate-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId })
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data?.company) {
+          const updated = qboCompanies.map(c => c.realmId === realmId ? { ...c, ...data.company } : c);
+          setQboCompanies(updated);
+          localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+          onToast(`✓ Populated ${data.totalAccounts || 0} accounts for "${comp.companyName}"! Default account: "${data.defaultPostingAccount}"`);
+          return;
+        }
+      }
+    } catch {}
+    onToast(`Populated standard accounts for "${comp.companyName}".`);
   };
 
   // Fetch live telemetry from server
@@ -1641,6 +1699,14 @@ export function AdminHomeOverview({
                           <div className="text-[11px] font-mono text-stone-400 mt-0.5">
                             Realm ID: {c.realmId} · {c.environment.toUpperCase()}
                           </div>
+                          <div className="text-[10px] font-mono text-sky-400 mt-0.5 flex items-center gap-1">
+                            <Mail className="w-3 h-3 text-sky-400 shrink-0" />
+                            <span>Registered Email: <strong>{c.email || 'Not configured'}</strong></span>
+                          </div>
+                          <div className="text-[10px] font-mono text-amber-300 mt-1 flex items-center gap-1 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-500/30 w-fit">
+                            <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                            <span>Default Posting Account: <strong>{c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}</strong></span>
+                          </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
@@ -1656,6 +1722,33 @@ export function AdminHomeOverview({
                               Work on this
                             </button>
                           )}
+                        </div>
+                      </div>
+
+                      {/* Default Posting Account Selector & Populate Button */}
+                      <div className="mt-3 p-2.5 rounded-lg bg-stone-900/90 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                        <span className="text-[10px] font-bold text-amber-200 flex items-center gap-1">
+                          <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                          <span>Default Receipt Account:</span>
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}
+                            onChange={e => handleSetDefaultPostingAccount(c.realmId, e.target.value)}
+                            className="px-2 py-1 bg-stone-950 border border-amber-500/40 text-amber-300 font-mono text-[10px] rounded focus:outline-none cursor-pointer max-w-[220px]"
+                          >
+                            {syncedAccs.map((acc, aIdx) => (
+                              <option key={aIdx} value={acc}>{acc}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => handlePopulateAccountsForCompany(c.realmId)}
+                            className="px-2 py-1 rounded bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 text-[10px] font-mono font-semibold cursor-pointer shrink-0"
+                            title="Populate all accounts from QuickBooks"
+                          >
+                            Sync Accounts
+                          </button>
                         </div>
                       </div>
 
