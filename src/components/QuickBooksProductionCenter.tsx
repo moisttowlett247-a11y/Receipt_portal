@@ -199,12 +199,91 @@ function saveLocalConfig(cfg: Partial<QboConfigState>) {
   } catch {}
 }
 
+const DEFAULT_INITIAL_COMPANIES: CompanyRecord[] = [
+  {
+    realmId: '934145791240',
+    companyName: 'Oak Creek Agriculture & Cattle LLC',
+    legalName: 'Oak Creek Agriculture & Cattle Operations LLC',
+    email: 'finance@oakcreekag.com',
+    country: 'US',
+    connectedAt: '2025-01-15T08:30:00.000Z',
+    lastRefreshedAt: new Date().toISOString(),
+    status: 'CONNECTED',
+    accessValidRemainingSec: 3600,
+    environment: 'sandbox',
+    rollingDaysRemaining: 101,
+    isActiveWorking: true,
+    syncedAccounts: [
+      'Operating Checking (Acct ****4120)',
+      'Farm Operating & Expense Ledger',
+      'Commercial Equipment Financing (Acct ****8812)',
+      'Agricultural Payroll Reserve',
+      'Feed & Pasture Expense Acct'
+    ],
+    selectedWorkingAccount: 'Operating Checking (Acct ****4120)',
+    defaultPostingAccount: 'Operating Checking (Acct ****4120)',
+    targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
+    chartOfAccountsCategory: 'FARM'
+  },
+  {
+    realmId: '934145794821',
+    companyName: 'High Desert Ranching & Equipment Co.',
+    legalName: 'High Desert Ranching & Equipment Logistics LLC',
+    email: 'books@highdesertranch.com',
+    country: 'US',
+    connectedAt: '2025-01-18T10:15:00.000Z',
+    lastRefreshedAt: new Date().toISOString(),
+    status: 'CONNECTED',
+    accessValidRemainingSec: 3600,
+    environment: 'production',
+    rollingDaysRemaining: 98,
+    isActiveWorking: false,
+    syncedAccounts: [
+      'Commercial Fleet & Fuel Account (Acct ****6021)',
+      'Heavy Machinery Reserve (Acct ****1109)',
+      'General Operating Account',
+      'Livestock & Cattle Trading Ledger'
+    ],
+    selectedWorkingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
+    defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
+    targetChartOfAccounts: 'Schedule C Commercial Standard (24 Accounts)',
+    chartOfAccountsCategory: 'COMMERCIAL'
+  },
+  {
+    realmId: '934145798934',
+    companyName: 'Cascade Valley Organics & Hay Co.',
+    legalName: 'Cascade Valley Organics Agricultural Partnership',
+    email: 'ap@cascadevalleyfarms.com',
+    country: 'US',
+    connectedAt: '2025-01-20T14:00:00.000Z',
+    lastRefreshedAt: new Date().toISOString(),
+    status: 'CONNECTED',
+    accessValidRemainingSec: 3600,
+    environment: 'production',
+    rollingDaysRemaining: 95,
+    isActiveWorking: false,
+    syncedAccounts: [
+      'Organic Crops Operating Acct (Acct ****9044)',
+      'Hay & Grain Inventory Reserve',
+      'Irrigation & Utilities Clearing',
+      'Harvest Distribution Acct'
+    ],
+    selectedWorkingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
+    defaultPostingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
+    targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
+    chartOfAccountsCategory: 'FARM'
+  }
+];
+
 function getLocalCompanies(): CompanyRecord[] {
   try {
     const raw = localStorage.getItem(QBO_STORAGE_COMPANIES_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
   } catch {}
-  return [];
+  return DEFAULT_INITIAL_COMPANIES;
 }
 
 function saveLocalCompanies(list: CompanyRecord[]) {

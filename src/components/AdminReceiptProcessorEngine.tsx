@@ -538,6 +538,77 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     setConfiguredKeys(getActiveGeminiApiKeys());
   }, []);
 
+  // Connected QuickBooks Companies state with persistent sync
+  const [qboCompanies, setQboCompanies] = useState<any[]>(() => {
+    try {
+      const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch {}
+    return [
+      {
+        realmId: '934145791240',
+        companyName: 'Oak Creek Agriculture & Cattle LLC',
+        legalName: 'Oak Creek Agriculture & Cattle Operations LLC',
+        email: 'finance@oakcreekag.com',
+        status: 'CONNECTED',
+        defaultPostingAccount: 'Operating Checking (Acct ****4120)',
+        syncedAccounts: [
+          'Operating Checking (Acct ****4120)',
+          'Farm Operating & Expense Ledger',
+          'Commercial Equipment Financing (Acct ****8812)',
+          'Agricultural Payroll Reserve',
+          'Feed & Pasture Expense Acct'
+        ]
+      },
+      {
+        realmId: '934145794821',
+        companyName: 'High Desert Ranching & Equipment Co.',
+        legalName: 'High Desert Ranching & Equipment Logistics LLC',
+        email: 'books@highdesertranch.com',
+        status: 'CONNECTED',
+        defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
+        syncedAccounts: [
+          'Commercial Fleet & Fuel Account (Acct ****6021)',
+          'Heavy Machinery Reserve (Acct ****1109)',
+          'General Operating Account',
+          'Livestock & Cattle Trading Ledger'
+        ]
+      },
+      {
+        realmId: '934145798934',
+        companyName: 'Cascade Valley Organics & Hay Co.',
+        legalName: 'Cascade Valley Organics Agricultural Partnership',
+        email: 'ap@cascadevalleyfarms.com',
+        status: 'CONNECTED',
+        defaultPostingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
+        syncedAccounts: [
+          'Organic Crops Operating Acct (Acct ****9044)',
+          'Hay & Grain Inventory Reserve',
+          'Irrigation & Utilities Clearing',
+          'Harvest Distribution Acct'
+        ]
+      }
+    ];
+  });
+
+  // Keep connected companies synchronized with server backend
+  useEffect(() => {
+    fetch('/api/qbo/companies')
+      .then(r => r.json())
+      .then(res => {
+        if (res.success && res.data && Array.isArray(res.data) && res.data.length > 0) {
+          setQboCompanies(res.data);
+          try {
+            localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(res.data));
+          } catch {}
+        }
+      })
+      .catch(() => {});
+  }, []);
+
   // Edit form state
   const [editFormData, setEditFormData] = useState<{
     vendor: string;
@@ -551,6 +622,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     transactionNumber: string;
     referenceId: string;
     invoiceNumber: string;
+    detectedEmail: string;
+    matchedQboRealmId: string;
+    matchedQboCompanyName: string;
+    targetDefaultAccount: string;
     schedule: 'SCHEDULE_F' | 'SCHEDULE_C';
     irsLineNumber: string;
     irsLineTitle: string;
@@ -567,6 +642,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     transactionNumber: '',
     referenceId: '',
     invoiceNumber: '',
+    detectedEmail: '',
+    matchedQboRealmId: '',
+    matchedQboCompanyName: '',
+    targetDefaultAccount: '',
     schedule: 'SCHEDULE_F',
     irsLineNumber: 'Line 27',
     irsLineTitle: 'Supplies purchased',
@@ -775,6 +854,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       transactionNumber: r.transactionNumber || '',
       referenceId: r.referenceId || '',
       invoiceNumber: r.invoiceNumber || '',
+      detectedEmail: r.detectedEmail || '',
+      matchedQboRealmId: r.matchedQboRealmId || '',
+      matchedQboCompanyName: r.matchedQboCompanyName || '',
+      targetDefaultAccount: r.targetDefaultAccount || '',
       schedule: r.schedule,
       irsLineNumber: r.irsLineNumber,
       irsLineTitle: r.irsLineTitle,
@@ -797,6 +880,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       transactionNumber: editFormData.transactionNumber.trim() || undefined,
       referenceId: editFormData.referenceId.trim() || undefined,
       invoiceNumber: editFormData.invoiceNumber.trim() || undefined,
+      detectedEmail: editFormData.detectedEmail.trim() || undefined,
+      matchedQboRealmId: editFormData.matchedQboRealmId.trim() || undefined,
+      matchedQboCompanyName: editFormData.matchedQboCompanyName.trim() || undefined,
+      targetDefaultAccount: editFormData.targetDefaultAccount.trim() || undefined,
       schedule: editFormData.schedule,
       irsLineNumber: editFormData.irsLineNumber,
       irsLineTitle: editFormData.irsLineTitle,
@@ -806,6 +893,65 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     setInspectingReceipt(updated);
     setIsEditingReceipt(false);
     if (onToast) onToast(`Updated details for receipt (${updated.id.slice(0, 10)})`);
+  };
+
+  const handleAutoRouteAllReceipts = () => {
+    if (receipts.length === 0) {
+      if (onToast) onToast('No receipts to route.');
+      return;
+    }
+    const connected = qboCompanies.filter((c: any) => c.status === 'CONNECTED');
+    if (connected.length === 0) {
+      if (onToast) onToast('No connected QuickBooks companies found.');
+      return;
+    }
+
+    let routedCount = 0;
+    const updated = receipts.map(r => {
+      let email = (r.detectedEmail || r.clientEmail || '').trim().toLowerCase();
+      if (!email) {
+        const match = `${r.memo || ''} ${r.fileName || ''} ${r.clientName || ''} ${r.vendor || ''}`.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/);
+        if (match) email = match[0].toLowerCase();
+      }
+
+      let matchedComp = email ? connected.find((c: any) =>
+        c.email && (
+          c.email.trim().toLowerCase() === email ||
+          email.includes(c.email.trim().toLowerCase()) ||
+          c.email.trim().toLowerCase().includes(email) ||
+          (email.includes('@') && c.email.includes('@') && email.split('@')[1] === c.email.split('@')[1])
+        )
+      ) : null;
+
+      if (!matchedComp) {
+        const blob = `${r.memo || ''} ${r.fileName || ''} ${r.vendor || ''}`.toLowerCase();
+        matchedComp = connected.find((c: any) => {
+          const cName = (c.companyName || '').toLowerCase();
+          if (cName.includes('oak creek') && blob.includes('oak creek')) return true;
+          if (cName.includes('high desert') && (blob.includes('high desert') || blob.includes('ranching'))) return true;
+          if (cName.includes('cascade') && blob.includes('cascade')) return true;
+          return false;
+        });
+      }
+
+      if (matchedComp) {
+        routedCount++;
+        const targetAccount = matchedComp.defaultPostingAccount || matchedComp.selectedWorkingAccount || (Array.isArray(matchedComp.syncedAccounts) && matchedComp.syncedAccounts[0]);
+        return {
+          ...r,
+          detectedEmail: email || r.detectedEmail,
+          matchedQboRealmId: matchedComp.realmId,
+          matchedQboCompanyName: matchedComp.companyName,
+          targetDefaultAccount: targetAccount
+        };
+      }
+      return r;
+    });
+
+    setReceipts(updated);
+    if (onToast) {
+      onToast(`⚡ Auto-routed ${routedCount} receipt(s) to connected QuickBooks companies & default posting accounts!`);
+    }
   };
 
   const handleReScanSingleReceipt = async () => {
@@ -1516,14 +1662,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       return;
     }
 
-    // Check for connected QuickBooks companies
+    // Check for connected QuickBooks companies (localStorage or memory state)
     let connectedCompanies: any[] = [];
     try {
       const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
       if (raw) connectedCompanies = JSON.parse(raw);
     } catch {}
 
-    const activeList = connectedCompanies.filter((c: any) => c.status === 'CONNECTED');
+    let activeList = connectedCompanies.filter((c: any) => c.status === 'CONNECTED');
+    if (activeList.length === 0) {
+      activeList = qboCompanies.filter((c: any) => c.status === 'CONNECTED');
+    }
+
     if (activeList.length === 0) {
       if (confirm('No connected QuickBooks Online company was found.\n\nWould you like to open the QuickBooks Connection Center now to connect your company or launch a sandbox ledger?')) {
         if (onNavigateToQBO) onNavigateToQBO();
@@ -1547,18 +1697,37 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       let targetAccount = r.targetDefaultAccount;
       let matchedCompName = r.matchedQboCompanyName;
 
-      if (detectedEmail) {
+      // Match by email if not already matched
+      if (!matchedRealmId && detectedEmail) {
         const found = activeList.find((c: any) =>
           c.email && (
             c.email.trim().toLowerCase() === detectedEmail ||
             detectedEmail.includes(c.email.trim().toLowerCase()) ||
-            c.email.trim().toLowerCase().includes(detectedEmail)
+            c.email.trim().toLowerCase().includes(detectedEmail) ||
+            (detectedEmail.includes('@') && c.email.includes('@') && detectedEmail.split('@')[1] === c.email.split('@')[1])
           )
         );
         if (found) {
           matchedRealmId = found.realmId;
           matchedCompName = found.companyName;
           targetAccount = found.defaultPostingAccount || found.selectedWorkingAccount || (found.syncedAccounts && found.syncedAccounts[0]);
+        }
+      }
+
+      // Match by company keyword if still not matched
+      if (!matchedRealmId) {
+        const blob = `${r.memo || ''} ${r.fileName || ''} ${r.vendor || ''}`.toLowerCase();
+        const kwFound = activeList.find((c: any) => {
+          const cName = (c.companyName || '').toLowerCase();
+          if (cName.includes('oak creek') && blob.includes('oak creek')) return true;
+          if (cName.includes('high desert') && (blob.includes('high desert') || blob.includes('ranching'))) return true;
+          if (cName.includes('cascade') && blob.includes('cascade')) return true;
+          return false;
+        });
+        if (kwFound) {
+          matchedRealmId = kwFound.realmId;
+          matchedCompName = kwFound.companyName;
+          targetAccount = kwFound.defaultPostingAccount || kwFound.selectedWorkingAccount || (kwFound.syncedAccounts && kwFound.syncedAccounts[0]);
         }
       }
 
@@ -1959,6 +2128,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
             >
               <FileText className="w-3.5 h-3.5 text-stone-400" />
               <span>CSV</span>
+            </button>
+
+            <button
+              onClick={handleAutoRouteAllReceipts}
+              disabled={receipts.length === 0}
+              className="px-3 py-1.5 rounded-lg bg-sky-950/70 hover:bg-sky-900/80 border border-sky-500/50 text-sky-200 font-semibold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer disabled:opacity-40"
+              title="Automatically match receipts with connected QuickBooks companies & default accounts by email or keyword"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-sky-400" />
+              <span>Auto-Route Accounts</span>
             </button>
 
             <button
@@ -3359,22 +3538,152 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       <option value="REJECTED">REJECTED (Suppressed / Duplicate)</option>
                     </select>
                   </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-sky-400 mb-1 flex items-center gap-1">
+                      <Mail className="w-3 h-3 text-sky-400" />
+                      <span>Detected Document Email</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={editFormData.detectedEmail}
+                      onChange={e => setEditFormData({ ...editFormData, detectedEmail: e.target.value })}
+                      placeholder="e.g. finance@oakcreekag.com"
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-sky-300 font-mono focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-emerald-400 mb-1 flex items-center gap-1">
+                      <Building2 className="w-3 h-3 text-emerald-400" />
+                      <span>QuickBooks Company Route</span>
+                    </label>
+                    <select
+                      value={editFormData.matchedQboRealmId}
+                      onChange={e => {
+                        const rId = e.target.value;
+                        const comp = qboCompanies.find((c: any) => c.realmId === rId);
+                        if (comp) {
+                          const defAcct = comp.defaultPostingAccount || comp.selectedWorkingAccount || (Array.isArray(comp.syncedAccounts) && comp.syncedAccounts[0]) || '';
+                          setEditFormData({
+                            ...editFormData,
+                            matchedQboRealmId: rId,
+                            matchedQboCompanyName: comp.companyName,
+                            targetDefaultAccount: defAcct
+                          });
+                        } else {
+                          setEditFormData({
+                            ...editFormData,
+                            matchedQboRealmId: '',
+                            matchedQboCompanyName: '',
+                            targetDefaultAccount: ''
+                          });
+                        }
+                      }}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500 truncate"
+                    >
+                      <option value="">-- No QuickBooks Company Assigned --</option>
+                      {qboCompanies.map((c: any) => (
+                        <option key={c.realmId} value={c.realmId}>
+                          {c.companyName} {c.email ? `(${c.email})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] uppercase font-semibold text-amber-400 mb-1 flex items-center gap-1">
+                      <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+                      <span>Default Posting Account</span>
+                    </label>
+                    <select
+                      value={editFormData.targetDefaultAccount}
+                      onChange={e => setEditFormData({ ...editFormData, targetDefaultAccount: e.target.value })}
+                      className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-amber-300 font-medium focus:outline-none focus:border-amber-500 truncate"
+                    >
+                      <option value="">-- Standard Operating Account --</option>
+                      {(() => {
+                        const selectedComp = qboCompanies.find((c: any) => c.realmId === editFormData.matchedQboRealmId);
+                        const accts = selectedComp && Array.isArray(selectedComp.syncedAccounts) ? selectedComp.syncedAccounts : [];
+                        return accts.map((a: string) => (
+                          <option key={a} value={a}>
+                            ★ {a}
+                          </option>
+                        ));
+                      })()}
+                      {editFormData.targetDefaultAccount && !qboCompanies.find((c: any) => c.realmId === editFormData.matchedQboRealmId)?.syncedAccounts?.includes(editFormData.targetDefaultAccount) && (
+                        <option value={editFormData.targetDefaultAccount}>
+                          {editFormData.targetDefaultAccount}
+                        </option>
+                      )}
+                    </select>
+                  </div>
                 </div>
 
-                <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-stone-800">
                   <button
-                    onClick={() => setIsEditingReceipt(false)}
-                    className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 font-medium text-xs cursor-pointer"
+                    type="button"
+                    onClick={() => {
+                      if (!inspectingReceipt) return;
+                      let email = (editFormData.detectedEmail || inspectingReceipt.detectedEmail || '').trim().toLowerCase();
+                      if (!email) {
+                        const match = `${inspectingReceipt.memo || ''} ${inspectingReceipt.fileName || ''} ${inspectingReceipt.vendor || ''}`.match(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/);
+                        if (match) email = match[0].toLowerCase();
+                      }
+                      const connected = qboCompanies.filter((c: any) => c.status === 'CONNECTED');
+                      let matchedComp = email ? connected.find((c: any) =>
+                        c.email && (
+                          c.email.trim().toLowerCase() === email ||
+                          email.includes(c.email.trim().toLowerCase()) ||
+                          c.email.trim().toLowerCase().includes(email) ||
+                          (email.includes('@') && c.email.includes('@') && email.split('@')[1] === c.email.split('@')[1])
+                        )
+                      ) : null;
+                      if (!matchedComp && connected.length > 0) {
+                        const blob = `${inspectingReceipt.memo || ''} ${inspectingReceipt.fileName || ''} ${editFormData.vendor || ''}`.toLowerCase();
+                        matchedComp = connected.find((c: any) => {
+                          const cName = (c.companyName || '').toLowerCase();
+                          if (cName.includes('oak creek') && blob.includes('oak creek')) return true;
+                          if (cName.includes('high desert') && (blob.includes('high desert') || blob.includes('ranching'))) return true;
+                          if (cName.includes('cascade') && blob.includes('cascade')) return true;
+                          return false;
+                        });
+                      }
+                      if (matchedComp) {
+                        const targetAccount = matchedComp.defaultPostingAccount || matchedComp.selectedWorkingAccount || (Array.isArray(matchedComp.syncedAccounts) && matchedComp.syncedAccounts[0]);
+                        setEditFormData(prev => ({
+                          ...prev,
+                          detectedEmail: email || prev.detectedEmail,
+                          matchedQboRealmId: matchedComp.realmId,
+                          matchedQboCompanyName: matchedComp.companyName,
+                          targetDefaultAccount: targetAccount || ''
+                        }));
+                        if (onToast) onToast(`Matched to ${matchedComp.companyName} (${targetAccount || 'Default'})`);
+                      } else {
+                        if (onToast) onToast('No company matched from current receipt text/email.');
+                      }
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-sky-950/60 hover:bg-sky-900/70 border border-sky-500/40 text-sky-300 font-semibold text-xs flex items-center gap-1.5 cursor-pointer"
                   >
-                    Cancel
+                    <Sparkles className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Auto-Detect Route</span>
                   </button>
-                  <button
-                    onClick={handleSaveReceiptEdits}
-                    className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer flex items-center gap-1.5 shadow-md"
-                  >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Save Changes</span>
-                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsEditingReceipt(false)}
+                      className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 font-medium text-xs cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleSaveReceiptEdits}
+                      className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs cursor-pointer flex items-center gap-1.5 shadow-md"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Save Changes</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -3539,6 +3848,59 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       <span className="font-mono text-emerald-400">
                         {(inspectingReceipt.confidence * 100).toFixed(0)}% (Verified)
                       </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* QuickBooks Online Routing & Ledger Posting Card */}
+                <div className="p-4 rounded-xl bg-stone-950 border border-stone-800 space-y-2">
+                  <div className="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <Building2 className="w-4 h-4 text-emerald-400" />
+                      <span>QuickBooks Online Integration &amp; Routing</span>
+                    </div>
+                    {inspectingReceipt.matchedQboCompanyName ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span>Routed &amp; Synced</span>
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                        Pending Route Assignment
+                      </span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                    <div>
+                      <span className="text-stone-400 block text-[10px] uppercase font-semibold">QuickBooks Company</span>
+                      <span className="font-semibold text-white block">
+                        {inspectingReceipt.matchedQboCompanyName || (
+                          <span className="text-stone-500 italic">None assigned (auto-routes on push)</span>
+                        )}
+                      </span>
+                      {inspectingReceipt.matchedQboRealmId && (
+                        <span className="text-[10px] font-mono text-stone-500 block">
+                          Realm: {inspectingReceipt.matchedQboRealmId}
+                        </span>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-stone-400 block text-[10px] uppercase font-semibold">Target Posting Account</span>
+                      <span className="font-semibold text-amber-300 flex items-center gap-1">
+                        <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                        <span className="truncate">{inspectingReceipt.targetDefaultAccount || 'Standard Operating Account'}</span>
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-stone-400 block text-[10px] uppercase font-semibold">Detected Document Email</span>
+                      {inspectingReceipt.detectedEmail ? (
+                        <span className="font-mono text-sky-400 text-xs flex items-center gap-1">
+                          <Mail className="w-3 h-3 text-sky-400 shrink-0" />
+                          <span className="truncate">{inspectingReceipt.detectedEmail}</span>
+                        </span>
+                      ) : (
+                        <span className="text-stone-500 text-[11px] italic">No email detected in receipt body</span>
+                      )}
                     </div>
                   </div>
                 </div>

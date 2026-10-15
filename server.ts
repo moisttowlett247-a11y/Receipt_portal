@@ -247,6 +247,32 @@ function getInitialDefaultCompanies() {
       defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
       targetChartOfAccounts: 'Schedule C Commercial Standard (24 Accounts)',
       chartOfAccountsCategory: 'COMMERCIAL'
+    },
+    '934145798934': {
+      realmId: '934145798934',
+      companyName: 'Cascade Valley Organics & Hay Co.',
+      legalName: 'Cascade Valley Organics Agricultural Partnership',
+      email: 'ap@cascadevalleyfarms.com',
+      country: 'US',
+      environment: 'production',
+      status: 'CONNECTED',
+      connectedAt: now,
+      lastRefreshedAt: now,
+      lastUsedAt: now,
+      accessTokenCached: 'mock_token_cascade_valley_prod',
+      accessTokenExpiresAt: Date.now() + 3600 * 1000,
+      refreshTokenExpiresAt: Date.now() + 95 * 86400 * 1000,
+      isActiveWorking: false,
+      syncedAccounts: [
+        'Organic Crops Operating Acct (Acct ****9044)',
+        'Hay & Grain Inventory Reserve',
+        'Irrigation & Utilities Clearing',
+        'Harvest Distribution Acct'
+      ],
+      selectedWorkingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
+      defaultPostingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
+      targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
+      chartOfAccountsCategory: 'FARM'
     }
   };
 }
@@ -634,6 +660,8 @@ router.post('/api/licenses/sessions/clear', (req, res) => {
   }
 });
 
+const serverOcrCache = new Map<string, { primaryReceipt: any; allProcessedReceipts: any }>();
+
 // POST /api/scan/receipt - High-accuracy AI OCR Receipt extraction via Gemini
 router.post('/api/scan/receipt', async (req, res) => {
   const { imageBase64, mimeType, fileName } = req.body;
@@ -658,6 +686,20 @@ router.post('/api/scan/receipt', async (req, res) => {
     if (header.includes('data:')) {
       cleanMime = header.replace('data:', '').replace(';', '').trim();
     }
+  }
+
+  // Fast In-Memory OCR Cache Check
+  const cacheKey = `${fileName || 'doc'}_${cleanBase64.length}_${cleanBase64.slice(0, 60)}_${cleanBase64.slice(-60)}`;
+  if (serverOcrCache.has(cacheKey)) {
+    const cached = serverOcrCache.get(cacheKey)!;
+    return res.json({
+      success: true,
+      source: 'SERVER_CACHE',
+      data: {
+        ...cached.primaryReceipt,
+        receipts: cached.allProcessedReceipts
+      }
+    });
   }
 
   const promptText = "Analyze this receipt image/document with forensic accounting precision. Identify all physically distinct purchase receipts in the image. For each receipt, extract the Store/Vendor name, exact transaction Date (YYYY-MM-DD), line items with individual amounts, pre-tax Subtotal, Sales Tax, Tip, Payment Method, Card Last 4 digits, Register Transaction Number (Trans #), Processor Reference ID (Ref #), Invoice Number (Inv #), any email address printed on the document, and the FINAL GRAND TOTAL actually charged. Return strictly valid JSON conforming to the schema.";
@@ -744,13 +786,8 @@ router.post('/api/scan/receipt', async (req, res) => {
   };
 
   const modelsToTry = [
-    "gemini-2.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-flash-lite",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
     "gemini-flash-latest"
   ];
   let rawReceiptsList: any[] = [];
@@ -966,7 +1003,7 @@ router.post('/api/scan/receipt', async (req, res) => {
       if (match) detectedEmail = match[0].toLowerCase();
     }
 
-    // Match detected email against synced QuickBooks companies
+    // Match detected email or company name/keywords against synced QuickBooks companies
     let matchedQboRealmId: string | undefined = undefined;
     let matchedQboCompanyName: string | undefined = undefined;
     let targetDefaultAccount: string | undefined = undefined;
@@ -974,14 +1011,31 @@ router.post('/api/scan/receipt', async (req, res) => {
     try {
       const allCompanies = getCompanies();
       const connected = Object.values(allCompanies).filter((c: any) => c.status === 'CONNECTED');
-      if (detectedEmail && connected.length > 0) {
-        const found = connected.find((c: any) => 
+      if (connected.length > 0) {
+        // 1. Try matching by detected email (exact, substring, or email domain)
+        let found = detectedEmail ? connected.find((c: any) => 
           c.email && (
             c.email.trim().toLowerCase() === detectedEmail ||
             detectedEmail.includes(c.email.trim().toLowerCase()) ||
-            c.email.trim().toLowerCase().includes(detectedEmail)
+            c.email.trim().toLowerCase().includes(detectedEmail) ||
+            (detectedEmail.includes('@') && c.email.includes('@') && detectedEmail.split('@')[1] === c.email.split('@')[1])
           )
-        ) as any;
+        ) as any : null;
+
+        // 2. If no email match, match by company name / keyword in filename, memo, or vendor
+        if (!found) {
+          const searchBlob = `${rawItem.memo || ''} ${sourceFileName || ''} ${rawItem.vendor || ''}`.toLowerCase();
+          found = connected.find((c: any) => {
+            const cName = (c.companyName || '').toLowerCase();
+            const lName = (c.legalName || '').toLowerCase();
+            if (cName.includes('oak creek') && searchBlob.includes('oak creek')) return true;
+            if (cName.includes('high desert') && (searchBlob.includes('high desert') || searchBlob.includes('ranching'))) return true;
+            if (cName.includes('cascade') && searchBlob.includes('cascade')) return true;
+            const words = cName.split(/\s+/).filter((w: string) => w.length > 4 && !['agriculture', 'company', 'operations', 'commercial', 'standard'].includes(w));
+            return words.some((w: string) => searchBlob.includes(w));
+          }) as any;
+        }
+
         if (found) {
           matchedQboRealmId = found.realmId;
           matchedQboCompanyName = found.companyName;
@@ -1015,6 +1069,12 @@ router.post('/api/scan/receipt', async (req, res) => {
 
   const allProcessedReceipts = rawReceiptsList.map((r: any) => formatExtractedReceipt(r, fileName));
   const primaryReceipt = allProcessedReceipts[0];
+
+  if (serverOcrCache.size > 200) {
+    const firstKey = serverOcrCache.keys().next().value;
+    if (firstKey) serverOcrCache.delete(firstKey);
+  }
+  serverOcrCache.set(cacheKey, { primaryReceipt, allProcessedReceipts });
 
   return res.json({
     success: true,
@@ -1856,7 +1916,7 @@ CRITICAL EXTRACTION GUIDELINES:
       }
     };
 
-    const modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"];
+    const modelsToTry = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest"];
     for (const model of modelsToTry) {
       for (const currentKey of apiKeys) {
         try {
@@ -2958,21 +3018,45 @@ router.post('/api/qbo/push', async (req, res) => {
     let activeRealmId = realmId;
     let matchedByEmail = false;
 
-    // Detect email registered to QuickBooks account and route to that company
-    if (rcptEmail) {
+    // 1. Direct matched realm ID from receipt state if present
+    if (rcpt.matchedQboRealmId && companies[rcpt.matchedQboRealmId]) {
+      activeCompany = companies[rcpt.matchedQboRealmId];
+      activeRealmId = rcpt.matchedQboRealmId;
+      matchedByEmail = !!rcptEmail;
+    } else {
       const connectedList = Object.values(companies).filter((c: any) => c.status === 'CONNECTED');
-      const emailMatch = connectedList.find((c: any) =>
-        c.email && (
-          c.email.trim().toLowerCase() === rcptEmail ||
-          rcptEmail.includes(c.email.trim().toLowerCase()) ||
-          c.email.trim().toLowerCase().includes(rcptEmail)
-        )
-      ) as any;
+      // 2. Detect email registered to QuickBooks account (exact or domain)
+      if (rcptEmail) {
+        const emailMatch = connectedList.find((c: any) =>
+          c.email && (
+            c.email.trim().toLowerCase() === rcptEmail ||
+            rcptEmail.includes(c.email.trim().toLowerCase()) ||
+            c.email.trim().toLowerCase().includes(rcptEmail) ||
+            (rcptEmail.includes('@') && c.email.includes('@') && rcptEmail.split('@')[1] === c.email.split('@')[1])
+          )
+        ) as any;
 
-      if (emailMatch) {
-        activeCompany = emailMatch;
-        activeRealmId = emailMatch.realmId;
-        matchedByEmail = true;
+        if (emailMatch) {
+          activeCompany = emailMatch;
+          activeRealmId = emailMatch.realmId;
+          matchedByEmail = true;
+        }
+      }
+
+      // 3. Match by company keywords if still unresolved
+      if (!matchedByEmail && connectedList.length > 0) {
+        const searchBlob = `${rcpt.memo || ''} ${rcpt.fileName || ''} ${rcpt.vendor || ''}`.toLowerCase();
+        const kwMatch = connectedList.find((c: any) => {
+          const cName = (c.companyName || '').toLowerCase();
+          if (cName.includes('oak creek') && searchBlob.includes('oak creek')) return true;
+          if (cName.includes('high desert') && (searchBlob.includes('high desert') || searchBlob.includes('ranching'))) return true;
+          if (cName.includes('cascade') && searchBlob.includes('cascade')) return true;
+          return false;
+        }) as any;
+        if (kwMatch) {
+          activeCompany = kwMatch;
+          activeRealmId = kwMatch.realmId;
+        }
       }
     }
 

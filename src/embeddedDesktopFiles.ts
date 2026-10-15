@@ -2890,7 +2890,7 @@ class FarmReceiptApp(_TK_BASE_TK):
         model_menu = ttk.Combobox(
             model_row,
             textvariable=self.model_var,
-            values=["gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"],
+            values=["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.8-flash"],
             state="readonly",
             width=22
         )
@@ -4691,7 +4691,7 @@ class HeadlessWorkerEngine:
         # API Keys & Model
         raw_keys = os.getenv("GEMINI_API_KEYS", "") or os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
         self.api_keys = [k.strip() for k in raw_keys.replace(";", ",").split(",") if k.strip()]
-        self.model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        self.model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
         # Vault & Multi-Client Profiles
         self.vault = SecureVault()
