@@ -195,163 +195,27 @@ function saveConfig(cfg: any) {
 }
 
 function getInitialDefaultCompanies() {
-  const now = new Date().toISOString();
-  return {
-    '934145791240': {
-      realmId: '934145791240',
-      companyName: 'Oak Creek Agriculture & Cattle LLC',
-      legalName: 'Oak Creek Agriculture & Cattle Operations LLC',
-      email: 'finance@oakcreekag.com',
-      country: 'US',
-      environment: 'sandbox',
-      status: 'CONNECTED',
-      connectedAt: now,
-      lastRefreshedAt: now,
-      lastUsedAt: now,
-      accessTokenCached: 'mock_token_oak_creek_sandbox',
-      accessTokenExpiresAt: Date.now() + 3600 * 1000,
-      refreshTokenExpiresAt: Date.now() + 101 * 86400 * 1000,
-      isActiveWorking: true,
-      syncedAccounts: [
-        'Operating Checking (Acct ****4120)',
-        'Farm Operating & Expense Ledger',
-        'Commercial Equipment Financing (Acct ****8812)',
-        'Agricultural Payroll Reserve'
-      ],
-      selectedWorkingAccount: 'Operating Checking (Acct ****4120)',
-      defaultPostingAccount: 'Operating Checking (Acct ****4120)',
-      targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
-      chartOfAccountsCategory: 'FARM'
-    },
-    '934145794821': {
-      realmId: '934145794821',
-      companyName: 'High Desert Ranching & Equipment Co.',
-      legalName: 'High Desert Ranching & Equipment Logistics LLC',
-      email: 'books@highdesertranch.com',
-      country: 'US',
-      environment: 'production',
-      status: 'CONNECTED',
-      connectedAt: now,
-      lastRefreshedAt: now,
-      lastUsedAt: now,
-      accessTokenCached: 'mock_token_high_desert_prod',
-      accessTokenExpiresAt: Date.now() + 3600 * 1000,
-      refreshTokenExpiresAt: Date.now() + 98 * 86400 * 1000,
-      isActiveWorking: false,
-      syncedAccounts: [
-        'Commercial Fleet & Fuel Account (Acct ****6021)',
-        'Heavy Machinery Reserve (Acct ****1109)',
-        'General Operating Account'
-      ],
-      selectedWorkingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
-      defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
-      targetChartOfAccounts: 'Schedule C Commercial Standard (24 Accounts)',
-      chartOfAccountsCategory: 'COMMERCIAL'
-    },
-    '934145798934': {
-      realmId: '934145798934',
-      companyName: 'Cascade Valley Organics & Hay Co.',
-      legalName: 'Cascade Valley Organics Agricultural Partnership',
-      email: 'ap@cascadevalleyfarms.com',
-      country: 'US',
-      environment: 'production',
-      status: 'CONNECTED',
-      connectedAt: now,
-      lastRefreshedAt: now,
-      lastUsedAt: now,
-      accessTokenCached: 'mock_token_cascade_valley_prod',
-      accessTokenExpiresAt: Date.now() + 3600 * 1000,
-      refreshTokenExpiresAt: Date.now() + 95 * 86400 * 1000,
-      isActiveWorking: false,
-      syncedAccounts: [
-        'Organic Crops Operating Acct (Acct ****9044)',
-        'Hay & Grain Inventory Reserve',
-        'Irrigation & Utilities Clearing',
-        'Harvest Distribution Acct'
-      ],
-      selectedWorkingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
-      defaultPostingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
-      targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
-      chartOfAccountsCategory: 'FARM'
-    }
-  };
+  return {};
 }
 
 function getInitialDefaultSyncLogs() {
-  const now = Date.now();
-  return [
-    {
-      id: 'qbo-sync-101',
-      pushedAt: new Date(now - 14 * 60 * 1000).toISOString(),
-      timestamp: new Date(now - 14 * 60 * 1000).toISOString(),
-      realmId: '934145791240',
-      companyName: 'Oak Creek Agriculture & Cattle LLC',
-      action: 'BATCH_RECEIPT_PUSH',
-      vendor: 'Valley Feed & Supply Co',
-      date: '2026-10-10',
-      total: 1420.50,
-      tax: 98.40,
-      docNumber: 'QBO-EXP-9121',
-      qboTxnId: 'TXN-77312',
-      schedule: 'Schedule F (Farm)',
-      irsLine: 'Line 14 (Feed purchased)',
-      accountName: 'Feed purchased',
-      fileName: 'valley_feed_oct_invoice.pdf',
-      receiptsCount: 4,
-      status: 'SUCCESS',
-      message: 'Itemized purchase transaction created in Operating Checking (Acct ****4120)'
-    },
-    {
-      id: 'qbo-sync-102',
-      pushedAt: new Date(now - 45 * 60 * 1000).toISOString(),
-      timestamp: new Date(now - 45 * 60 * 1000).toISOString(),
-      realmId: '934145791240',
-      companyName: 'Oak Creek Agriculture & Cattle LLC',
-      action: 'EXPENSE_POST',
-      vendor: 'Midwest Diesel Fuel Service',
-      date: '2026-10-08',
-      total: 835.20,
-      tax: 58.10,
-      docNumber: 'QBO-EXP-9118',
-      qboTxnId: 'TXN-77298',
-      schedule: 'Schedule F (Farm)',
-      irsLine: 'Line 17 (Gasoline, fuel, and oil)',
-      accountName: 'Gasoline, fuel, and oil',
-      fileName: 'diesel_fuel_batch_08.pdf',
-      receiptsCount: 2,
-      status: 'SUCCESS',
-      message: 'Tax category matched: Gasoline, fuel, and oil'
-    },
-    {
-      id: 'qbo-sync-103',
-      pushedAt: new Date(now - 120 * 60 * 1000).toISOString(),
-      timestamp: new Date(now - 120 * 60 * 1000).toISOString(),
-      realmId: '934145794821',
-      companyName: 'High Desert Ranching & Equipment Co.',
-      action: 'PURCHASE_SYNC',
-      vendor: 'CAT Machinery Parts & Service',
-      date: '2026-10-05',
-      total: 2190.00,
-      tax: 152.00,
-      docNumber: 'QBO-EXP-9104',
-      qboTxnId: 'TXN-77180',
-      schedule: 'Schedule C (Business)',
-      irsLine: 'Line 21 (Repairs and maintenance)',
-      accountName: 'Repairs and maintenance',
-      fileName: 'cat_repair_invoice.pdf',
-      receiptsCount: 1,
-      status: 'SUCCESS',
-      message: 'Synced to Commercial Fleet & Fuel Account (Acct ****6021)'
-    }
-  ];
+  return [];
 }
 
 function getCompanies() {
   if (fs.existsSync(COMPANIES_FILE)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf-8'));
-      if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-        return parsed;
+      if (parsed && typeof parsed === 'object') {
+        const cleaned: Record<string, any> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          const name = ((v as any)?.companyName || '').toLowerCase();
+          const rId = (v as any)?.realmId || k;
+          if (['934145791240', '934145794821', '934145798934'].includes(rId)) continue;
+          if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) continue;
+          cleaned[k] = v;
+        }
+        return cleaned;
       }
     } catch {}
   }
@@ -368,7 +232,15 @@ function getSyncLogs(): any[] {
   if (fs.existsSync(SYNC_LOG_FILE)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(SYNC_LOG_FILE, 'utf-8'));
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) {
+        return parsed.filter(item => {
+          const name = (item?.companyName || '').toLowerCase();
+          const rId = item?.realmId || '';
+          if (['934145791240', '934145794821', '934145798934'].includes(rId)) return false;
+          if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) return false;
+          return true;
+        });
+      }
     } catch {}
   }
   const defaultLogs = getInitialDefaultSyncLogs();
@@ -1026,12 +898,11 @@ router.post('/api/scan/receipt', async (req, res) => {
         if (!found) {
           const searchBlob = `${rawItem.memo || ''} ${sourceFileName || ''} ${rawItem.vendor || ''}`.toLowerCase();
           found = connected.find((c: any) => {
-            const cName = (c.companyName || '').toLowerCase();
-            const lName = (c.legalName || '').toLowerCase();
-            if (cName.includes('oak creek') && searchBlob.includes('oak creek')) return true;
-            if (cName.includes('high desert') && (searchBlob.includes('high desert') || searchBlob.includes('ranching'))) return true;
-            if (cName.includes('cascade') && searchBlob.includes('cascade')) return true;
-            const words = cName.split(/\s+/).filter((w: string) => w.length > 4 && !['agriculture', 'company', 'operations', 'commercial', 'standard'].includes(w));
+            const cName = (c.companyName || '').toLowerCase().trim();
+            const lName = (c.legalName || '').toLowerCase().trim();
+            if (cName && searchBlob.includes(cName)) return true;
+            if (lName && searchBlob.includes(lName)) return true;
+            const words = `${cName} ${lName}`.split(/\s+/).filter((w: string) => w.length > 3 && !['inc', 'llc', 'corp', 'company', 'enterprises', 'holdings'].includes(w));
             return words.some((w: string) => searchBlob.includes(w));
           }) as any;
         }
@@ -2707,7 +2578,7 @@ router.post('/api/qbo/webhook', (req, res) => {
 router.post('/api/qbo/mock-connect', (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || `934145${Math.floor(1000000 + Math.random() * 9000000)}`).toString().trim();
-  const companyName = body.companyName || 'Oak Creek Agriculture & Cattle LLC';
+  const companyName = body.companyName || 'QuickBooks Sandbox Company';
   const env = body.environment === 'sandbox' ? 'sandbox' : 'production';
 
   const now = new Date();
@@ -2716,7 +2587,7 @@ router.post('/api/qbo/mock-connect', (req, res) => {
     realmId,
     companyName,
     legalName: `${companyName} Holdings Inc.`,
-    email: 'accounting@oakcreekag.com',
+    email: body.email || 'accounting@quickbooks-sandbox.com',
     country: 'US',
     currency: 'USD',
     connectedAt: now.toISOString(),
@@ -3047,11 +2918,12 @@ router.post('/api/qbo/push', async (req, res) => {
       if (!matchedByEmail && connectedList.length > 0) {
         const searchBlob = `${rcpt.memo || ''} ${rcpt.fileName || ''} ${rcpt.vendor || ''}`.toLowerCase();
         const kwMatch = connectedList.find((c: any) => {
-          const cName = (c.companyName || '').toLowerCase();
-          if (cName.includes('oak creek') && searchBlob.includes('oak creek')) return true;
-          if (cName.includes('high desert') && (searchBlob.includes('high desert') || searchBlob.includes('ranching'))) return true;
-          if (cName.includes('cascade') && searchBlob.includes('cascade')) return true;
-          return false;
+          const cName = (c.companyName || '').toLowerCase().trim();
+          const lName = (c.legalName || '').toLowerCase().trim();
+          if (cName && searchBlob.includes(cName)) return true;
+          if (lName && searchBlob.includes(lName)) return true;
+          const words = `${cName} ${lName}`.split(/\s+/).filter((w: string) => w.length > 3 && !['inc', 'llc', 'corp', 'company', 'enterprises', 'holdings'].includes(w));
+          return words.some((w: string) => searchBlob.includes(w));
         }) as any;
         if (kwMatch) {
           activeCompany = kwMatch;

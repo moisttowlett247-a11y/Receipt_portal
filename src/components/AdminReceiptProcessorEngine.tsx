@@ -544,54 +544,20 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          const cleaned = parsed.filter((c: any) => {
+            if (!c) return false;
+            const rId = c.realmId || '';
+            const name = (c.companyName || '').toLowerCase();
+            if (['934145791240', '934145794821', '934145798934'].includes(rId)) return false;
+            if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) return false;
+            return true;
+          });
+          return cleaned;
+        }
       }
     } catch {}
-    return [
-      {
-        realmId: '934145791240',
-        companyName: 'Oak Creek Agriculture & Cattle LLC',
-        legalName: 'Oak Creek Agriculture & Cattle Operations LLC',
-        email: 'finance@oakcreekag.com',
-        status: 'CONNECTED',
-        defaultPostingAccount: 'Operating Checking (Acct ****4120)',
-        syncedAccounts: [
-          'Operating Checking (Acct ****4120)',
-          'Farm Operating & Expense Ledger',
-          'Commercial Equipment Financing (Acct ****8812)',
-          'Agricultural Payroll Reserve',
-          'Feed & Pasture Expense Acct'
-        ]
-      },
-      {
-        realmId: '934145794821',
-        companyName: 'High Desert Ranching & Equipment Co.',
-        legalName: 'High Desert Ranching & Equipment Logistics LLC',
-        email: 'books@highdesertranch.com',
-        status: 'CONNECTED',
-        defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
-        syncedAccounts: [
-          'Commercial Fleet & Fuel Account (Acct ****6021)',
-          'Heavy Machinery Reserve (Acct ****1109)',
-          'General Operating Account',
-          'Livestock & Cattle Trading Ledger'
-        ]
-      },
-      {
-        realmId: '934145798934',
-        companyName: 'Cascade Valley Organics & Hay Co.',
-        legalName: 'Cascade Valley Organics Agricultural Partnership',
-        email: 'ap@cascadevalleyfarms.com',
-        status: 'CONNECTED',
-        defaultPostingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
-        syncedAccounts: [
-          'Organic Crops Operating Acct (Acct ****9044)',
-          'Hay & Grain Inventory Reserve',
-          'Irrigation & Utilities Clearing',
-          'Harvest Distribution Acct'
-        ]
-      }
-    ];
+    return [];
   });
 
   // Keep connected companies synchronized with server backend
@@ -599,10 +565,18 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     fetch('/api/qbo/companies')
       .then(r => r.json())
       .then(res => {
-        if (res.success && res.data && Array.isArray(res.data) && res.data.length > 0) {
-          setQboCompanies(res.data);
+        if (res.success && res.data && Array.isArray(res.data)) {
+          const cleaned = res.data.filter((c: any) => {
+            if (!c) return false;
+            const rId = c.realmId || '';
+            const name = (c.companyName || '').toLowerCase();
+            if (['934145791240', '934145794821', '934145798934'].includes(rId)) return false;
+            if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) return false;
+            return true;
+          });
+          setQboCompanies(cleaned);
           try {
-            localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(res.data));
+            localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(cleaned));
           } catch {}
         }
       })
@@ -926,11 +900,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       if (!matchedComp) {
         const blob = `${r.memo || ''} ${r.fileName || ''} ${r.vendor || ''}`.toLowerCase();
         matchedComp = connected.find((c: any) => {
-          const cName = (c.companyName || '').toLowerCase();
-          if (cName.includes('oak creek') && blob.includes('oak creek')) return true;
-          if (cName.includes('high desert') && (blob.includes('high desert') || blob.includes('ranching'))) return true;
-          if (cName.includes('cascade') && blob.includes('cascade')) return true;
-          return false;
+          const cName = (c.companyName || '').toLowerCase().trim();
+          const lName = (c.legalName || '').toLowerCase().trim();
+          if (cName && blob.includes(cName)) return true;
+          if (lName && blob.includes(lName)) return true;
+          const words = `${cName} ${lName}`.split(/\s+/).filter((w: string) => w.length > 3 && !['inc', 'llc', 'corp', 'company', 'enterprises', 'holdings'].includes(w));
+          return words.some((w: string) => blob.includes(w));
         });
       }
 
@@ -1718,11 +1693,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       if (!matchedRealmId) {
         const blob = `${r.memo || ''} ${r.fileName || ''} ${r.vendor || ''}`.toLowerCase();
         const kwFound = activeList.find((c: any) => {
-          const cName = (c.companyName || '').toLowerCase();
-          if (cName.includes('oak creek') && blob.includes('oak creek')) return true;
-          if (cName.includes('high desert') && (blob.includes('high desert') || blob.includes('ranching'))) return true;
-          if (cName.includes('cascade') && blob.includes('cascade')) return true;
-          return false;
+          const cName = (c.companyName || '').toLowerCase().trim();
+          const lName = (c.legalName || '').toLowerCase().trim();
+          if (cName && blob.includes(cName)) return true;
+          if (lName && blob.includes(lName)) return true;
+          const words = `${cName} ${lName}`.split(/\s+/).filter((w: string) => w.length > 3 && !['inc', 'llc', 'corp', 'company', 'enterprises', 'holdings'].includes(w));
+          return words.some((w: string) => blob.includes(w));
         });
         if (kwFound) {
           matchedRealmId = kwFound.realmId;
@@ -3642,11 +3618,12 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       if (!matchedComp && connected.length > 0) {
                         const blob = `${inspectingReceipt.memo || ''} ${inspectingReceipt.fileName || ''} ${editFormData.vendor || ''}`.toLowerCase();
                         matchedComp = connected.find((c: any) => {
-                          const cName = (c.companyName || '').toLowerCase();
-                          if (cName.includes('oak creek') && blob.includes('oak creek')) return true;
-                          if (cName.includes('high desert') && (blob.includes('high desert') || blob.includes('ranching'))) return true;
-                          if (cName.includes('cascade') && blob.includes('cascade')) return true;
-                          return false;
+                          const cName = (c.companyName || '').toLowerCase().trim();
+                          const lName = (c.legalName || '').toLowerCase().trim();
+                          if (cName && blob.includes(cName)) return true;
+                          if (lName && blob.includes(lName)) return true;
+                          const words = `${cName} ${lName}`.split(/\s+/).filter((w: string) => w.length > 3 && !['inc', 'llc', 'corp', 'company', 'enterprises', 'holdings'].includes(w));
+                          return words.some((w: string) => blob.includes(w));
                         });
                       }
                       if (matchedComp) {

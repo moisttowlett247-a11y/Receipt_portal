@@ -1120,33 +1120,17 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
       try {
         const rawComps = localStorage.getItem('receipt_processor_qbo_companies_v1');
         let comps = rawComps ? JSON.parse(rawComps) : [];
-        if (!Array.isArray(comps) || comps.length === 0) {
-          comps = [
-            {
-              realmId: '934145791240',
-              companyName: 'Oak Creek Agriculture & Cattle LLC',
-              email: 'finance@oakcreekag.com',
-              status: 'CONNECTED',
-              defaultPostingAccount: 'Operating Checking (Acct ****4120)',
-              syncedAccounts: ['Operating Checking (Acct ****4120)', 'Farm Operating & Expense Ledger']
-            },
-            {
-              realmId: '934145794821',
-              companyName: 'High Desert Ranching & Equipment Co.',
-              email: 'books@highdesertranch.com',
-              status: 'CONNECTED',
-              defaultPostingAccount: 'Commercial Fleet & Fuel Account (Acct ****6021)',
-              syncedAccounts: ['Commercial Fleet & Fuel Account (Acct ****6021)', 'Heavy Machinery Reserve (Acct ****1109)']
-            },
-            {
-              realmId: '934145798934',
-              companyName: 'Cascade Valley Organics & Hay Co.',
-              email: 'ap@cascadevalleyfarms.com',
-              status: 'CONNECTED',
-              defaultPostingAccount: 'Organic Crops Operating Acct (Acct ****9044)',
-              syncedAccounts: ['Organic Crops Operating Acct (Acct ****9044)', 'Hay & Grain Inventory Reserve']
-            }
-          ];
+        if (!Array.isArray(comps)) {
+          comps = [];
+        } else {
+          comps = comps.filter((c: any) => {
+            if (!c) return false;
+            const rId = c.realmId || '';
+            const name = (c.companyName || '').toLowerCase();
+            if (['934145791240', '934145794821', '934145798934'].includes(rId)) return false;
+            if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) return false;
+            return true;
+          });
         }
 
         const connected = comps.filter((c: any) => c.status === 'CONNECTED');
@@ -1165,11 +1149,12 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
           if (!found) {
             const searchBlob = `${memo} ${fileName} ${vendor}`.toLowerCase();
             found = connected.find((c: any) => {
-              const cName = (c.companyName || '').toLowerCase();
-              if (cName.includes('oak creek') && searchBlob.includes('oak creek')) return true;
-              if (cName.includes('high desert') && (searchBlob.includes('high desert') || searchBlob.includes('ranching'))) return true;
-              if (cName.includes('cascade') && searchBlob.includes('cascade')) return true;
-              return false;
+              const cName = (c.companyName || '').toLowerCase().trim();
+              const lName = (c.legalName || '').toLowerCase().trim();
+              if (cName && searchBlob.includes(cName)) return true;
+              if (lName && searchBlob.includes(lName)) return true;
+              const words = `${cName} ${lName}`.split(/\s+/).filter((w: string) => w.length > 3 && !['inc', 'llc', 'corp', 'company', 'enterprises', 'holdings'].includes(w));
+              return words.some((w: string) => searchBlob.includes(w));
             });
           }
 
