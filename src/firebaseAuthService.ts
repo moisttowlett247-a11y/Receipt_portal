@@ -145,8 +145,10 @@ export const googleSignIn = async (): Promise<{ user: any; email?: string; acces
       console.warn('Popup blocked or restricted in environment, opening direct OAuth window...', popupErr?.code || popupErr?.message);
       
       const directUrl = getDirectOAuthUrl();
-      // Open direct Google OAuth dialog in a clean new browser tab/window
-      const authWindow = window.open(directUrl, '_blank');
+      let authWindow: Window | null = null;
+      try {
+        authWindow = window.open(directUrl, '_blank');
+      } catch {}
       
       if (!authWindow || authWindow.closed || typeof authWindow.closed === 'undefined') {
         // Fallback to top-level navigation if popup was completely blocked

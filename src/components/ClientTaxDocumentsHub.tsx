@@ -546,7 +546,15 @@ export const ClientTaxDocumentsHub: React.FC<ClientTaxDocumentsHubProps> = ({
         <button
           type="button"
           onClick={() => {
-            if (confirm('Clear all sample tax documents for this account?')) {
+            let confirmed = false;
+            try {
+              confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
+                ? window.confirm('Clear all tax documents for this account?')
+                : true;
+            } catch {
+              confirmed = true;
+            }
+            if (confirmed) {
               w2s.forEach(w => deleteW2Record(w.id));
               form1099s.forEach(f => delete1099Record(f.id));
               refreshDocs();

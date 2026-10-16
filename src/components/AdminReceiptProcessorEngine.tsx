@@ -1650,9 +1650,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     }
 
     if (activeList.length === 0) {
-      if (confirm('No connected QuickBooks Online company was found.\n\nWould you like to open the QuickBooks Connection Center now to connect your company or launch a sandbox ledger?')) {
-        if (onNavigateToQBO) onNavigateToQBO();
-      }
+      if (onToast) onToast('No connected QuickBooks company found. Opening QuickBooks Connection Center...');
+      if (onNavigateToQBO) onNavigateToQBO();
       return;
     }
 
@@ -3524,7 +3523,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       type="text"
                       value={editFormData.detectedEmail}
                       onChange={e => setEditFormData({ ...editFormData, detectedEmail: e.target.value })}
-                      placeholder="e.g. finance@oakcreekag.com"
+                      placeholder="e.g. accounting@company.com"
                       className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-sky-300 font-mono focus:outline-none focus:border-sky-500"
                     />
                   </div>

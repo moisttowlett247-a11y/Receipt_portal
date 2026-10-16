@@ -641,7 +641,10 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
 
       setGeneratedAuthUrl(authUrl);
 
-      const popup = window.open(authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
+      let popup: Window | null = null;
+      try {
+        popup = window.open(authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
+      } catch {}
       if (!popup || popup.closed || typeof popup.closed === 'undefined') {
         showToast('Popup blocked. Opening Connection Assistant with direct authorization link...');
         setShowConnectModal(true);
@@ -688,7 +691,10 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       setGeneratedAuthUrl(authUrl);
 
       showToast('Opening Intuit OAuth authorization...');
-      const popup = window.open(authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
+      let popup: Window | null = null;
+      try {
+        popup = window.open(authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
+      } catch {}
       if (!popup || popup.closed) {
         window.location.href = authUrl;
       }
@@ -792,7 +798,15 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   };
 
   const handleDisconnect = async (realmId: string, companyName: string) => {
-    if (!confirm(`Are you sure you want to disconnect and revoke QuickBooks access for "${companyName}" (Realm: ${realmId})?\n\nThis will revoke OAuth tokens with Intuit and halt receipt synchronization.`)) {
+    let confirmed = false;
+    try {
+      confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm(`Are you sure you want to disconnect and revoke QuickBooks access for "${companyName}" (Realm: ${realmId})?\n\nThis will revoke OAuth tokens with Intuit and halt receipt synchronization.`)
+        : true;
+    } catch {
+      confirmed = true;
+    }
+    if (!confirmed) {
       return;
     }
 
@@ -964,7 +978,15 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
   };
 
   const handleClearSyncLog = async () => {
-    if (!confirm('Are you sure you want to clear the QuickBooks synchronization audit log?')) return;
+    let confirmed = false;
+    try {
+      confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
+        ? window.confirm('Are you sure you want to clear the QuickBooks synchronization audit log?')
+        : true;
+    } catch {
+      confirmed = true;
+    }
+    if (!confirmed) return;
     setIsClearingLog(true);
     try {
       await safeFetchJson('/api/qbo/sync-log/clear', { method: 'POST' });

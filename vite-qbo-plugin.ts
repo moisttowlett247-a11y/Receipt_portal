@@ -103,7 +103,17 @@ function saveConfig(cfg: Partial<QboConfig>) {
 function getCompanies(): Record<string, ConnectedCompany> {
   if (fs.existsSync(COMPANIES_FILE)) {
     try {
-      return JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf-8'));
+      const parsed = JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf-8'));
+      if (parsed && typeof parsed === 'object') {
+        const cleaned: Record<string, ConnectedCompany> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, any>)) {
+          if (!v) continue;
+          const name = ((v.companyName || '') + ' ' + (v.legalName || '')).toLowerCase();
+          if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) continue;
+          cleaned[k] = v;
+        }
+        return cleaned;
+      }
     } catch {}
   }
   return {};
@@ -121,6 +131,27 @@ export function quickbooksApiPlugin(): Plugin {
         const urlObj = new URL(req.url || '', 'http://localhost');
         const pathname = urlObj.pathname;
         const normalizedPath = pathname.replace(/^\/Receipt_portal\/?/i, '/');
+
+        // Security guard against path traversal and dot-file exfiltration
+        const p = (normalizedPath || '').toLowerCase();
+        let decoded = p;
+        try {
+          decoded = decodeURIComponent(p);
+        } catch {}
+        if (
+          p.includes('/.data') || decoded.includes('/.data') ||
+          (p.includes('/.env') && !p.includes('/.env.example')) ||
+          (decoded.includes('/.env') && !decoded.includes('/.env.example')) ||
+          p.includes('/.git') || decoded.includes('/.git') ||
+          p.includes('/licenses/') || decoded.includes('/licenses/') ||
+          p.includes('..') || decoded.includes('..') ||
+          p.includes('%2e%2e')
+        ) {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Access denied: forbidden resource.' }));
+          return;
+        }
 
         // Intercept /api/qbo/* and /api/scan/receipt routes
         if (!normalizedPath.startsWith('/api/qbo') && normalizedPath !== '/api/scan/receipt') {
@@ -894,7 +925,7 @@ export function quickbooksApiPlugin(): Plugin {
         if (normalizedPath === '/api/qbo/mock-connect' && req.method === 'POST') {
           const body = await readJsonBody();
           const realmId = (body.realmId || `934145${Math.floor(1000000 + Math.random() * 9000000)}`).toString().trim();
-          const companyName = body.companyName || 'Oak Creek Agriculture & Cattle LLC';
+          const companyName = body.companyName || 'QuickBooks Sandbox Company';
           const env = body.environment === 'sandbox' ? 'sandbox' : 'production';
 
           const now = new Date();
@@ -903,7 +934,7 @@ export function quickbooksApiPlugin(): Plugin {
             realmId,
             companyName,
             legalName: `${companyName} Holdings Inc.`,
-            email: 'accounting@oakcreekag.com',
+            email: body.email || 'accounting@quickbooks-sandbox.com',
             country: 'US',
             currency: 'USD',
             connectedAt: now.toISOString(),

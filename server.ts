@@ -21,6 +21,24 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   
+  // Guard against path traversal, dot-file tampering, and confidential file access
+  const p = (req.path || '').toLowerCase();
+  let decoded = p;
+  try {
+    decoded = decodeURIComponent(p);
+  } catch {}
+  if (
+    p.includes('/.data') || decoded.includes('/.data') ||
+    (p.includes('/.env') && !p.includes('/.env.example')) ||
+    (decoded.includes('/.env') && !decoded.includes('/.env.example')) ||
+    p.includes('/.git') || decoded.includes('/.git') ||
+    p.includes('/licenses/') || decoded.includes('/licenses/') ||
+    p.includes('..') || decoded.includes('..') ||
+    p.includes('%2e%2e')
+  ) {
+    return res.status(403).json({ error: 'Access denied: forbidden resource.' });
+  }
+
   // For sensitive financial and tax document endpoints, strictly disable client/proxy caching
   if (req.path.startsWith('/api/tax-docs') || req.path.startsWith('/api/scan') || req.path.startsWith('/api/qbo')) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, private');
@@ -30,22 +48,22 @@ app.use((req, res, next) => {
   next();
 });
 
-// Helper directories
-const LICENSES_DIR = path.resolve(__dirname, 'public', 'licenses');
-if (!fs.existsSync(LICENSES_DIR)) {
-  fs.mkdirSync(LICENSES_DIR, { recursive: true });
-}
-
+// Secure data directory (isolated from public static web root)
 const DATA_DIR = path.resolve(__dirname, '.data');
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const LICENSES_DIR = path.resolve(DATA_DIR, 'licenses');
+if (!fs.existsSync(LICENSES_DIR)) {
+  fs.mkdirSync(LICENSES_DIR, { recursive: true });
 }
 
 const CONFIG_FILE = path.join(DATA_DIR, 'qbo_config.json');
 const COMPANIES_FILE = path.join(DATA_DIR, 'qbo_companies.json');
 const SYNC_LOG_FILE = path.join(DATA_DIR, 'qbo_sync_log.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'active_sessions.json');
-const INQUIRIES_FILE = path.join(LICENSES_DIR, 'inquiries.json');
+const INQUIRIES_FILE = path.join(DATA_DIR, 'inquiries.json');
 const SUBMISSIONS_FILE = path.join(DATA_DIR, 'client_submissions.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'client_accounts.json');
 const TAX_DOCS_FILE = path.join(DATA_DIR, 'tax_documents.json');
@@ -426,6 +444,40 @@ function getClientIp(req: express.Request): string {
   return normalizeIp(req.socket?.remoteAddress || '127.0.0.1');
 }
 
+// In-Memory IP Rate Limiter to mitigate DoS, brute-force & quota exhaustion
+const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimiter(maxRequests: number, windowMs: number) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = getClientIp(req);
+    const key = `${ip}:${req.baseUrl || ''}${req.path}`;
+    const now = Date.now();
+    const bucket = rateLimitBuckets.get(key);
+
+    if (!bucket || now > bucket.resetAt) {
+      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+      return next();
+    }
+
+    bucket.count++;
+    if (bucket.count > maxRequests) {
+      res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
+      return res.status(429).json({
+        success: false,
+        error: 'Too many requests. Please wait a moment before trying again.'
+      });
+    }
+
+    return next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateLimitBuckets.entries()) {
+    if (now > v.resetAt) rateLimitBuckets.delete(k);
+  }
+}, 300000);
+
 // Router Setup
 const router = express.Router();
 
@@ -488,16 +540,8 @@ const desktopFilesMap: Record<string, { file: string; type: string }> = {
   '/README_DESKTOP_APP.txt': { file: 'README_DESKTOP_APP.txt', type: 'text/plain; charset=utf-8' },
 };
 
-router.get([
-  '/receipt_processor_bundle.zip',
-  '/api/download/bundle',
-  '/run_receipt_processor.bat',
-  '/run_receipt_processor.sh',
-  '/receipt_processor.py',
-  '/requirements.txt',
-  '/.env.example',
-  '/README_DESKTOP_APP.txt'
-], (req, res) => {
+router.use((req, res, next) => {
+  if (req.method !== 'GET') return next();
   const cleanPath = req.path.replace(/^\/Receipt_portal\/?/i, '/');
   const target = desktopFilesMap[cleanPath];
   if (target) {
@@ -508,7 +552,7 @@ router.get([
       return res.sendFile(filePath);
     }
   }
-  res.sendStatus(404);
+  next();
 });
 
 // Presence & Active Devices Endpoints
@@ -535,7 +579,7 @@ router.post('/api/licenses/sessions/clear', (req, res) => {
 const serverOcrCache = new Map<string, { primaryReceipt: any; allProcessedReceipts: any }>();
 
 // POST /api/scan/receipt - High-accuracy AI OCR Receipt extraction via Gemini
-router.post('/api/scan/receipt', async (req, res) => {
+router.post('/api/scan/receipt', rateLimiter(60, 60000), async (req, res) => {
   const { imageBase64, mimeType, fileName } = req.body;
 
   if (!imageBase64) {
@@ -589,7 +633,7 @@ router.post('/api/scan/receipt', async (req, res) => {
     `   - 'transaction_number': Strictly the register, POS, cashier, or terminal sequence transaction number (e.g. labeled 'TRANS #', 'TRAN #', 'TRANSACTION', 'TXN #', 'CHECK #', 'TICKET #', or 'SEQ #'). DO NOT put this into reference_id!\n` +
     `   - 'reference_id': Strictly the credit card processor, payment gateway, host, or terminal authorization reference code (e.g. labeled 'REF #', 'REF ID', 'REFERENCE', 'HOST REF #', 'ACQ REF', 'TRACE #', or 'AUTH/REF'). NEVER confuse with Trans #!\n` +
     `   - 'invoice_number': The formal billing invoice number or master receipt number (e.g. labeled 'INVOICE #', 'INV #', 'RECEIPT #', or 'ORDER #'). If none, leave empty string.\n` +
-    `8. EMAIL DETECTION: Look for any billing email, account email, customer email, or company email printed or written anywhere on the receipt or invoice (e.g. 'finance@oakcreekag.com', 'books@highdesertranch.com', etc.). Extract into 'email' field or empty string if not found.\n` +
+    `8. EMAIL DETECTION: Look for any billing email, account email, customer email, or company email printed or written anywhere on the receipt or invoice (e.g. 'accounting@company.com', 'billing@yourdomain.com', etc.). Extract into 'email' field or empty string if not found.\n` +
     `9. Return strictly valid JSON conforming to the schema.`;
 
   const receiptSchema = {
@@ -957,7 +1001,7 @@ router.post('/api/scan/receipt', async (req, res) => {
 });
 
 // Licensing Endpoints
-router.get('/api/licenses/check', (req, res) => {
+router.get('/api/licenses/check', rateLimiter(120, 60000), (req, res) => {
   const keyParam = String(req.query.key || '').trim().toUpperCase();
   let hashParam = String(req.query.hash || '').trim().toLowerCase();
   const hwidParam = String(req.query.hwid || '').trim();
@@ -969,11 +1013,12 @@ router.get('/api/licenses/check', (req, res) => {
     hashParam = crypto.createHash('sha256').update(keyParam).digest('hex');
   }
 
-  if (!hashParam) {
-    return res.status(400).json({ error: 'Missing key or hash parameter' });
+  const safeHash = String(hashParam).replace(/[^a-zA-Z0-9_-]/g, '');
+  if (!safeHash || safeHash.length < 8) {
+    return res.status(400).json({ error: 'Invalid key or hash parameter' });
   }
 
-  const targetFile = path.join(LICENSES_DIR, `${hashParam}.json`);
+  const targetFile = path.join(LICENSES_DIR, `${safeHash}.json`);
   if (fs.existsSync(targetFile)) {
     try {
       const fileData = JSON.parse(fs.readFileSync(targetFile, 'utf-8'));
@@ -1036,7 +1081,7 @@ router.get('/api/licenses/check', (req, res) => {
   }
 });
 
-router.post('/api/licenses/heartbeat', (req, res) => {
+router.post('/api/licenses/heartbeat', rateLimiter(120, 60000), (req, res) => {
   try {
     const body = req.body || {};
     const clientIp = getClientIp(req);
@@ -1538,7 +1583,11 @@ router.post('/api/client/submissions/batch-sync', (req, res) => {
 router.get('/api/admin/accounts', (req, res) => {
   try {
     const accounts = loadAccounts();
-    return res.json({ success: true, count: accounts.length, accounts });
+    const sanitized = accounts.map((a: any) => {
+      const { passwordHash, salt, password, ...safe } = a;
+      return safe;
+    });
+    return res.json({ success: true, count: sanitized.length, accounts: sanitized });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1627,11 +1676,31 @@ router.get('/api/tax-docs', (req, res) => {
       form1099s = form1099s.filter((f: any) => f.clientId === qClientId);
     }
 
+    const sanitizeW2 = (w: any) => {
+      const { ssn, employeeSsn, ...safe } = w;
+      return {
+        ...safe,
+        employeeSsnMasked: sanitizeSSN(safe.employeeSsnMasked || ssn || employeeSsn),
+        employerEin: sanitizeEIN(safe.employerEin)
+      };
+    };
+    const sanitize1099 = (f: any) => {
+      const { tin, recipientTin, ...safe } = f;
+      return {
+        ...safe,
+        recipientTinMasked: sanitizeSSN(safe.recipientTinMasked || tin || recipientTin),
+        payerTin: sanitizeEIN(safe.payerTin)
+      };
+    };
+
+    const cleanW2s = w2s.map(sanitizeW2);
+    const clean1099s = form1099s.map(sanitize1099);
+
     return res.json({
       success: true,
-      w2s,
-      form1099s,
-      totalCount: w2s.length + form1099s.length
+      w2s: cleanW2s,
+      form1099s: clean1099s,
+      totalCount: cleanW2s.length + clean1099s.length
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -1697,7 +1766,7 @@ router.delete('/api/tax-docs/:id', (req, res) => {
 });
 
 // Specialized OCR Vision Endpoint for W-2, 1099-NEC, and 1099-MISC Forms
-router.post('/api/scan/tax-document', async (req, res) => {
+router.post('/api/scan/tax-document', rateLimiter(60, 60000), async (req, res) => {
   const { imageBase64, mimeType, fileName } = req.body;
   if (!imageBase64) {
     return res.status(400).json({ success: false, error: 'Missing document image data' });
@@ -2183,7 +2252,8 @@ router.get('/api/qbo/companies', (req, res) => {
     success: true,
     totalCompanies: list.length,
     activeConnected: list.filter(c => c.status === 'CONNECTED').length,
-    companies: list
+    companies: list,
+    data: list
   });
 });
 

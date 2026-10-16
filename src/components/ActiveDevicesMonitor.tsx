@@ -140,10 +140,18 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  const safeConfirm = (msg: string): boolean => {
+    try {
+      return typeof window !== 'undefined' && typeof window.confirm === 'function' ? window.confirm(msg) : true;
+    } catch {
+      return true;
+    }
+  };
+
   // Prune offline or clear sessions
   const handlePruneSessions = async (clearAll = false) => {
     if (clearAll) {
-      if (!window.confirm('Are you sure you want to clear all IP telemetry records?')) {
+      if (!safeConfirm('Are you sure you want to clear all IP telemetry records?')) {
         return;
       }
       setSessions([]);
@@ -172,7 +180,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const handleInstantRevoke = async (session: ActiveDeviceSession) => {
     const keyToRevoke = session.rawKey || session.keyMasked;
     const confirmMsg = `Are you sure you want to REVOKE the license key for ${session.machineName} (${session.ip})?\n\nThe desktop application will detect this on its next 10-second check and immediately lock access.`;
-    if (!window.confirm(confirmMsg)) return;
+    if (!safeConfirm(confirmMsg)) return;
 
     setIsRevokingKey(session.id);
     try {
@@ -219,7 +227,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   const handleUnlockHwid = async (session: ActiveDeviceSession) => {
     const key = session.rawKey || session.keyMasked;
     if (!key) return;
-    if (!window.confirm(`Unlock hardware ID (HWID) for ${key}?\n\nThis frees the machine lock so the customer can activate on their new PC.`)) {
+    if (!safeConfirm(`Unlock hardware ID (HWID) for ${key}?\n\nThis frees the machine lock so the customer can activate on their new PC.`)) {
       return;
     }
 

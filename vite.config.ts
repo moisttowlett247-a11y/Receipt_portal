@@ -15,6 +15,27 @@ function licenseSyncApiPlugin(): Plugin {
         const pathname = urlObj.pathname;
         const normalizedPath = pathname.replace(/^\/Receipt_portal\/?/i, '/');
 
+        // Security guard against path traversal and dot-file exfiltration
+        const p = (normalizedPath || '').toLowerCase();
+        let decoded = p;
+        try {
+          decoded = decodeURIComponent(p);
+        } catch {}
+        if (
+          p.includes('/.data') || decoded.includes('/.data') ||
+          (p.includes('/.env') && !p.includes('/.env.example')) ||
+          (decoded.includes('/.env') && !decoded.includes('/.env.example')) ||
+          p.includes('/.git') || decoded.includes('/.git') ||
+          p.includes('/licenses/') || decoded.includes('/licenses/') ||
+          p.includes('..') || decoded.includes('..') ||
+          p.includes('%2e%2e')
+        ) {
+          res.statusCode = 403;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Access denied: forbidden resource.' }));
+          return;
+        }
+
         // Set permissive CORS and no-cache on all license queries
         if (normalizedPath.startsWith('/api/licenses') || normalizedPath.startsWith('/licenses/')) {
           res.setHeader('Access-Control-Allow-Origin', '*');

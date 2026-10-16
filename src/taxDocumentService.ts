@@ -329,7 +329,7 @@ export function exportTaxDocumentsCSV(clientId?: string): void {
   const form1099s = get1099Records(clientId);
 
   if (w2s.length === 0 && form1099s.length === 0) {
-    alert('No tax documents available to export.');
+    console.warn('[TaxDocs] No tax documents available to export.');
     return;
   }
 

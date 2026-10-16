@@ -1405,7 +1405,15 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                           type="button"
                           disabled={deletingInquiryId === inq.id}
                           onClick={() => {
-                            if (window.confirm(`Delete request inquiry from "${inq.name}" (${inq.email})?`)) {
+                            let confirmed = false;
+                            try {
+                              confirmed = typeof window !== 'undefined' && typeof window.confirm === 'function'
+                                ? window.confirm(`Delete request inquiry from "${inq.name}" (${inq.email})?`)
+                                : true;
+                            } catch {
+                              confirmed = true;
+                            }
+                            if (confirmed) {
                               handleDeleteInquiry(inq.id);
                             }
                           }}
