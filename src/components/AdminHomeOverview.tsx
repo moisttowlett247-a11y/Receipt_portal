@@ -160,7 +160,39 @@ export function AdminHomeOverview({
   const [myDetectedIp, setMyDetectedIp] = useState<string | null>(null);
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
 
-  const [qboCompanies, setQboCompanies] = useState<QboCompanyRecord[]>([]);
+  const [qboCompanies, setQboCompanies] = useState<QboCompanyRecord[]>(() => {
+    try {
+      const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((c: any) => {
+            if (!c || !c.realmId) return false;
+            if (['934145791240', '934145794821', '934145798934'].includes(c.realmId)) return false;
+            const name = (c.companyName || '').toLowerCase();
+            if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) return false;
+            return true;
+          });
+        }
+      }
+    } catch {}
+    return [];
+  });
+
+  const syncedCompanies = useMemo(() => {
+    return qboCompanies.filter(c => c.status === 'CONNECTED' || !c.status);
+  }, [qboCompanies]);
+
+  const syncedCompaniesCount = syncedCompanies.length;
+
+  const totalSyncedAccountsCount = useMemo(() => {
+    let count = 0;
+    for (const c of syncedCompanies) {
+      count += (c.syncedAccounts?.length || 1);
+    }
+    return count;
+  }, [syncedCompanies]);
+
   const [selectedQboRealmId, setSelectedQboRealmId] = useState<string>('');
   const [qboConnectedCompany, setQboConnectedCompany] = useState<string | null>(null);
   const [qboRealmId, setQboRealmId] = useState<string | null>(null);
@@ -227,6 +259,7 @@ export function AdminHomeOverview({
       localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
       localStorage.setItem('receipt_processor_qbo_active_realm_v1', realmId);
       localStorage.setItem('receipt_processor_qbo_active_account_v1', acc);
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
     } catch {}
 
     try {
@@ -265,6 +298,7 @@ export function AdminHomeOverview({
 
     try {
       localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
     } catch {}
 
     try {
@@ -294,6 +328,7 @@ export function AdminHomeOverview({
 
     try {
       localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
     } catch {}
 
     try {
@@ -322,6 +357,7 @@ export function AdminHomeOverview({
 
     try {
       localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
     } catch {}
 
     try {
@@ -353,6 +389,7 @@ export function AdminHomeOverview({
 
     try {
       localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
     } catch {}
 
     try {
@@ -383,6 +420,7 @@ export function AdminHomeOverview({
           const updated = qboCompanies.map(c => c.realmId === realmId ? { ...c, ...data.company } : c);
           setQboCompanies(updated);
           localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+          window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
           onToast(`✓ Populated ${data.totalAccounts || 0} accounts for "${comp.companyName}"! Default account: "${data.defaultPostingAccount}"`);
           return;
         }
@@ -412,24 +450,60 @@ export function AdminHomeOverview({
       const resCompanies = await fetch(`${backendBase}/api/qbo/companies`);
       if (resCompanies.ok) {
         const compData = await resCompanies.json();
-        if (compData.companies && compData.companies.length > 0) {
+        if (Array.isArray(compData.companies)) {
           loadedComps = compData.companies;
         }
       }
 
-      if (loadedComps.length === 0) {
-        try {
-          const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
-          if (raw) loadedComps = JSON.parse(raw);
-        } catch {}
+      let localComps: QboCompanyRecord[] = [];
+      try {
+        const raw = localStorage.getItem('receipt_processor_qbo_companies_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) localComps = parsed;
+        }
+      } catch {}
+
+      const filterLegacy = (c: any) => {
+        if (!c || !c.realmId) return false;
+        if (['934145791240', '934145794821', '934145798934'].includes(c.realmId)) return false;
+        const name = (c.companyName || '').toLowerCase();
+        if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) return false;
+        return true;
+      };
+
+      loadedComps = loadedComps.filter(filterLegacy);
+      localComps = localComps.filter(filterLegacy);
+
+      const compMap = new Map<string, QboCompanyRecord>();
+      for (const c of loadedComps) {
+        compMap.set(c.realmId, c);
+      }
+      for (const c of localComps) {
+        if (!compMap.has(c.realmId)) {
+          compMap.set(c.realmId, c);
+        } else {
+          const existing = compMap.get(c.realmId)!;
+          compMap.set(c.realmId, {
+            ...existing,
+            ...c,
+            status: c.status || existing.status || 'CONNECTED',
+            syncedAccounts: (c.syncedAccounts && c.syncedAccounts.length > 0) ? c.syncedAccounts : existing.syncedAccounts,
+            selectedWorkingAccount: c.selectedWorkingAccount || existing.selectedWorkingAccount,
+            defaultPostingAccount: c.defaultPostingAccount || existing.defaultPostingAccount,
+            targetChartOfAccounts: c.targetChartOfAccounts || existing.targetChartOfAccounts
+          });
+        }
       }
 
-      if (loadedComps.length > 0) {
-        setQboCompanies(loadedComps);
+      const mergedComps = Array.from(compMap.values());
+      setQboCompanies(mergedComps);
+
+      if (mergedComps.length > 0) {
         const storedActiveRealm = localStorage.getItem('receipt_processor_qbo_active_realm_v1');
-        const active = (storedActiveRealm ? loadedComps.find(c => c.realmId === storedActiveRealm) : null)
-          || loadedComps.find(c => c.isActiveWorking)
-          || loadedComps[0];
+        const active = (storedActiveRealm ? mergedComps.find(c => c.realmId === storedActiveRealm) : null)
+          || mergedComps.find(c => c.isActiveWorking)
+          || mergedComps[0];
         
         setSelectedQboRealmId(active.realmId);
         setQboConnectedCompany(active.companyName);
@@ -443,6 +517,11 @@ export function AdminHomeOverview({
         
         setQboActiveAccount(currentAcc);
         setQboActiveChart(active.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)');
+      } else {
+        setSelectedQboRealmId('');
+        setQboConnectedCompany(null);
+        setQboRealmId(null);
+        setQboActiveAccount('No Active Account');
       }
     } catch {}
 
@@ -539,6 +618,142 @@ export function AdminHomeOverview({
     });
     return () => unsub();
   }, []);
+
+  // Real-time synchronization for QuickBooks companies across windows, tabs & components
+  useEffect(() => {
+    const handleCompaniesUpdated = (e: any) => {
+      if (e?.detail?.companies && Array.isArray(e.detail.companies)) {
+        const comps: QboCompanyRecord[] = e.detail.companies;
+        setQboCompanies(comps);
+        if (comps.length > 0) {
+          const active = comps.find((c: any) => c.isActiveWorking) || comps[0];
+          setSelectedQboRealmId(active.realmId);
+          setQboConnectedCompany(active.companyName);
+          setQboRealmId(active.realmId);
+          setQboEnvironment(active.environment || 'sandbox');
+          setQboActiveAccount(active.selectedWorkingAccount || (active.syncedAccounts && active.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)');
+        } else {
+          setSelectedQboRealmId('');
+          setQboConnectedCompany(null);
+          setQboRealmId(null);
+          setQboActiveAccount('No Active Account');
+        }
+      } else {
+        fetchLiveTelemetry();
+      }
+    };
+
+    window.addEventListener('qbo-companies-updated', handleCompaniesUpdated);
+    window.addEventListener('storage', handleCompaniesUpdated);
+    window.addEventListener('focus', fetchLiveTelemetry);
+
+    return () => {
+      window.removeEventListener('qbo-companies-updated', handleCompaniesUpdated);
+      window.removeEventListener('storage', handleCompaniesUpdated);
+      window.removeEventListener('focus', fetchLiveTelemetry);
+    };
+  }, [fetchLiveTelemetry]);
+
+  // Quick simulate Intuit connection directly from Overview
+  const handleQuickSimulateCompany = async () => {
+    const randomRealm = '934145' + Math.floor(100000 + Math.random() * 900000);
+    const demoNames = [
+      'Heartland Ag & Livestock Co.',
+      'Prairie Ridge Farming LLC',
+      'Apex Commercial Contracting Inc.',
+      'Red River Valley Ag Operations',
+      'Summit Grain & Feed Enterprises'
+    ];
+    const compName = demoNames[Math.floor(Math.random() * demoNames.length)];
+    const now = new Date();
+    const newRecord: QboCompanyRecord = {
+      realmId: randomRealm,
+      companyName: compName,
+      legalName: `${compName} Holdings Inc.`,
+      email: 'accounting@heartland-ag.com',
+      country: 'US',
+      connectedAt: now.toISOString(),
+      lastRefreshedAt: now.toISOString(),
+      environment: 'sandbox',
+      status: 'CONNECTED',
+      accessValidRemainingSec: 3600,
+      rollingDaysRemaining: 101,
+      isActiveWorking: true,
+      syncedAccounts: [
+        'Operating Checking (Acct ****4120)',
+        'Farm Operating & Expense Ledger',
+        'Commercial Equipment Financing (Acct ****8812)',
+        'Agricultural Payroll Reserve'
+      ],
+      selectedWorkingAccount: 'Operating Checking (Acct ****4120)',
+      defaultPostingAccount: 'Operating Checking (Acct ****4120)',
+      targetChartOfAccounts: 'Schedule F Agricultural Standard (28 Accounts)',
+      chartOfAccountsCategory: 'FARM'
+    };
+
+    const updated = [newRecord, ...qboCompanies.filter(c => c.realmId !== randomRealm)];
+    setQboCompanies(updated);
+    setSelectedQboRealmId(randomRealm);
+    setQboConnectedCompany(compName);
+    setQboRealmId(randomRealm);
+    setQboActiveAccount('Operating Checking (Acct ****4120)');
+
+    try {
+      localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      localStorage.setItem('receipt_processor_qbo_active_realm_v1', randomRealm);
+      localStorage.setItem('receipt_processor_qbo_active_account_v1', 'Operating Checking (Acct ****4120)');
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
+    } catch {}
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/mock-connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyName: compName,
+          realmId: randomRealm,
+          environment: 'sandbox'
+        })
+      });
+    } catch {}
+
+    onToast(`✓ Connected and synced QuickBooks company: "${compName}" (Realm: ${randomRealm})`);
+  };
+
+  // Disconnect company from Overview
+  const handleDisconnectCompany = async (realmId: string, compName: string) => {
+    const updated = qboCompanies.filter(c => c.realmId !== realmId);
+    setQboCompanies(updated);
+    if (selectedQboRealmId === realmId) {
+      const nextActive = updated[0];
+      if (nextActive) {
+        setSelectedQboRealmId(nextActive.realmId);
+        setQboConnectedCompany(nextActive.companyName);
+        setQboRealmId(nextActive.realmId);
+        setQboActiveAccount(nextActive.selectedWorkingAccount || (nextActive.syncedAccounts && nextActive.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)');
+      } else {
+        setSelectedQboRealmId('');
+        setQboConnectedCompany(null);
+        setQboRealmId(null);
+        setQboActiveAccount('No Active Account');
+      }
+    }
+
+    try {
+      localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
+    } catch {}
+
+    try {
+      await fetch(`${getBackendApiUrl()}/api/qbo/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ realmId, purge: true })
+      });
+    } catch {}
+
+    onToast(`✓ Disconnected QuickBooks company: "${compName}".`);
+  };
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
@@ -979,12 +1194,12 @@ export function AdminHomeOverview({
                 </div>
                 <div className="flex items-center gap-1.5 flex-wrap justify-end">
                   <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-semibold flex items-center gap-1 ${
-                    qboConnectedCompany 
+                    syncedCompaniesCount > 0 
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
                       : 'bg-stone-800 text-stone-400 border border-stone-700'
                   }`}>
-                    <span className={`w-1.5 h-1.5 rounded-full ${qboConnectedCompany ? 'bg-emerald-400 animate-pulse' : 'bg-stone-500'}`} />
-                    {qboConnectedCompany ? 'Connected OAuth 2.0' : 'OAuth Ready'}
+                    <span className={`w-1.5 h-1.5 rounded-full ${syncedCompaniesCount > 0 ? 'bg-emerald-400 animate-pulse' : 'bg-stone-500'}`} />
+                    {syncedCompaniesCount > 0 ? `${syncedCompaniesCount} Synced OAuth 2.0` : 'OAuth Ready (0 Synced)'}
                   </span>
                   <span className="px-1.5 py-0.2 rounded text-[10px] font-mono bg-stone-800 text-stone-400 uppercase">
                     {qboEnvironment}
@@ -993,59 +1208,88 @@ export function AdminHomeOverview({
               </div>
 
               <div className="mt-4">
-                <div className="text-xl font-bold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors truncate">
-                  {qboConnectedCompany || 'QuickBooks Online'}
-                </div>
-                
-                {/* Active Working Account Display & Quick Selector */}
-                <div className="mt-1 flex items-center gap-1.5 text-xs text-amber-300 font-semibold truncate">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                  <span className="truncate">Active Account: {qboActiveAccount}</span>
+                <div className="text-3xl font-extrabold font-mono text-stone-100 group-hover:text-emerald-400 transition-colors flex items-baseline gap-2">
+                  <span>{syncedCompaniesCount}</span>
+                  <span className="text-xs font-normal text-stone-400 font-sans">
+                    {syncedCompaniesCount === 1 ? 'Company Synced' : 'Companies Synced'}
+                  </span>
                 </div>
 
-                {qboCompanies.length > 0 && (
-                  <div className="mt-2" onClick={e => e.stopPropagation()}>
-                    <select
-                      value={`${selectedQboRealmId}::${qboActiveAccount}`}
-                      onChange={e => {
-                        const [realmId, acc] = e.target.value.split('::');
-                        if (realmId) handleSwitchWorkingQboCompany(realmId, acc);
-                      }}
-                      className="w-full px-2 py-1.5 bg-stone-950 border border-stone-700 hover:border-emerald-500 rounded text-[11px] font-semibold text-emerald-300 focus:outline-none cursor-pointer"
-                      title="Choose what QuickBooks account to work on"
-                    >
-                      {qboCompanies.map(c => (
-                        <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
-                          {(c.syncedAccounts && c.syncedAccounts.length > 0
-                            ? c.syncedAccounts
-                            : ['Operating Checking (Acct ****4120)']
-                          ).map(acc => (
-                            <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
-                              {c.companyName} • {acc}
-                            </option>
+                <div className="text-xs font-bold text-stone-200 mt-1 flex items-center gap-1.5 truncate">
+                  {syncedCompaniesCount > 0 ? (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                      <span className="truncate">Active: {qboConnectedCompany || 'QuickBooks Online'}</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="w-1.5 h-1.5 rounded-full bg-stone-500 shrink-0" />
+                      <span className="text-stone-400">QuickBooks Online Production</span>
+                    </>
+                  )}
+                </div>
+
+                {syncedCompaniesCount > 0 ? (
+                  <>
+                    {/* Active Working Account Display & Quick Selector */}
+                    <div className="mt-1 flex items-center gap-1.5 text-xs text-amber-300 font-semibold truncate">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                      <span className="truncate">Active Account: {qboActiveAccount}</span>
+                    </div>
+
+                    {qboCompanies.length > 0 && (
+                      <div className="mt-2" onClick={e => e.stopPropagation()}>
+                        <select
+                          value={`${selectedQboRealmId}::${qboActiveAccount}`}
+                          onChange={e => {
+                            const [realmId, acc] = e.target.value.split('::');
+                            if (realmId) handleSwitchWorkingQboCompany(realmId, acc);
+                          }}
+                          className="w-full px-2 py-1.5 bg-stone-950 border border-stone-700 hover:border-emerald-500 rounded text-[11px] font-semibold text-emerald-300 focus:outline-none cursor-pointer"
+                          title="Choose what QuickBooks account to work on"
+                        >
+                          {qboCompanies.map(c => (
+                            <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
+                              {(c.syncedAccounts && c.syncedAccounts.length > 0
+                                ? c.syncedAccounts
+                                : ['Operating Checking (Acct ****4120)']
+                              ).map(acc => (
+                                <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                                  {c.companyName} • {acc}
+                                </option>
+                              ))}
+                            </optgroup>
                           ))}
-                        </optgroup>
-                      ))}
-                    </select>
+                        </select>
+                      </div>
+                    )}
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-stone-400">
+                      <span className="text-emerald-400 font-semibold">{totalSyncedAccountsCount} accounts synced</span>
+                      <span>·</span>
+                      <span className="text-purple-300 font-semibold">{qboSyncLogs.length} sync logs</span>
+                      <span>·</span>
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 border border-sky-800/60 text-sky-300 truncate max-w-[170px]" title={`Target Chart: ${qboActiveChart}`}>
+                        {qboActiveChart.includes('Schedule F') ? '🌾 Schedule F Farm' : '🏢 Schedule C Commercial'}
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="mt-2 flex flex-col gap-1 text-[11px] text-stone-400">
+                    <div className="flex items-center gap-1.5 text-stone-300">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                      <span>0 Intuit companies connected</span>
+                    </div>
+                    <div className="text-[10px] text-stone-500">
+                      Click to connect or simulate QuickBooks accounts
+                    </div>
                   </div>
                 )}
-
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-stone-400">
-                  <span className="text-emerald-400 font-semibold">{qboSyncLogs.length} sync logs</span>
-                  <span>·</span>
-                  <span className="text-stone-300 font-mono text-[10px]">
-                    {qboRealmId ? `Realm ${qboRealmId}` : '101d renewal'}
-                  </span>
-                  <span>·</span>
-                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-sky-950/80 border border-sky-800/60 text-sky-300 truncate max-w-[170px]" title={`Target Chart: ${qboActiveChart}`}>
-                    {qboActiveChart.includes('Schedule F') ? '🌾 Schedule F Farm' : '🏢 Schedule C Commercial'}
-                  </span>
-                </div>
               </div>
             </div>
 
             <div className="mt-4 pt-3 border-t border-stone-800/80 flex items-center justify-between text-xs text-emerald-400 font-semibold">
-              <span>Manage Accounts &amp; Sync</span>
+              <span>{syncedCompaniesCount > 0 ? `Manage ${syncedCompaniesCount} Synced Companies` : 'Connect QuickBooks Company'}</span>
               <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
@@ -1214,9 +1458,9 @@ export function AdminHomeOverview({
             }`}
           >
             <Building2 className="w-3.5 h-3.5 text-[#2CA01C]" />
-            <span>QuickBooks Sync History</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300">
-              {qboSyncLogs.length}
+            <span>QuickBooks Sync &amp; Accounts</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-bold">
+              {syncedCompaniesCount} {syncedCompaniesCount === 1 ? 'Company' : 'Companies'} Synced
             </span>
           </button>
 
@@ -1663,17 +1907,61 @@ export function AdminHomeOverview({
 
             {/* Connected QuickBooks Companies & Synced Accounts Overview */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-bold text-stone-300 uppercase tracking-wider flex items-center gap-2">
-                  <Sliders className="w-3.5 h-3.5 text-sky-400" />
-                  Connected QuickBooks Accounts &amp; Synced Pipeline
-                </h4>
-                <span className="text-[11px] text-stone-400">
-                  {qboCompanies.length} Connected Companies • Rolling 101 Days OAuth 2.0
-                </span>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <h4 className="text-xs font-bold text-stone-300 uppercase tracking-wider flex items-center gap-2">
+                    <Sliders className="w-3.5 h-3.5 text-sky-400" />
+                    Synced Companies &amp; Account Pipeline
+                  </h4>
+                  <span className="px-2 py-0.5 rounded-full text-[11px] font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    {syncedCompaniesCount} {syncedCompaniesCount === 1 ? 'Company' : 'Companies'} Synced
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-stone-400">
+                    {totalSyncedAccountsCount} accounts in pipeline • Rolling 101 Days OAuth 2.0
+                  </span>
+                  <button
+                    onClick={handleQuickSimulateCompany}
+                    className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700 text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                    title="Simulate adding another synced Intuit company"
+                  >
+                    <Sparkles className="w-3 h-3 text-amber-400" />
+                    <span>+ Quick Sync Company</span>
+                  </button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {qboCompanies.length === 0 ? (
+                <div className="p-8 text-center rounded-xl bg-stone-950/70 border border-stone-800 space-y-3">
+                  <div className="w-12 h-12 rounded-full bg-[#2CA01C]/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mx-auto">
+                    <Building2 className="w-6 h-6 text-[#2CA01C]" />
+                  </div>
+                  <div>
+                    <div className="text-sm font-bold text-stone-200">0 QuickBooks Companies Synced</div>
+                    <p className="text-xs text-stone-400 mt-1 max-w-md mx-auto">
+                      No QuickBooks companies are currently connected. Connect an Intuit company account to start automated receipt syncing, multi-account routing, and real-time ledger tracking.
+                    </p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2.5 pt-2">
+                    <button
+                      onClick={() => onNavigateTab('qbo')}
+                      className="px-4 py-2 rounded-lg bg-[#2CA01C] hover:bg-[#238016] text-white text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-950/30 cursor-pointer"
+                    >
+                      <Building2 className="w-4 h-4" />
+                      <span>Connect Company via QBO Center</span>
+                    </button>
+                    <button
+                      onClick={handleQuickSimulateCompany}
+                      className="px-3 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Simulate Intuit Connection</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {qboCompanies.map((c) => {
                   const isActive = c.realmId === selectedQboRealmId;
                   const syncedAccs = c.syncedAccounts || ['Operating Checking (Acct ****4120)', 'Farm Operating & Expense Ledger'];
@@ -1689,41 +1977,52 @@ export function AdminHomeOverview({
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <Building2 className="w-4 h-4 text-emerald-400" />
-                            <span className="font-bold text-stone-100 text-xs sm:text-sm">
-                              {c.companyName}
-                            </span>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <Building2 className="w-4 h-4 text-emerald-400" />
+                              <span className="font-bold text-stone-100 text-xs sm:text-sm">
+                                {c.companyName}
+                              </span>
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                                ✓ Synced
+                              </span>
+                            </div>
+                            <div className="text-[11px] font-mono text-stone-400 mt-0.5">
+                              Realm ID: {c.realmId} · {c.environment.toUpperCase()}
+                            </div>
+                            <div className="text-[10px] font-mono text-sky-400 mt-0.5 flex items-center gap-1">
+                              <Mail className="w-3 h-3 text-sky-400 shrink-0" />
+                              <span>Registered Email: <strong>{c.email || 'Not configured'}</strong></span>
+                            </div>
+                            <div className="text-[10px] font-mono text-amber-300 mt-1 flex items-center gap-1 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-500/30 w-fit">
+                              <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                              <span>Default Posting Account: <strong>{c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}</strong></span>
+                            </div>
                           </div>
-                          <div className="text-[11px] font-mono text-stone-400 mt-0.5">
-                            Realm ID: {c.realmId} · {c.environment.toUpperCase()}
-                          </div>
-                          <div className="text-[10px] font-mono text-sky-400 mt-0.5 flex items-center gap-1">
-                            <Mail className="w-3 h-3 text-sky-400 shrink-0" />
-                            <span>Registered Email: <strong>{c.email || 'Not configured'}</strong></span>
-                          </div>
-                          <div className="text-[10px] font-mono text-amber-300 mt-1 flex items-center gap-1 bg-amber-950/40 px-2 py-0.5 rounded border border-amber-500/30 w-fit">
-                            <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
-                            <span>Default Posting Account: <strong>{c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}</strong></span>
-                          </div>
-                        </div>
 
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {isActive ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                              ACTIVE WORKING
-                            </span>
-                          ) : (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isActive ? (
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                ACTIVE WORKING
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleSwitchWorkingQboCompany(c.realmId)}
+                                className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 text-[11px] font-semibold border border-stone-700 transition-colors cursor-pointer"
+                              >
+                                Work on this
+                              </button>
+                            )}
                             <button
-                              onClick={() => handleSwitchWorkingQboCompany(c.realmId)}
-                              className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 text-[11px] font-semibold border border-stone-700 transition-colors cursor-pointer"
+                              type="button"
+                              onClick={() => handleDisconnectCompany(c.realmId, c.companyName)}
+                              className="p-1 rounded bg-stone-900 hover:bg-red-950/40 text-stone-400 hover:text-red-400 border border-stone-800 hover:border-red-800/50 text-[10px] transition-colors cursor-pointer"
+                              title="Disconnect company"
                             >
-                              Work on this
+                              <X className="w-3.5 h-3.5" />
                             </button>
-                          )}
+                          </div>
                         </div>
-                      </div>
 
                       {/* Default Posting Account Selector & Populate Button */}
                       <div className="mt-3 p-2.5 rounded-lg bg-stone-900/90 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
@@ -1880,6 +2179,7 @@ export function AdminHomeOverview({
                   );
                 })}
               </div>
+              )}
             </div>
 
             {/* Target Chart of Accounts Mapping & Interactive Directory with Search */}
@@ -2438,20 +2738,32 @@ export function AdminHomeOverview({
                 <div className="w-9 h-9 rounded-lg bg-[#2CA01C]/15 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                   <Building2 className="w-4 h-4 text-[#2CA01C]" />
                 </div>
-                <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                  Intuit OAuth 2.0
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    {syncedCompaniesCount} {syncedCompaniesCount === 1 ? 'Company' : 'Companies'} Synced
+                  </span>
+                  <span className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded bg-stone-800 text-stone-300 border border-stone-700">
+                    Intuit OAuth 2.0
+                  </span>
+                </div>
               </div>
-              <h4 className="text-sm font-bold text-stone-100">QuickBooks Online Production</h4>
+              <h4 className="text-sm font-bold text-stone-100 flex items-center justify-between">
+                <span>QuickBooks Online Production</span>
+                <span className="text-xs font-mono font-bold text-emerald-400">
+                  {syncedCompaniesCount} Synced
+                </span>
+              </h4>
               <p className="text-xs text-stone-400 leading-relaxed">
-                Connect Intuit accounts, map expense accounts, manage 101-day rolling renewal, and audit sync history.
+                {syncedCompaniesCount > 0
+                  ? `${syncedCompaniesCount} QuickBooks ${syncedCompaniesCount === 1 ? 'company is' : 'companies are'} actively synced with rolling 101-day renewal. Active account: ${qboActiveAccount}.`
+                  : 'Connect Intuit accounts, map expense accounts, manage 101-day rolling renewal, and audit sync history.'}
               </p>
             </div>
             <button
               onClick={() => onNavigateTab('qbo')}
               className="mt-4 pt-3 border-t border-stone-800/80 w-full flex items-center justify-between text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors cursor-pointer"
             >
-              <span>Open QBO Center</span>
+              <span>{syncedCompaniesCount > 0 ? `Manage ${syncedCompaniesCount} Synced ${syncedCompaniesCount === 1 ? 'Company' : 'Companies'}` : 'Open QBO Center'}</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>

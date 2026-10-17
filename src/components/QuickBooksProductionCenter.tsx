@@ -225,6 +225,9 @@ function getLocalCompanies(): CompanyRecord[] {
 function saveLocalCompanies(list: CompanyRecord[]) {
   try {
     localStorage.setItem(QBO_STORAGE_COMPANIES_KEY, JSON.stringify(list));
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: list } }));
+    }
   } catch {}
 }
 
@@ -443,6 +446,9 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           setTargetChartType('FARM');
         }
       }
+    } else {
+      setCompanies([]);
+      setSelectedPushRealmId('');
     }
     setIsRefreshing(false);
     setIsLoading(false);
