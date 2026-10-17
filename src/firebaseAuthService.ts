@@ -151,10 +151,14 @@ export const googleSignIn = async (): Promise<{ user: any; email?: string; acces
       } catch {}
       
       if (!authWindow || authWindow.closed || typeof authWindow.closed === 'undefined') {
-        // Fallback to top-level navigation if popup was completely blocked
-        if (window.top && window.top !== window) {
-          window.top.location.href = directUrl;
-        } else {
+        // Fallback to navigation if popup was completely blocked
+        try {
+          if (window.top && window.top !== window) {
+            window.top.location.href = directUrl;
+          } else {
+            window.location.href = directUrl;
+          }
+        } catch {
           window.location.href = directUrl;
         }
       }

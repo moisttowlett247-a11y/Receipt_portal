@@ -143,7 +143,7 @@ export function quickbooksApiPlugin(): Plugin {
           (p.includes('/.env') && !p.includes('/.env.example')) ||
           (decoded.includes('/.env') && !decoded.includes('/.env.example')) ||
           p.includes('/.git') || decoded.includes('/.git') ||
-          p.includes('/licenses/') || decoded.includes('/licenses/') ||
+          (!p.startsWith('/api/') && (p === '/licenses' || p.startsWith('/licenses/') || decoded.startsWith('/licenses/'))) ||
           p.includes('..') || decoded.includes('..') ||
           p.includes('%2e%2e')
         ) {

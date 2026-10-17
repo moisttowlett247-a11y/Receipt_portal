@@ -696,7 +696,8 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         popup = window.open(authUrl, 'qbo_oauth_popup', 'width=750,height=820,scrollbars=yes,resizable=yes');
       } catch {}
       if (!popup || popup.closed) {
-        window.location.href = authUrl;
+        showToast('Popup blocked. Click "Open in New Tab" below to authorize.');
+        return;
       }
       setShowConnectModal(false);
     } catch (err: any) {
