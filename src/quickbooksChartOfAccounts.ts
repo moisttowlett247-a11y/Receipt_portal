@@ -347,6 +347,58 @@ export const COMPREHENSIVE_STANDARD_ACCOUNTS: QboAccountItem[] = [
     currentBalance: 3840.10
   },
   {
+    id: 'lia-2040',
+    accountNumber: '2040',
+    name: 'Mastercard',
+    qboType: 'Credit Card',
+    subType: 'CreditCard',
+    classification: 'Liability',
+    schedule: 'BALANCE_SHEET',
+    line: 'Mastercard Credit Card',
+    description: 'Corporate business Mastercard revolving credit card account for operating disbursements and business charges.',
+    active: true,
+    currentBalance: 2450.00
+  },
+  {
+    id: 'lia-2041',
+    accountNumber: '2041',
+    name: 'Mastercard (Acct ****5512)',
+    qboType: 'Credit Card',
+    subType: 'CreditCard',
+    classification: 'Liability',
+    schedule: 'BALANCE_SHEET',
+    line: 'Mastercard Credit Card',
+    description: 'Primary business operating Mastercard account.',
+    active: true,
+    currentBalance: 1890.00
+  },
+  {
+    id: 'lia-2050',
+    accountNumber: '2050',
+    name: 'Visa Business Card (Acct ****3344)',
+    qboType: 'Credit Card',
+    subType: 'CreditCard',
+    classification: 'Liability',
+    schedule: 'BALANCE_SHEET',
+    line: 'Visa Credit Card',
+    description: 'Commercial Visa purchasing and vendor credit card account.',
+    active: true,
+    currentBalance: 1120.00
+  },
+  {
+    id: 'lia-2060',
+    accountNumber: '2060',
+    name: 'American Express Corporate Card (Acct ****8890)',
+    qboType: 'Credit Card',
+    subType: 'CreditCard',
+    classification: 'Liability',
+    schedule: 'BALANCE_SHEET',
+    line: 'American Express',
+    description: 'Corporate Amex business charge card.',
+    active: true,
+    currentBalance: 3200.00
+  },
+  {
     id: 'lia-2100',
     accountNumber: '2100',
     name: 'Agricultural Operating Line of Credit (LOC)',

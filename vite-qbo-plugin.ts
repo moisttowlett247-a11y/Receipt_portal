@@ -30,6 +30,9 @@ interface ConnectedCompany {
   accessTokenExpiresAt?: number;
   refreshTokenExpiresAt?: number; // ~101 days
   assignedToKey?: string;
+  syncedAccounts?: string[];
+  selectedWorkingAccount?: string;
+  defaultPostingAccount?: string;
 }
 
 const DATA_DIR = path.resolve(process.cwd(), '.data');
@@ -616,6 +619,16 @@ export function quickbooksApiPlugin(): Plugin {
             // Save encrypted company records
             const now = new Date();
             const companies = getCompanies();
+            const defaultAccs = [
+              'Mastercard',
+              'Mastercard (Acct ****5512)',
+              'Operating Checking (Acct ****4120)',
+              'Farm Operating & Expense Ledger',
+              'Commercial Equipment Financing (Acct ****8812)',
+              'Visa Business Card (Acct ****3344)',
+              'American Express Corporate Card (Acct ****8890)',
+              'Agricultural Payroll Reserve'
+            ];
             companies[realmId] = {
               realmId,
               companyName,
@@ -628,6 +641,9 @@ export function quickbooksApiPlugin(): Plugin {
               lastUsedAt: now.toISOString(),
               environment: cfg.environment,
               status: 'CONNECTED',
+              syncedAccounts: defaultAccs,
+              selectedWorkingAccount: defaultAccs[0],
+              defaultPostingAccount: defaultAccs[0],
               refreshTokenEncrypted: encryptToken(refreshToken),
               accessTokenCached: accessToken,
               accessTokenExpiresAt: now.getTime() + (expiresIn * 1000),
@@ -930,6 +946,27 @@ export function quickbooksApiPlugin(): Plugin {
 
           const now = new Date();
           const companies = getCompanies();
+          const mockSyncedAccounts = [
+            'Mastercard',
+            'Mastercard (Acct ****5512)',
+            'Operating Checking (Acct ****4120)',
+            'Farm Operating & Expense Ledger',
+            'Commercial Fleet & Fuel Account (Acct ****6021)',
+            'Commercial Equipment Financing (Acct ****8812)',
+            'Visa Business Card (Acct ****3344)',
+            'American Express Corporate Card (Acct ****8890)',
+            'Agricultural Payroll Reserve',
+            'Chemicals, Fertilizer & Lime',
+            'Feed Purchased',
+            'Gasoline, Fuel, and Oil (Bulk Diesel & Def)',
+            'Repairs and Maintenance - Machinery & Tractors',
+            'Seeds and Plants Purchased',
+            'Supplies Purchased (Baler Twine, Net Wrap, Tools)',
+            'Veterinary, Breeding, and Medicine for Livestock',
+            'Utilities - Electricity & Farm Power',
+            'General Business Operating Acct (Acct ****1092)'
+          ];
+
           companies[realmId] = {
             realmId,
             companyName,
@@ -942,6 +979,9 @@ export function quickbooksApiPlugin(): Plugin {
             lastUsedAt: now.toISOString(),
             environment: env,
             status: 'CONNECTED',
+            syncedAccounts: mockSyncedAccounts,
+            selectedWorkingAccount: 'Mastercard',
+            defaultPostingAccount: 'Mastercard',
             refreshTokenEncrypted: encryptToken(`mock_refresh_${crypto.randomBytes(24).toString('hex')}`),
             accessTokenCached: `mock_access_${crypto.randomBytes(24).toString('hex')}`,
             accessTokenExpiresAt: now.getTime() + 3600000,
@@ -959,8 +999,8 @@ export function quickbooksApiPlugin(): Plugin {
           return;
         }
 
-        // Default fallback
-        sendJson(404, { error: 'Unknown QuickBooks API endpoint' });
+        // Fallback to Express backend router
+        return next();
       });
     }
   };

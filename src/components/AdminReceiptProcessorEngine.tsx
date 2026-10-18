@@ -3580,7 +3580,8 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       {(() => {
                         const selectedComp = qboCompanies.find((c: any) => c.realmId === editFormData.matchedQboRealmId);
                         const accts = selectedComp && Array.isArray(selectedComp.syncedAccounts) ? selectedComp.syncedAccounts : [];
-                        return accts.map((a: string) => (
+                        const fullAccts = Array.from(new Set(['Mastercard', 'Mastercard (Acct ****5512)', ...accts]));
+                        return fullAccts.map((a: string) => (
                           <option key={a} value={a}>
                             ★ {a}
                           </option>

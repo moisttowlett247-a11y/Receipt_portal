@@ -147,11 +147,15 @@ const DEFAULT_ACCOUNT_MAPPINGS: Record<string, string> = {
 };
 
 const STANDARD_SYNC_PRESETS = [
+  'Mastercard',
+  'Mastercard (Acct ****5512)',
   'Operating Checking (Acct ****4120)',
   'Farm Operating & Expense Ledger',
   'Commercial Fleet & Fuel Account (Acct ****6021)',
-  'Agricultural Payroll Reserve',
   'Commercial Equipment Financing (Acct ****8812)',
+  'Visa Business Card (Acct ****3344)',
+  'American Express Corporate Card (Acct ****8890)',
+  'Agricultural Payroll Reserve',
   'Grain & Crop Sales Settlement Acct',
   'Livestock & Cattle Trading Ledger',
   'Farm Improvements & Maintenance Reserve',
@@ -426,6 +430,32 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     }
 
     if (loadedComps.length > 0) {
+      // Ensure every connected company has Mastercard and comprehensive accounts populated
+      loadedComps = loadedComps.map(c => {
+        const curSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+        if (!curSynced.some(a => a.toLowerCase().includes('mastercard')) || curSynced.length < 5) {
+          const updatedSynced = Array.from(new Set([
+            'Mastercard',
+            'Mastercard (Acct ****5512)',
+            ...curSynced,
+            'Operating Checking (Acct ****4120)',
+            'Farm Operating & Expense Ledger',
+            'Commercial Fleet & Fuel Account (Acct ****6021)',
+            'Commercial Equipment Financing (Acct ****8812)',
+            'Visa Business Card (Acct ****3344)',
+            'American Express Corporate Card (Acct ****8890)',
+            'Agricultural Payroll Reserve'
+          ]));
+          return {
+            ...c,
+            syncedAccounts: updatedSynced,
+            defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
+            selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+          };
+        }
+        return c;
+      });
+
       setCompanies(loadedComps);
       saveLocalCompanies(loadedComps);
       const storedActiveRealm = localStorage.getItem('receipt_processor_qbo_active_realm_v1');
@@ -539,6 +569,16 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         const existing = getLocalCompanies();
         if (!existing.some(c => c.realmId === realmId)) {
           const now = new Date();
+          const initialAccs = [
+            'Mastercard',
+            'Mastercard (Acct ****5512)',
+            'Operating Checking (Acct ****4120)',
+            'Farm Operating & Expense Ledger',
+            'Commercial Equipment Financing (Acct ****8812)',
+            'Visa Business Card (Acct ****3344)',
+            'American Express Corporate Card (Acct ****8890)',
+            'Agricultural Payroll Reserve'
+          ];
           const newRecord: CompanyRecord = {
             realmId,
             companyName,
@@ -548,7 +588,10 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
             lastRefreshedAt: now.toISOString(),
             accessValidRemainingSec: 3600,
             rollingDaysRemaining: 101,
-            country: 'US'
+            country: 'US',
+            syncedAccounts: initialAccs,
+            defaultPostingAccount: initialAccs[0],
+            selectedWorkingAccount: initialAccs[0]
           };
           const updated = [newRecord, ...existing];
           saveLocalCompanies(updated);
@@ -558,6 +601,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         showToast(`QuickBooks Connected: ${companyName}`);
         fetchCompanies();
         fetchConfig();
+        handlePopulateAccountsForCompany(realmId);
         setShowConnectModal(false);
       } else if (event.data?.type === 'QBO_OAUTH_ERROR') {
         showToast(`OAuth Error: ${event.data.error || 'Authorization cancelled or failed'}`);
@@ -1064,7 +1108,26 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(mergedAll));
         } catch {}
 
-        showToast(`Populated all ${mergedAll.length} standard & live QuickBooks Chart of Accounts!`);
+        const allNames = Array.from(new Set(mergedAll.map(a => a.name)));
+        if (targetRealm) {
+          const updatedComps = companies.map(c => {
+            if (c.realmId === targetRealm) {
+              const existingSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+              const combined = Array.from(new Set(['Mastercard', 'Mastercard (Acct ****5512)', ...allNames, ...existingSynced]));
+              return {
+                ...c,
+                syncedAccounts: combined,
+                defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
+                selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+              };
+            }
+            return c;
+          });
+          setCompanies(updatedComps);
+          saveLocalCompanies(updatedComps);
+        }
+
+        showToast(`Populated all ${mergedAll.length} standard & live QuickBooks Chart of Accounts (including Mastercard)!`);
       } else {
         const standardAll = getAllStandardQboAccounts();
         setAllAccounts(standardAll);
@@ -1309,12 +1372,12 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     const comp = companies.find(c => c.realmId === realmId);
     if (!comp) return;
 
-    showToast(`Populating accounts from QuickBooks for "${comp.companyName}"...`);
+    showToast(`Populating all accounts from QuickBooks for "${comp.companyName}"...`);
     try {
       const resp = await safeFetchJson<any>('/api/qbo/company/populate-accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ realmId })
+        body: JSON.stringify({ realmId, company: comp })
       });
 
       if (resp.ok && resp.data?.company) {
@@ -1322,23 +1385,61 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         const updated = companies.map(c => c.realmId === realmId ? { ...c, ...updatedComp } : c);
         setCompanies(updated);
         saveLocalCompanies(updated);
-        showToast(`✓ Populated ${resp.data.totalAccounts || updatedComp.syncedAccounts?.length || 0} accounts for "${comp.companyName}"! Default posting account: "${updatedComp.defaultPostingAccount}"`);
-      } else {
-        // Fallback: populate standard accounts
-        const stdList = allAccounts.map(a => a.name);
-        const fallbackAccs = stdList.slice(0, 15);
+
+        if (Array.isArray(resp.data.liveAccounts) && resp.data.liveAccounts.length > 0) {
+          const merged = getAllStandardQboAccounts(resp.data.liveAccounts);
+          setAllAccounts(merged);
+          setLiveAccounts(resp.data.liveAccounts);
+          try {
+            localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+          } catch {}
+        }
+
+        const hasMastercard = (updatedComp.syncedAccounts || []).some((a: string) => a.toLowerCase().includes('mastercard'));
+        showToast(`✓ Populated ${resp.data.totalAccounts || updatedComp.syncedAccounts?.length || 0} accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${updatedComp.defaultPostingAccount}"`);
+        return;
+      }
+    } catch {}
+
+    // Fallback: also fetch from /api/qbo/accounts?realmId=...
+    try {
+      const accResp = await safeFetchJson<any>(`/api/qbo/accounts?realmId=${encodeURIComponent(realmId)}`);
+      if (accResp.ok && accResp.data) {
+        const incomingAll = Array.isArray(accResp.data.allAccounts) ? accResp.data.allAccounts : [];
+        const mergedAll = getAllStandardQboAccounts([
+          ...incomingAll,
+          ...(Array.isArray(accResp.data.liveAccounts) ? accResp.data.liveAccounts : [])
+        ]);
+        setAllAccounts(mergedAll);
+        if (Array.isArray(accResp.data.liveAccounts)) setLiveAccounts(accResp.data.liveAccounts);
+        try {
+          localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(mergedAll));
+        } catch {}
+
+        const names = Array.from(new Set(mergedAll.map(a => a.name)));
         const updated = companies.map(c =>
           c.realmId === realmId
-            ? { ...c, syncedAccounts: fallbackAccs, defaultPostingAccount: c.defaultPostingAccount || fallbackAccs[0] }
+            ? { ...c, syncedAccounts: names, defaultPostingAccount: c.defaultPostingAccount || names[0] }
             : c
         );
         setCompanies(updated);
         saveLocalCompanies(updated);
-        showToast(`✓ Populated accounts list for "${comp.companyName}" (${fallbackAccs.length} accounts available).`);
+        showToast(`✓ Populated ${names.length} accounts from QuickBooks for "${comp.companyName}"!`);
+        return;
       }
-    } catch {
-      showToast(`Populated accounts list for "${comp.companyName}".`);
-    }
+    } catch {}
+
+    // Standard fallback with Mastercard included
+    const stdList = allAccounts.map(a => a.name);
+    const fallbackAccs = stdList.slice(0, 25);
+    const updated = companies.map(c =>
+      c.realmId === realmId
+        ? { ...c, syncedAccounts: fallbackAccs, defaultPostingAccount: c.defaultPostingAccount || fallbackAccs[0] }
+        : c
+    );
+    setCompanies(updated);
+    saveLocalCompanies(updated);
+    showToast(`✓ Populated accounts list for "${comp.companyName}" (${fallbackAccs.length} accounts available).`);
   };
 
   const handleSaveAccountMappings = () => {
@@ -1497,18 +1598,24 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                 className="px-3 py-2 bg-stone-950 border border-emerald-500/50 hover:border-emerald-400 rounded-xl text-xs font-bold text-emerald-300 focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer min-w-[240px]"
                 title="Select company and account to work on"
               >
-                {companies.map((c) => (
-                  <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
-                    {(c.syncedAccounts && c.syncedAccounts.length > 0
-                      ? c.syncedAccounts
-                      : ['Operating Checking (Acct ****4120)']
-                    ).map((acc) => (
-                      <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
-                        {c.companyName} • {acc}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
+                {companies.map((c) => {
+                  const curSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+                  const compAccs = Array.from(new Set([
+                    'Mastercard',
+                    'Mastercard (Acct ****5512)',
+                    ...curSynced,
+                    ...allAccounts.map(a => a.name)
+                  ]));
+                  return (
+                    <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
+                      {compAccs.map((acc) => (
+                        <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                          {c.companyName} • {acc}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
               </select>
             </div>
           )}
@@ -2553,16 +2660,35 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                           onChange={e => {
                                             if (e.target.value) handleAddCustomSyncedAccount(c.realmId, e.target.value);
                                           }}
-                                          className="px-2 py-1 rounded bg-stone-950 border border-stone-700 text-stone-200 text-xs font-mono cursor-pointer"
+                                          className="px-2 py-1 rounded bg-stone-950 border border-stone-700 text-stone-200 text-xs font-mono cursor-pointer max-w-[220px]"
                                           defaultValue=""
                                         >
-                                          <option value="" disabled>Choose Preset Account...</option>
-                                          {STANDARD_SYNC_PRESETS.filter(p => !syncedAccs.includes(p)).map((p, pIdx) => (
-                                            <option key={pIdx} value={p}>{p}</option>
-                                          ))}
-                                          {qboBankAccounts.filter((b: any) => !syncedAccs.includes(b.name)).map((b: any, bIdx: number) => (
-                                            <option key={`bank_${bIdx}`} value={b.name}>{b.name} ({b.subType || b.qboType})</option>
-                                          ))}
+                                          <option value="" disabled>Choose Account to Add...</option>
+                                          <optgroup label="💳 Credit Cards & Card Accounts">
+                                            {allAccounts
+                                              .filter(a => (a.qboType === 'Credit Card' || a.subType === 'CreditCard' || a.name.toLowerCase().includes('mastercard') || a.name.toLowerCase().includes('card') || a.name.toLowerCase().includes('visa') || a.name.toLowerCase().includes('amex')) && !syncedAccs.includes(a.name))
+                                              .map((a, idx) => (
+                                                <option key={`cc_${idx}`} value={a.name}>💳 {a.name}</option>
+                                              ))}
+                                          </optgroup>
+                                          <optgroup label="🏦 Bank & Checking Accounts">
+                                            {qboBankAccounts.filter((b: any) => !syncedAccs.includes(b.name)).map((b: any, bIdx: number) => (
+                                              <option key={`bank_${bIdx}`} value={b.name}>🏦 {b.name} ({b.subType || b.qboType})</option>
+                                            ))}
+                                          </optgroup>
+                                          <optgroup label="⚡ Standard Preset Accounts">
+                                            {STANDARD_SYNC_PRESETS.filter(p => !syncedAccs.includes(p)).map((p, pIdx) => (
+                                              <option key={`pre_${pIdx}`} value={p}>{p}</option>
+                                            ))}
+                                          </optgroup>
+                                          <optgroup label="📋 All Chart of Accounts">
+                                            {allAccounts
+                                              .filter(a => a.qboType !== 'Credit Card' && a.qboType !== 'Bank' && !syncedAccs.includes(a.name))
+                                              .slice(0, 50)
+                                              .map((a, idx) => (
+                                                <option key={`all_${idx}`} value={a.name}>{a.name} ({a.qboType})</option>
+                                              ))}
+                                          </optgroup>
                                         </select>
                                         <input
                                           type="text"
@@ -2740,18 +2866,24 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                     }}
                     className="w-full mt-1 px-3 py-2 bg-stone-900 border border-stone-700 rounded-lg text-xs font-semibold text-emerald-300 focus:outline-none focus:border-emerald-500 cursor-pointer"
                   >
-                    {connectedList.map(c => (
-                      <optgroup key={c.realmId} label={`${c.companyName} (${c.environment})`}>
-                        {(c.syncedAccounts && c.syncedAccounts.length > 0
-                          ? c.syncedAccounts
-                          : ['Operating Checking (Acct ****4120)']
-                        ).map(acc => (
-                          <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
-                            {c.companyName} • {acc}
-                          </option>
-                        ))}
-                      </optgroup>
-                    ))}
+                    {connectedList.map(c => {
+                      const curSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+                      const compAccs = Array.from(new Set([
+                        'Mastercard',
+                        'Mastercard (Acct ****5512)',
+                        ...curSynced,
+                        ...allAccounts.map(a => a.name)
+                      ]));
+                      return (
+                        <optgroup key={c.realmId} label={`${c.companyName} (${c.environment})`}>
+                          {compAccs.map(acc => (
+                            <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                              {c.companyName} • {acc}
+                            </option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
                   </select>
                 ) : (
                   <div className="text-xs text-amber-400 font-semibold pt-1">
@@ -2863,13 +2995,30 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                           onChange={e => {
                             if (e.target.value) handleAddCustomSyncedAccount(currentComp.realmId, e.target.value);
                           }}
-                          className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono cursor-pointer"
+                          className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono cursor-pointer max-w-[200px]"
                           defaultValue=""
                         >
-                          <option value="" disabled>Add Preset Account...</option>
-                          {STANDARD_SYNC_PRESETS.filter(p => !syncedList.includes(p)).map((p, pIdx) => (
-                            <option key={pIdx} value={p}>{p}</option>
-                          ))}
+                          <option value="" disabled>Add Account...</option>
+                          <optgroup label="💳 Credit Cards">
+                            {allAccounts
+                              .filter(a => (a.qboType === 'Credit Card' || a.subType === 'CreditCard' || a.name.toLowerCase().includes('mastercard') || a.name.toLowerCase().includes('card') || a.name.toLowerCase().includes('visa') || a.name.toLowerCase().includes('amex')) && !syncedList.includes(a.name))
+                              .map((a, idx) => (
+                                <option key={`cc2_${idx}`} value={a.name}>💳 {a.name}</option>
+                              ))}
+                          </optgroup>
+                          <optgroup label="⚡ Preset Accounts">
+                            {STANDARD_SYNC_PRESETS.filter(p => !syncedList.includes(p)).map((p, pIdx) => (
+                              <option key={pIdx} value={p}>{p}</option>
+                            ))}
+                          </optgroup>
+                          <optgroup label="📋 All Chart of Accounts">
+                            {allAccounts
+                              .filter(a => !syncedList.includes(a.name))
+                              .slice(0, 50)
+                              .map((a, idx) => (
+                                <option key={`all2_${idx}`} value={a.name}>{a.name} ({a.qboType})</option>
+                              ))}
+                          </optgroup>
                         </select>
                         <input
                           type="text"

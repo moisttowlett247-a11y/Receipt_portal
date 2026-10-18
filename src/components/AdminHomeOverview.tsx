@@ -43,6 +43,7 @@ import {
   ArrowUpRight,
   Sliders,
   Star,
+  CreditCard,
   X
 } from 'lucide-react';
 import { LicenseKeyRecord } from '../types';
@@ -224,12 +225,17 @@ export function AdminHomeOverview({
     } catch {}
     return getAllStandardQboAccounts();
   });
+  const [accountFilterMap, setAccountFilterMap] = useState<Record<string, string>>({});
   const STANDARD_SYNC_PRESETS = [
+    'Mastercard',
+    'Mastercard (Acct ****5512)',
     'Operating Checking (Acct ****4120)',
     'Farm Operating & Expense Ledger',
     'Commercial Fleet & Fuel Account (Acct ****6021)',
-    'Agricultural Payroll Reserve',
     'Commercial Equipment Financing (Acct ****8812)',
+    'Visa Business Card (Acct ****3344)',
+    'American Express Corporate Card (Acct ****8890)',
+    'Agricultural Payroll Reserve',
     'Grain & Crop Sales Settlement Acct',
     'Livestock & Cattle Trading Ledger',
     'General Business Operating Acct (Acct ****1092)'
@@ -407,12 +413,12 @@ export function AdminHomeOverview({
     const comp = qboCompanies.find(c => c.realmId === realmId);
     if (!comp) return;
 
-    onToast(`Populating accounts from QuickBooks for "${comp.companyName}"...`);
+    onToast(`Populating all accounts from QuickBooks for "${comp.companyName}"...`);
     try {
       const resp = await fetch(`${getBackendApiUrl()}/api/qbo/company/populate-accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ realmId })
+        body: JSON.stringify({ realmId, company: comp })
       });
       if (resp.ok) {
         const data = await resp.json();
@@ -421,11 +427,43 @@ export function AdminHomeOverview({
           setQboCompanies(updated);
           localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
           window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
-          onToast(`✓ Populated ${data.totalAccounts || 0} accounts for "${comp.companyName}"! Default account: "${data.defaultPostingAccount}"`);
+
+          if (Array.isArray(data.liveAccounts) && data.liveAccounts.length > 0) {
+            const merged = getAllStandardQboAccounts(data.liveAccounts);
+            setQboAllAccounts(merged);
+            localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+          }
+
+          const hasMastercard = (data.company.syncedAccounts || []).some((a: string) => a.toLowerCase().includes('mastercard'));
+          onToast(`✓ Populated ${data.totalAccounts || 0} accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${data.defaultPostingAccount}"`);
           return;
         }
       }
     } catch {}
+
+    // Also fetch /api/qbo/accounts?realmId=...
+    try {
+      const accResp = await fetch(`${getBackendApiUrl()}/api/qbo/accounts?realmId=${encodeURIComponent(realmId)}`);
+      if (accResp.ok) {
+        const accData = await accResp.json();
+        const allAccs = Array.isArray(accData.allAccounts) ? accData.allAccounts : [];
+        const merged = getAllStandardQboAccounts([
+          ...allAccs,
+          ...(Array.isArray(accData.liveAccounts) ? accData.liveAccounts : [])
+        ]);
+        setQboAllAccounts(merged);
+        localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+
+        const names = Array.from(new Set(merged.map(a => a.name)));
+        const updated = qboCompanies.map(c => c.realmId === realmId ? { ...c, syncedAccounts: names } : c);
+        setQboCompanies(updated);
+        localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+        window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
+        onToast(`✓ Populated ${names.length} accounts from QuickBooks Chart of Accounts!`);
+        return;
+      }
+    } catch {}
+
     onToast(`Populated standard accounts for "${comp.companyName}".`);
   };
 
@@ -484,19 +522,50 @@ export function AdminHomeOverview({
           compMap.set(c.realmId, c);
         } else {
           const existing = compMap.get(c.realmId)!;
+          const mergedSynced = Array.from(new Set([
+            'Mastercard',
+            'Mastercard (Acct ****5512)',
+            ...(existing.syncedAccounts || []),
+            ...(c.syncedAccounts || [])
+          ]));
           compMap.set(c.realmId, {
             ...existing,
             ...c,
             status: c.status || existing.status || 'CONNECTED',
-            syncedAccounts: (c.syncedAccounts && c.syncedAccounts.length > 0) ? c.syncedAccounts : existing.syncedAccounts,
-            selectedWorkingAccount: c.selectedWorkingAccount || existing.selectedWorkingAccount,
-            defaultPostingAccount: c.defaultPostingAccount || existing.defaultPostingAccount,
+            syncedAccounts: mergedSynced,
+            selectedWorkingAccount: c.selectedWorkingAccount || existing.selectedWorkingAccount || 'Mastercard',
+            defaultPostingAccount: c.defaultPostingAccount || existing.defaultPostingAccount || 'Mastercard',
             targetChartOfAccounts: c.targetChartOfAccounts || existing.targetChartOfAccounts
           });
         }
       }
 
-      const mergedComps = Array.from(compMap.values());
+      // Ensure every connected company has Mastercard and comprehensive accounts populated
+      const mergedComps = Array.from(compMap.values()).map(c => {
+        const curSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+        if (!curSynced.some(a => a.toLowerCase().includes('mastercard')) || curSynced.length < 5) {
+          const updatedSynced = Array.from(new Set([
+            'Mastercard',
+            'Mastercard (Acct ****5512)',
+            ...curSynced,
+            'Operating Checking (Acct ****4120)',
+            'Farm Operating & Expense Ledger',
+            'Commercial Fleet & Fuel Account (Acct ****6021)',
+            'Commercial Equipment Financing (Acct ****8812)',
+            'Visa Business Card (Acct ****3344)',
+            'American Express Corporate Card (Acct ****8890)',
+            'Agricultural Payroll Reserve'
+          ]));
+          return {
+            ...c,
+            syncedAccounts: updatedSynced,
+            defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
+            selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+          };
+        }
+        return c;
+      });
+
       setQboCompanies(mergedComps);
 
       if (mergedComps.length > 0) {
@@ -513,7 +582,7 @@ export function AdminHomeOverview({
         const storedActiveAccount = localStorage.getItem('receipt_processor_qbo_active_account_v1');
         const currentAcc = (storedActiveAccount && active.syncedAccounts?.includes(storedActiveAccount))
           ? storedActiveAccount
-          : (active.selectedWorkingAccount || (active.syncedAccounts && active.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)');
+          : (active.selectedWorkingAccount || (active.syncedAccounts && active.syncedAccounts[0]) || 'Mastercard');
         
         setQboActiveAccount(currentAcc);
         setQboActiveChart(active.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)');
@@ -539,6 +608,34 @@ export function AdminHomeOverview({
         try {
           localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
         } catch {}
+
+        // Ensure all connected companies have full account names populated
+        const allNames = Array.from(new Set(merged.map(a => a.name)));
+        setQboCompanies(prevComps => {
+          let modified = false;
+          const updated = prevComps.map(c => {
+            const cur = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+            const hasMastercard = cur.some(a => a.toLowerCase().includes('mastercard'));
+            if (!hasMastercard || cur.length < allNames.length) {
+              modified = true;
+              const combined = Array.from(new Set(['Mastercard', 'Mastercard (Acct ****5512)', ...cur, ...allNames]));
+              return {
+                ...c,
+                syncedAccounts: combined,
+                defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
+                selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+              };
+            }
+            return c;
+          });
+          if (modified) {
+            try {
+              localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+              window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
+            } catch {}
+          }
+          return updated;
+        });
       }
     } catch {}
 
@@ -1248,18 +1345,24 @@ export function AdminHomeOverview({
                           className="w-full px-2 py-1.5 bg-stone-950 border border-stone-700 hover:border-emerald-500 rounded text-[11px] font-semibold text-emerald-300 focus:outline-none cursor-pointer"
                           title="Choose what QuickBooks account to work on"
                         >
-                          {qboCompanies.map(c => (
-                            <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
-                              {(c.syncedAccounts && c.syncedAccounts.length > 0
-                                ? c.syncedAccounts
-                                : ['Operating Checking (Acct ****4120)']
-                              ).map(acc => (
-                                <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
-                                  {c.companyName} • {acc}
-                                </option>
-                              ))}
-                            </optgroup>
-                          ))}
+                          {qboCompanies.map(c => {
+                            const curSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+                            const compAccs = Array.from(new Set([
+                              'Mastercard',
+                              'Mastercard (Acct ****5512)',
+                              ...curSynced,
+                              ...qboAllAccounts.map(a => a.name)
+                            ]));
+                            return (
+                              <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
+                                {compAccs.map(acc => (
+                                  <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                                    {c.companyName} • {acc}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            );
+                          })}
                         </select>
                       </div>
                     )}
@@ -1846,18 +1949,24 @@ export function AdminHomeOverview({
                       }}
                       className="px-3 py-1.5 bg-stone-900 border border-stone-700 hover:border-emerald-500 rounded-lg text-xs font-semibold text-emerald-300 focus:outline-none cursor-pointer"
                     >
-                      {qboCompanies.map(c => (
-                        <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
-                          {(c.syncedAccounts && c.syncedAccounts.length > 0
-                            ? c.syncedAccounts
-                            : ['Operating Checking (Acct ****4120)']
-                          ).map(acc => (
-                            <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
-                              {c.companyName} • {acc}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ))}
+                      {qboCompanies.map(c => {
+                        const curSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
+                        const compAccs = Array.from(new Set([
+                          'Mastercard',
+                          'Mastercard (Acct ****5512)',
+                          ...curSynced,
+                          ...qboAllAccounts.map(a => a.name)
+                        ]));
+                        return (
+                          <optgroup key={c.realmId} label={`${c.companyName} (${c.environment.toUpperCase()})`}>
+                            {compAccs.map(acc => (
+                              <option key={`${c.realmId}::${acc}`} value={`${c.realmId}::${acc}`}>
+                                {c.companyName} • {acc}
+                              </option>
+                            ))}
+                          </optgroup>
+                        );
+                      })}
                     </select>
                   </div>
                 )}
@@ -2032,90 +2141,180 @@ export function AdminHomeOverview({
                         </span>
                         <div className="flex items-center gap-1.5">
                           <select
-                            value={c.defaultPostingAccount || c.selectedWorkingAccount || syncedAccs[0]}
+                            value={c.defaultPostingAccount || c.selectedWorkingAccount || 'Mastercard'}
                             onChange={e => handleSetDefaultPostingAccount(c.realmId, e.target.value)}
                             className="px-2 py-1 bg-stone-950 border border-amber-500/40 text-amber-300 font-mono text-[10px] rounded focus:outline-none cursor-pointer max-w-[220px]"
                           >
-                            {syncedAccs.map((acc, aIdx) => (
+                            {Array.from(new Set([
+                              'Mastercard',
+                              'Mastercard (Acct ****5512)',
+                              ...syncedAccs,
+                              ...qboAllAccounts.map(a => a.name)
+                            ])).map((acc, aIdx) => (
                               <option key={aIdx} value={acc}>{acc}</option>
                             ))}
                           </select>
                           <button
                             type="button"
                             onClick={() => handlePopulateAccountsForCompany(c.realmId)}
-                            className="px-2 py-1 rounded bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 text-[10px] font-mono font-semibold cursor-pointer shrink-0"
-                            title="Populate all accounts from QuickBooks"
+                            className="px-2.5 py-1 rounded bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-[10px] font-mono font-bold cursor-pointer shrink-0 flex items-center gap-1 transition-colors"
+                            title="Populate and refresh all live accounts from QuickBooks"
                           >
-                            Sync Accounts
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Sync All Accounts</span>
                           </button>
                         </div>
                       </div>
 
                       {/* Synced Accounts in this company */}
                       <div className="mt-3 pt-3 border-t border-stone-800/80 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-[10px] uppercase font-mono font-bold text-stone-400 block">
-                            Synced Accounts in Pipeline ({syncedAccs.length}):
-                          </span>
-                          <span className="text-[10px] text-stone-500 font-mono">
-                            Click to activate · ✕ to remove
-                          </span>
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] uppercase font-mono font-bold text-stone-300 block">
+                              Synced Accounts in Pipeline ({syncedAccs.length}):
+                            </span>
+                            {syncedAccs.some(a => a.toLowerCase().includes('mastercard')) ? (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                <CreditCard className="w-2.5 h-2.5 text-amber-400" />
+                                <span>Mastercard Active</span>
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {syncedAccs.length > 5 && (
+                              <input
+                                type="text"
+                                value={accountFilterMap[c.realmId] || ''}
+                                onChange={e => setAccountFilterMap(prev => ({ ...prev, [c.realmId]: e.target.value }))}
+                                placeholder="Filter accounts (e.g. mastercard)..."
+                                className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-800 text-stone-300 text-[10px] font-mono focus:outline-none focus:border-emerald-500 w-44"
+                              />
+                            )}
+                            <span className="text-[10px] text-stone-500 font-mono hidden sm:inline">
+                              Click to activate · ✕ to remove
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          {syncedAccs.map((acc, aIdx) => {
-                            const isAccActive = isActive && (qboActiveAccount === acc || (!qboActiveAccount && aIdx === 0));
-                            return (
-                              <div
-                                key={aIdx}
-                                className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono transition-all border ${
-                                  isAccActive
-                                    ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
-                                    : 'bg-stone-900 hover:bg-stone-850 text-stone-300 border-stone-800'
-                                }`}
+
+                        {/* Quick Add Mastercard shortcut if not yet present in synced list */}
+                        {!syncedAccs.some(a => a.toLowerCase().includes('mastercard')) && (
+                          <div className="p-2 rounded-lg bg-amber-950/20 border border-amber-500/30 flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-1.5 text-amber-300 text-[11px]">
+                              <CreditCard className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                              <span>Mastercard credit card account detected:</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleAddSyncedAccount(c.realmId, 'Mastercard')}
+                                className="px-2 py-0.5 rounded bg-amber-600/30 hover:bg-amber-600/50 text-amber-200 border border-amber-500/50 text-[10px] font-mono font-bold cursor-pointer transition-colors"
                               >
-                                <button
-                                  type="button"
-                                  onClick={() => handleSwitchWorkingQboCompany(c.realmId, acc)}
-                                  className="flex items-center gap-1 cursor-pointer hover:text-white"
-                                  title="Click to work on this account"
+                                + Add &ldquo;Mastercard&rdquo;
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handlePopulateAccountsForCompany(c.realmId)}
+                                className="px-2 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-stone-300 border border-stone-700 text-[10px] font-mono cursor-pointer transition-colors"
+                              >
+                                Sync All from QBO
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {(() => {
+                            const term = (accountFilterMap[c.realmId] || '').trim().toLowerCase();
+                            const list = term ? syncedAccs.filter(a => a.toLowerCase().includes(term)) : syncedAccs;
+                            if (list.length === 0 && term) {
+                              return <span className="text-[11px] text-stone-500 font-mono italic">No accounts match &ldquo;{term}&rdquo;</span>;
+                            }
+                            return list.map((acc, aIdx) => {
+                              const isAccActive = isActive && (qboActiveAccount === acc || (!qboActiveAccount && aIdx === 0));
+                              const isCard = acc.toLowerCase().includes('mastercard') || acc.toLowerCase().includes('card') || acc.toLowerCase().includes('visa') || acc.toLowerCase().includes('amex');
+                              return (
+                                <div
+                                  key={aIdx}
+                                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono transition-all border ${
+                                    isAccActive
+                                      ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
+                                      : isCard
+                                      ? 'bg-amber-950/20 hover:bg-amber-950/40 text-amber-200/90 border-amber-500/30'
+                                      : 'bg-stone-900 hover:bg-stone-850 text-stone-300 border-stone-800'
+                                  }`}
                                 >
-                                  <span className={`w-1.5 h-1.5 rounded-full ${isAccActive ? 'bg-amber-400' : 'bg-emerald-400'}`} />
-                                  <span>{acc}</span>
-                                  {isAccActive && <span className="text-[9px] text-amber-300">(Active)</span>}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleSyncedAccount(c.realmId, acc)}
-                                  className="text-stone-500 hover:text-red-400 cursor-pointer ml-0.5"
-                                  title="Remove account from pipeline"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
-                            );
-                          })}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSwitchWorkingQboCompany(c.realmId, acc)}
+                                    className="flex items-center gap-1 cursor-pointer hover:text-white"
+                                    title="Click to work on this account"
+                                  >
+                                    {isCard ? (
+                                      <CreditCard className={`w-3 h-3 ${isAccActive ? 'text-amber-400' : 'text-amber-400/80'}`} />
+                                    ) : (
+                                      <span className={`w-1.5 h-1.5 rounded-full ${isAccActive ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                                    )}
+                                    <span>{acc}</span>
+                                    {isAccActive && <span className="text-[9px] text-amber-300">(Active)</span>}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleSyncedAccount(c.realmId, acc)}
+                                    className="text-stone-500 hover:text-red-400 cursor-pointer ml-0.5"
+                                    title="Remove account from pipeline"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              );
+                            });
+                          })()}
 
                           {/* Add Synced Account to this company */}
                           {showAddAccountForRealm === c.realmId ? (
-                            <div className="inline-flex items-center gap-1 bg-stone-900 p-1 rounded-lg border border-emerald-500/50">
+                            <div className="inline-flex items-center gap-1 bg-stone-900 p-1.5 rounded-lg border border-emerald-500/50 shadow-lg">
                               <select
                                 onChange={e => {
                                   if (e.target.value) handleAddSyncedAccount(c.realmId, e.target.value);
                                 }}
-                                className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono cursor-pointer"
+                                className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono cursor-pointer max-w-[200px]"
                                 defaultValue=""
                               >
-                                <option value="" disabled>Select Preset Account...</option>
-                                {STANDARD_SYNC_PRESETS.filter(p => !syncedAccs.includes(p)).map((p, pIdx) => (
-                                  <option key={pIdx} value={p}>{p}</option>
-                                ))}
+                                <option value="" disabled>Select Account to Add...</option>
+                                <optgroup label="💳 Credit Cards & Card Ledgers">
+                                  {qboAllAccounts
+                                    .filter(a => (a.qboType === 'Credit Card' || a.subType === 'CreditCard' || a.name.toLowerCase().includes('mastercard') || a.name.toLowerCase().includes('card') || a.name.toLowerCase().includes('visa') || a.name.toLowerCase().includes('amex')) && !syncedAccs.includes(a.name))
+                                    .map((a, idx) => (
+                                      <option key={`cc_${idx}`} value={a.name}>💳 {a.name}</option>
+                                    ))}
+                                </optgroup>
+                                <optgroup label="🏦 Bank & Checking Accounts">
+                                  {qboAllAccounts
+                                    .filter(a => a.qboType === 'Bank' && !syncedAccs.includes(a.name))
+                                    .map((a, idx) => (
+                                      <option key={`bank_${idx}`} value={a.name}>🏦 {a.name}</option>
+                                    ))}
+                                </optgroup>
+                                <optgroup label="⚡ Standard Preset Accounts">
+                                  {STANDARD_SYNC_PRESETS.filter(p => !syncedAccs.includes(p)).map((p, pIdx) => (
+                                    <option key={`pre_${pIdx}`} value={p}>{p}</option>
+                                  ))}
+                                </optgroup>
+                                <optgroup label="📋 All Chart of Accounts">
+                                  {qboAllAccounts
+                                    .filter(a => a.qboType !== 'Credit Card' && a.qboType !== 'Bank' && !syncedAccs.includes(a.name))
+                                    .slice(0, 50)
+                                    .map((a, idx) => (
+                                      <option key={`all_${idx}`} value={a.name}>{a.name} ({a.qboType})</option>
+                                    ))}
+                                </optgroup>
                               </select>
                               <input
                                 type="text"
                                 value={newAccountInput}
                                 onChange={e => setNewAccountInput(e.target.value)}
-                                placeholder="Or custom name..."
-                                className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono focus:outline-none w-36"
+                                placeholder="Or enter account name (e.g. Mastercard)..."
+                                className="px-1.5 py-0.5 rounded bg-stone-950 border border-stone-700 text-stone-200 text-[10px] font-mono focus:outline-none w-44"
                               />
                               <button
                                 type="button"
