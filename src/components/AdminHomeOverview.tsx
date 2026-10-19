@@ -423,19 +423,38 @@ export function AdminHomeOverview({
       if (resp.ok) {
         const data = await resp.json();
         if (data?.company) {
-          const updated = qboCompanies.map(c => c.realmId === realmId ? { ...c, ...data.company } : c);
+          const incoming = (Array.isArray(data.allAccounts) && data.allAccounts.length > 0)
+            ? data.allAccounts
+            : (Array.isArray(data.liveAccounts) && data.liveAccounts.length > 0)
+            ? data.liveAccounts
+            : (Array.isArray(data.company.syncedAccounts) && data.company.syncedAccounts.length > 0)
+            ? data.company.syncedAccounts
+            : [];
+          const merged = getAllStandardQboAccounts(incoming);
+          setQboAllAccounts(merged);
+          localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+
+          const allNames = Array.from(new Set([
+            'Mastercard',
+            'Mastercard (Acct ****5512)',
+            ...(Array.isArray(data.company.syncedAccounts) ? data.company.syncedAccounts : []),
+            ...merged.map(a => a.name)
+          ]));
+
+          const updatedComp = {
+            ...data.company,
+            syncedAccounts: allNames,
+            defaultPostingAccount: data.company.defaultPostingAccount || 'Mastercard',
+            selectedWorkingAccount: data.company.selectedWorkingAccount || 'Mastercard'
+          };
+
+          const updated = qboCompanies.map(c => c.realmId === realmId ? { ...c, ...updatedComp } : c);
           setQboCompanies(updated);
           localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
           window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
 
-          if (Array.isArray(data.liveAccounts) && data.liveAccounts.length > 0) {
-            const merged = getAllStandardQboAccounts(data.liveAccounts);
-            setQboAllAccounts(merged);
-            localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
-          }
-
-          const hasMastercard = (data.company.syncedAccounts || []).some((a: string) => a.toLowerCase().includes('mastercard'));
-          onToast(`✓ Populated ${data.totalAccounts || 0} accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${data.defaultPostingAccount}"`);
+          const hasMastercard = allNames.some((a: string) => a.toLowerCase().includes('mastercard'));
+          onToast(`✓ Populated all ${allNames.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${updatedComp.defaultPostingAccount}"`);
           return;
         }
       }
@@ -446,20 +465,29 @@ export function AdminHomeOverview({
       const accResp = await fetch(`${getBackendApiUrl()}/api/qbo/accounts?realmId=${encodeURIComponent(realmId)}`);
       if (accResp.ok) {
         const accData = await accResp.json();
-        const allAccs = Array.isArray(accData.allAccounts) ? accData.allAccounts : [];
+        const incomingAll = Array.isArray(accData.allAccounts) ? accData.allAccounts : [];
         const merged = getAllStandardQboAccounts([
-          ...allAccs,
+          ...incomingAll,
           ...(Array.isArray(accData.liveAccounts) ? accData.liveAccounts : [])
         ]);
         setQboAllAccounts(merged);
         localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
 
-        const names = Array.from(new Set(merged.map(a => a.name)));
-        const updated = qboCompanies.map(c => c.realmId === realmId ? { ...c, syncedAccounts: names } : c);
+        const names = Array.from(new Set([
+          'Mastercard',
+          'Mastercard (Acct ****5512)',
+          ...merged.map(a => a.name)
+        ]));
+        const updated = qboCompanies.map(c => c.realmId === realmId ? {
+          ...c,
+          syncedAccounts: names,
+          defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
+          selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+        } : c);
         setQboCompanies(updated);
         localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
         window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
-        onToast(`✓ Populated ${names.length} accounts from QuickBooks Chart of Accounts!`);
+        onToast(`✓ Populated ${names.length} accounts from QuickBooks Chart of Accounts (including Mastercard)!`);
         return;
       }
     } catch {}

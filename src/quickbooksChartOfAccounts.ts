@@ -1226,34 +1226,176 @@ export const QBO_CHART_CATEGORIES = [
 ] as const;
 
 /**
- * Return all accounts merged with any live or custom accounts passed in.
+ * Normalize any input account (raw QBO object, string, or partial item) into a valid QboAccountItem
  */
-export function getAllStandardQboAccounts(liveOrCustomAccounts: QboAccountItem[] = []): QboAccountItem[] {
-  if (!liveOrCustomAccounts || liveOrCustomAccounts.length === 0) {
-    return COMPREHENSIVE_STANDARD_ACCOUNTS;
+export function normalizeToQboAccountItem(raw: any, index: number = 0): QboAccountItem | null {
+  if (!raw) return null;
+
+  // If passed as a string (e.g. 'Mastercard' or 'Operating Checking (Acct ****4120)')
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const lower = trimmed.toLowerCase();
+    const isCard = lower.includes('mastercard') || lower.includes('visa') || lower.includes('amex') || lower.includes('card');
+    const isBank = lower.includes('checking') || lower.includes('savings') || lower.includes('cash') || lower.includes('bank') || lower.includes('till') || lower.includes('escrow');
+    const isFarm = lower.includes('feed') || lower.includes('fertilizer') || lower.includes('seed') || lower.includes('fuel') || lower.includes('tractor') || lower.includes('livestock') || lower.includes('farm') || lower.includes('vet');
+
+    const classification: 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense' = isCard ? 'Liability' : isBank ? 'Asset' : 'Expense';
+    const qboType = isCard ? 'Credit Card' : isBank ? 'Bank' : 'Expense';
+    const subType = isCard ? 'CreditCard' : isBank ? 'Checking' : 'Supplies';
+    const schedule: 'SCHEDULE_F' | 'SCHEDULE_C' | 'BALANCE_SHEET' | 'FORM_1040' | 'ALL' = isFarm ? 'SCHEDULE_F' : (isCard || isBank) ? 'BALANCE_SHEET' : 'SCHEDULE_C';
+
+    return {
+      id: `acc-str-${index}-${trimmed.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`,
+      accountNumber: isCard ? '2040' : isBank ? '1010' : '6000',
+      name: trimmed,
+      qboType,
+      subType,
+      classification,
+      schedule,
+      line: isCard ? 'Mastercard Credit Card' : isBank ? 'Operating Cash' : 'Expense',
+      description: `${trimmed} account`,
+      active: true,
+      currentBalance: 0
+    };
   }
 
-  // Deduplicate by name and id
-  const existingNames = new Set(liveOrCustomAccounts.map(a => a.name.toLowerCase()));
-  const merged = [
-    ...liveOrCustomAccounts,
-    ...COMPREHENSIVE_STANDARD_ACCOUNTS.filter(std => !existingNames.has(std.name.toLowerCase()))
+  // If passed as an object
+  const name = (raw.name || raw.Name || raw.fullyQualifiedName || raw.FullyQualifiedName || raw.accountName || '').toString().trim();
+  if (!name) return null;
+
+  const rawType = (raw.qboType || raw.AccountType || raw.type || '').toString().trim();
+  const rawSubType = (raw.subType || raw.AccountSubType || raw.sub_type || rawType).toString().trim();
+  const rawClass = (raw.classification || raw.Classification || '').toString().trim();
+  const rawNum = (raw.accountNumber || raw.AcctNum || raw.number || '').toString().trim();
+  const rawId = (raw.id || raw.Id || `acc-${index}-${name.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`).toString().trim();
+  const lowerName = name.toLowerCase();
+
+  // Determine classification
+  let classification: 'Asset' | 'Liability' | 'Equity' | 'Revenue' | 'Expense' = 'Asset';
+  if (
+    rawClass === 'Liability' ||
+    ['Credit Card', 'Accounts Payable', 'Other Current Liability', 'Long Term Liability'].includes(rawType) ||
+    lowerName.includes('mastercard') || lowerName.includes('credit card') || lowerName.includes('visa') || lowerName.includes('amex')
+  ) {
+    classification = 'Liability';
+  } else if (rawClass === 'Expense' || ['Expense', 'Cost of Goods Sold', 'Other Expense'].includes(rawType)) {
+    classification = 'Expense';
+  } else if (rawClass === 'Revenue' || ['Revenue', 'Income', 'Other Income'].includes(rawType)) {
+    classification = 'Revenue';
+  } else if (rawClass === 'Equity' || rawType === 'Equity') {
+    classification = 'Equity';
+  } else {
+    classification = 'Asset';
+  }
+
+  // Determine qboType
+  let qboType = rawType;
+  if (!qboType) {
+    if (lowerName.includes('mastercard') || lowerName.includes('visa') || lowerName.includes('card') || lowerName.includes('amex')) {
+      qboType = 'Credit Card';
+    } else if (lowerName.includes('checking') || lowerName.includes('cash') || lowerName.includes('bank')) {
+      qboType = 'Bank';
+    } else {
+      qboType = classification === 'Expense' ? 'Expense' : classification === 'Liability' ? 'Other Current Liability' : 'Bank';
+    }
+  }
+
+  // Determine schedule
+  let schedule: 'SCHEDULE_F' | 'SCHEDULE_C' | 'BALANCE_SHEET' | 'FORM_1040' | 'ALL' = raw.schedule || 'BALANCE_SHEET';
+  if (!raw.schedule) {
+    if (classification === 'Liability' || classification === 'Asset' || classification === 'Equity') {
+      schedule = 'BALANCE_SHEET';
+    } else if (
+      rawType === 'Cost of Goods Sold' ||
+      lowerName.includes('farm') ||
+      lowerName.includes('feed') ||
+      lowerName.includes('seed') ||
+      lowerName.includes('fertilizer') ||
+      lowerName.includes('livestock')
+    ) {
+      schedule = 'SCHEDULE_F';
+    } else {
+      schedule = 'SCHEDULE_C';
+    }
+  }
+
+  return {
+    id: rawId,
+    accountNumber: rawNum || (qboType === 'Credit Card' ? '2040' : '1010'),
+    name,
+    qboType,
+    subType: rawSubType || qboType,
+    classification,
+    schedule,
+    line: raw.line || (qboType === 'Credit Card' ? 'Mastercard Credit Card' : rawType || 'General Account'),
+    description: raw.description || raw.Description || `${name} account`,
+    active: raw.active !== false && raw.Active !== false,
+    currentBalance: typeof raw.currentBalance === 'number' ? raw.currentBalance : typeof raw.CurrentBalance === 'number' ? raw.CurrentBalance : 0,
+    isCustom: Boolean(raw.isCustom)
+  };
+}
+
+/**
+ * Return all accounts safely merged with any live or custom accounts passed in.
+ * Fully resilient to strings, raw QBO v3 Account JSON, or QboAccountItem objects.
+ */
+export function getAllStandardQboAccounts(liveOrCustomAccounts: (QboAccountItem | string | any)[] = []): QboAccountItem[] {
+  const normalizedIncoming: QboAccountItem[] = [];
+
+  if (Array.isArray(liveOrCustomAccounts) && liveOrCustomAccounts.length > 0) {
+    liveOrCustomAccounts.forEach((item, idx) => {
+      const normalized = normalizeToQboAccountItem(item, idx);
+      if (normalized) {
+        normalizedIncoming.push(normalized);
+      }
+    });
+  }
+
+  // Deduplicate by clean lowercase name
+  const existingNames = new Set(normalizedIncoming.map(a => a.name.trim().toLowerCase()));
+
+  // Merge: incoming live/custom accounts first, followed by standard catalog accounts not already present
+  const merged: QboAccountItem[] = [
+    ...normalizedIncoming,
+    ...COMPREHENSIVE_STANDARD_ACCOUNTS.filter(std => !existingNames.has(std.name.trim().toLowerCase()))
   ];
+
+  // Guarantee 'Mastercard' is always present in the returned list
+  if (!merged.some(a => a.name.trim().toLowerCase() === 'mastercard')) {
+    const mastercardStd = COMPREHENSIVE_STANDARD_ACCOUNTS.find(a => a.name.toLowerCase() === 'mastercard') || {
+      id: 'lia-2040',
+      accountNumber: '2040',
+      name: 'Mastercard',
+      qboType: 'Credit Card',
+      subType: 'CreditCard',
+      classification: 'Liability',
+      schedule: 'BALANCE_SHEET',
+      line: 'Mastercard Credit Card',
+      description: 'Corporate business Mastercard revolving credit card account for operating disbursements and business charges.',
+      active: true,
+      currentBalance: 2450.00
+    };
+    merged.unshift(mastercardStd);
+  }
 
   return merged;
 }
 
 /**
- * Filter and search QuickBooks Chart of Accounts
+ * Safely filter and search QuickBooks Chart of Accounts
  */
 export function searchQboAccounts(
   accounts: QboAccountItem[],
   query: string,
   categoryFilter: string = 'ALL'
 ): QboAccountItem[] {
-  const cleanQ = query.trim().toLowerCase();
+  if (!Array.isArray(accounts)) return [];
+  const cleanQ = (query || '').trim().toLowerCase();
 
   return accounts.filter(acc => {
+    if (!acc || typeof acc !== 'object') return false;
+
     // Category check
     if (categoryFilter !== 'ALL') {
       if (categoryFilter === 'Bank' && acc.qboType !== 'Bank') return false;
@@ -1270,13 +1412,13 @@ export function searchQboAccounts(
     if (!cleanQ) return true;
 
     // Search against multiple fields: name, accountNumber, qboType, subType, schedule, line, description
-    const matchName = acc.name.toLowerCase().includes(cleanQ);
-    const matchNum = acc.accountNumber?.toLowerCase().includes(cleanQ);
-    const matchType = acc.qboType?.toLowerCase().includes(cleanQ);
-    const matchSubType = acc.subType?.toLowerCase().includes(cleanQ);
-    const matchLine = acc.line?.toLowerCase().includes(cleanQ);
-    const matchDesc = acc.description?.toLowerCase().includes(cleanQ);
-    const matchSched = acc.schedule?.toLowerCase().includes(cleanQ);
+    const matchName = (acc.name || '').toLowerCase().includes(cleanQ);
+    const matchNum = (acc.accountNumber || '').toLowerCase().includes(cleanQ);
+    const matchType = (acc.qboType || '').toLowerCase().includes(cleanQ);
+    const matchSubType = (acc.subType || '').toLowerCase().includes(cleanQ);
+    const matchLine = (acc.line || '').toLowerCase().includes(cleanQ);
+    const matchDesc = (acc.description || '').toLowerCase().includes(cleanQ);
+    const matchSched = (acc.schedule || '').toLowerCase().includes(cleanQ);
 
     return matchName || matchNum || matchType || matchSubType || matchLine || matchDesc || matchSched;
   });

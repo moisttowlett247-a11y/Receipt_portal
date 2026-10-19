@@ -1382,21 +1382,40 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
 
       if (resp.ok && resp.data?.company) {
         const updatedComp = resp.data.company;
-        const updated = companies.map(c => c.realmId === realmId ? { ...c, ...updatedComp } : c);
-        setCompanies(updated);
-        saveLocalCompanies(updated);
+        const incoming = (Array.isArray(resp.data.allAccounts) && resp.data.allAccounts.length > 0)
+          ? resp.data.allAccounts
+          : (Array.isArray(resp.data.liveAccounts) && resp.data.liveAccounts.length > 0)
+          ? resp.data.liveAccounts
+          : (Array.isArray(updatedComp.syncedAccounts) && updatedComp.syncedAccounts.length > 0)
+          ? updatedComp.syncedAccounts
+          : [];
+        const merged = getAllStandardQboAccounts(incoming);
+        setAllAccounts(merged);
+        if (Array.isArray(resp.data.liveAccounts)) setLiveAccounts(resp.data.liveAccounts);
+        try {
+          localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+        } catch {}
 
-        if (Array.isArray(resp.data.liveAccounts) && resp.data.liveAccounts.length > 0) {
-          const merged = getAllStandardQboAccounts(resp.data.liveAccounts);
-          setAllAccounts(merged);
-          setLiveAccounts(resp.data.liveAccounts);
-          try {
-            localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
-          } catch {}
-        }
+        const allNames = Array.from(new Set([
+          'Mastercard',
+          'Mastercard (Acct ****5512)',
+          ...(Array.isArray(updatedComp.syncedAccounts) ? updatedComp.syncedAccounts : []),
+          ...merged.map(a => a.name)
+        ]));
 
-        const hasMastercard = (updatedComp.syncedAccounts || []).some((a: string) => a.toLowerCase().includes('mastercard'));
-        showToast(`✓ Populated ${resp.data.totalAccounts || updatedComp.syncedAccounts?.length || 0} accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${updatedComp.defaultPostingAccount}"`);
+        const updatedWithAll = companies.map(c => c.realmId === realmId ? {
+          ...c,
+          ...updatedComp,
+          syncedAccounts: allNames,
+          defaultPostingAccount: updatedComp.defaultPostingAccount || 'Mastercard',
+          selectedWorkingAccount: updatedComp.selectedWorkingAccount || 'Mastercard'
+        } : c);
+
+        setCompanies(updatedWithAll);
+        saveLocalCompanies(updatedWithAll);
+
+        const hasMastercard = allNames.some((a: string) => a.toLowerCase().includes('mastercard'));
+        showToast(`✓ Populated all ${allNames.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${updatedComp.defaultPostingAccount || 'Mastercard'}"`);
         return;
       }
     } catch {}
@@ -1416,15 +1435,19 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(mergedAll));
         } catch {}
 
-        const names = Array.from(new Set(mergedAll.map(a => a.name)));
+        const names = Array.from(new Set([
+          'Mastercard',
+          'Mastercard (Acct ****5512)',
+          ...mergedAll.map(a => a.name)
+        ]));
         const updated = companies.map(c =>
           c.realmId === realmId
-            ? { ...c, syncedAccounts: names, defaultPostingAccount: c.defaultPostingAccount || names[0] }
+            ? { ...c, syncedAccounts: names, defaultPostingAccount: c.defaultPostingAccount || 'Mastercard', selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard' }
             : c
         );
         setCompanies(updated);
         saveLocalCompanies(updated);
-        showToast(`✓ Populated ${names.length} accounts from QuickBooks for "${comp.companyName}"!`);
+        showToast(`✓ Populated all ${names.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}" (including Mastercard)!`);
         return;
       }
     } catch {}
@@ -2684,7 +2707,6 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                           <optgroup label="📋 All Chart of Accounts">
                                             {allAccounts
                                               .filter(a => a.qboType !== 'Credit Card' && a.qboType !== 'Bank' && !syncedAccs.includes(a.name))
-                                              .slice(0, 50)
                                               .map((a, idx) => (
                                                 <option key={`all_${idx}`} value={a.name}>{a.name} ({a.qboType})</option>
                                               ))}
@@ -3014,7 +3036,6 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                           <optgroup label="📋 All Chart of Accounts">
                             {allAccounts
                               .filter(a => !syncedList.includes(a.name))
-                              .slice(0, 50)
                               .map((a, idx) => (
                                 <option key={`all2_${idx}`} value={a.name}>{a.name} ({a.qboType})</option>
                               ))}

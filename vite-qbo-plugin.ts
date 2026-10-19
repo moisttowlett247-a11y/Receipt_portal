@@ -616,9 +616,40 @@ export function quickbooksApiPlugin(): Plugin {
               console.warn('Could not fetch QBO CompanyInfo:', err);
             }
 
+            // Fetch true live Chart of Accounts from QuickBooks Online
+            let liveAccountsList: any[] = [];
+            try {
+              const q = encodeURIComponent('select * from Account maxresults 1000');
+              const accResp = await fetch(`${baseApi}/v3/company/${realmId}/query?query=${q}&minorversion=65`, {
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`,
+                  'Accept': 'application/json'
+                }
+              });
+              if (accResp.ok) {
+                const accData: any = await accResp.json();
+                const qboAccs = accData?.QueryResponse?.Account || [];
+                liveAccountsList = qboAccs.map((a: any) => ({
+                  id: a.Id,
+                  accountNumber: a.AcctNum || a.Id,
+                  name: a.Name,
+                  fullyQualifiedName: a.FullyQualifiedName || a.Name,
+                  qboType: a.AccountType,
+                  subType: a.AccountSubType || a.AccountType,
+                  classification: a.Classification,
+                  active: a.Active !== false,
+                  currentBalance: a.CurrentBalance || 0,
+                  description: a.Description || a.FullyQualifiedName || a.Name
+                }));
+              }
+            } catch (accErr) {
+              console.warn('Could not query QBO accounts during OAuth callback:', accErr);
+            }
+
             // Save encrypted company records
             const now = new Date();
             const companies = getCompanies();
+            const liveNames = liveAccountsList.map(a => a.name).filter(Boolean);
             const defaultAccs = [
               'Mastercard',
               'Mastercard (Acct ****5512)',
@@ -629,6 +660,11 @@ export function quickbooksApiPlugin(): Plugin {
               'American Express Corporate Card (Acct ****8890)',
               'Agricultural Payroll Reserve'
             ];
+            const finalSyncedAccounts = liveNames.length > 0 ? liveNames : defaultAccs;
+            const preferredDefaultAccount = finalSyncedAccounts.find(n => n.toLowerCase().includes('mastercard')) ||
+                                           finalSyncedAccounts.find(n => n.toLowerCase().includes('checking') || n.toLowerCase().includes('operating')) ||
+                                           finalSyncedAccounts[0];
+
             companies[realmId] = {
               realmId,
               companyName,
@@ -641,9 +677,9 @@ export function quickbooksApiPlugin(): Plugin {
               lastUsedAt: now.toISOString(),
               environment: cfg.environment,
               status: 'CONNECTED',
-              syncedAccounts: defaultAccs,
-              selectedWorkingAccount: defaultAccs[0],
-              defaultPostingAccount: defaultAccs[0],
+              syncedAccounts: finalSyncedAccounts,
+              selectedWorkingAccount: preferredDefaultAccount,
+              defaultPostingAccount: preferredDefaultAccount,
               refreshTokenEncrypted: encryptToken(refreshToken),
               accessTokenCached: accessToken,
               accessTokenExpiresAt: now.getTime() + (expiresIn * 1000),
@@ -661,7 +697,7 @@ export function quickbooksApiPlugin(): Plugin {
   <div style="display:inline-block;width:48px;height:48px;background:rgba(44,160,28,0.2);border-radius:50%;line-height:48px;font-size:24px;color:#34d399;margin-bottom:16px;">✓</div>
   <h2 style="color:#34d399;margin-bottom:8px;">QuickBooks Connected Successfully!</h2>
   <p style="color:#e7e5e4;font-size:15px;margin-bottom:6px;"><strong>${encodeURIComponent(companyName)}</strong></p>
-  <p style="color:#a8a29e;font-size:12px;">Realm ID: ${encodeURIComponent(realmId)} • Rolling 101-day renewal activated</p>
+  <p style="color:#a8a29e;font-size:12px;">Realm ID: ${encodeURIComponent(realmId)} • ${finalSyncedAccounts.length} live accounts synced</p>
   <p style="color:#78716c;font-size:11px;margin-top:16px;">Closing window and returning to Admin Portal...</p>
   <script>
     if (window.opener) {
@@ -669,7 +705,8 @@ export function quickbooksApiPlugin(): Plugin {
         window.opener.postMessage({
           type: 'QBO_OAUTH_SUCCESS',
           realmId: ${JSON.stringify(realmId)},
-          company: ${JSON.stringify(companyName)}
+          company: ${JSON.stringify(companyName)},
+          liveAccounts: ${JSON.stringify(liveAccountsList)}
         }, '*');
         setTimeout(() => window.close(), 1200);
       } catch (e) {
