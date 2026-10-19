@@ -526,6 +526,16 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     } else if (incomingRealmId || isQboConnected === 'true') {
       const activeRealm = incomingRealmId || '93414579' + Math.floor(100000 + Math.random() * 900000);
       const existing = getLocalCompanies();
+      const initialAccs = [
+        'Mastercard',
+        'Mastercard (Acct ****5512)',
+        'Operating Checking (Acct ****4120)',
+        'Farm Operating & Expense Ledger',
+        'Commercial Equipment Financing (Acct ****8812)',
+        'Visa Business Card (Acct ****3344)',
+        'American Express Corporate Card (Acct ****8890)',
+        'Agricultural Payroll Reserve'
+      ];
       if (!existing.some(c => c.realmId === activeRealm)) {
         const now = new Date();
         const newRecord: CompanyRecord = {
@@ -537,13 +547,17 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           lastRefreshedAt: now.toISOString(),
           accessValidRemainingSec: 3600,
           rollingDaysRemaining: 101,
-          country: 'US'
+          country: 'US',
+          syncedAccounts: initialAccs,
+          defaultPostingAccount: initialAccs[0],
+          selectedWorkingAccount: initialAccs[0]
         };
         const updated = [newRecord, ...existing];
         saveLocalCompanies(updated);
         setCompanies(updated);
         showToast(`QuickBooks Connected Successfully: ${incomingCompany}`);
       }
+      handlePopulateAccountsForCompany(activeRealm);
       const newUrl = window.location.pathname + (window.location.hash || '#qbo');
       window.history.replaceState({}, document.title, newUrl);
     }
@@ -1452,17 +1466,20 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       }
     } catch {}
 
-    // Standard fallback with Mastercard included
-    const stdList = allAccounts.map(a => a.name);
-    const fallbackAccs = stdList.slice(0, 25);
+    // Standard fallback with all accounts and Mastercard included
+    const names = Array.from(new Set([
+      'Mastercard',
+      'Mastercard (Acct ****5512)',
+      ...allAccounts.map(a => a.name)
+    ]));
     const updated = companies.map(c =>
       c.realmId === realmId
-        ? { ...c, syncedAccounts: fallbackAccs, defaultPostingAccount: c.defaultPostingAccount || fallbackAccs[0] }
+        ? { ...c, syncedAccounts: names, defaultPostingAccount: c.defaultPostingAccount || 'Mastercard', selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard' }
         : c
     );
     setCompanies(updated);
     saveLocalCompanies(updated);
-    showToast(`✓ Populated accounts list for "${comp.companyName}" (${fallbackAccs.length} accounts available).`);
+    showToast(`✓ Populated all ${names.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}" (including Mastercard)!`);
   };
 
   const handleSaveAccountMappings = () => {

@@ -492,7 +492,26 @@ export function AdminHomeOverview({
       }
     } catch {}
 
-    onToast(`Populated standard accounts for "${comp.companyName}".`);
+    const merged = getAllStandardQboAccounts(qboAllAccounts);
+    setQboAllAccounts(merged);
+    const names = Array.from(new Set([
+      'Mastercard',
+      'Mastercard (Acct ****5512)',
+      ...merged.map(a => a.name)
+    ]));
+    const updated = qboCompanies.map(c => c.realmId === realmId ? {
+      ...c,
+      syncedAccounts: names,
+      defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
+      selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+    } : c);
+    setQboCompanies(updated);
+    try {
+      localStorage.setItem('receipt_processor_qbo_companies_v1', JSON.stringify(updated));
+      localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
+      window.dispatchEvent(new CustomEvent('qbo-companies-updated', { detail: { companies: updated } }));
+    } catch {}
+    onToast(`✓ Populated all standard accounts for "${comp.companyName}" (${names.length} accounts, including Mastercard).`);
   };
 
   // Fetch live telemetry from server
@@ -2331,7 +2350,6 @@ export function AdminHomeOverview({
                                 <optgroup label="📋 All Chart of Accounts">
                                   {qboAllAccounts
                                     .filter(a => a.qboType !== 'Credit Card' && a.qboType !== 'Bank' && !syncedAccs.includes(a.name))
-                                    .slice(0, 50)
                                     .map((a, idx) => (
                                       <option key={`all_${idx}`} value={a.name}>{a.name} ({a.qboType})</option>
                                     ))}

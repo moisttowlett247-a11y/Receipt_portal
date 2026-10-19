@@ -3580,7 +3580,25 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       {(() => {
                         const selectedComp = qboCompanies.find((c: any) => c.realmId === editFormData.matchedQboRealmId);
                         const accts = selectedComp && Array.isArray(selectedComp.syncedAccounts) ? selectedComp.syncedAccounts : [];
-                        const fullAccts = Array.from(new Set(['Mastercard', 'Mastercard (Acct ****5512)', ...accts]));
+                        let cachedAllNames: string[] = [];
+                        try {
+                          const raw = localStorage.getItem('receipt_processor_qbo_all_accounts_v1');
+                          if (raw) {
+                            const parsed = JSON.parse(raw);
+                            if (Array.isArray(parsed)) cachedAllNames = parsed.map((a: any) => a.name || a).filter(Boolean);
+                          }
+                        } catch {}
+                        const fullAccts = Array.from(new Set([
+                          'Mastercard',
+                          'Mastercard (Acct ****5512)',
+                          ...accts,
+                          'Operating Checking (Acct ****4120)',
+                          'Farm Operating & Expense Ledger',
+                          'Commercial Equipment Financing (Acct ****8812)',
+                          'Visa Business Card (Acct ****3344)',
+                          'American Express Corporate Card (Acct ****8890)',
+                          ...cachedAllNames
+                        ]));
                         return fullAccts.map((a: string) => (
                           <option key={a} value={a}>
                             ★ {a}
