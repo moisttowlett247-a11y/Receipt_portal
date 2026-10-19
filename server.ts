@@ -20,33 +20,133 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
-  // Guard against path traversal, dot-file tampering, and confidential file access
-  const p = (req.path || '').toLowerCase();
-  let decoded = p;
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+
+  // Strict-Transport-Security for HTTPS environments
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  if (isHttps) {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  }
+
+  // Guard against path traversal, dot-file tampering, null bytes, backslashes, and confidential file access
+  const rawPath = req.path || '';
+  let decodedPath = rawPath;
   try {
-    decoded = decodeURIComponent(p);
+    decodedPath = decodeURIComponent(rawPath);
   } catch {}
+
+  const p = rawPath.toLowerCase();
+  const d = decodedPath.toLowerCase();
+
   if (
-    p.includes('/.data') || decoded.includes('/.data') ||
+    p.includes('/.data') || d.includes('/.data') ||
     (p.includes('/.env') && !p.includes('/.env.example')) ||
-    (decoded.includes('/.env') && !decoded.includes('/.env.example')) ||
-    p.includes('/.git') || decoded.includes('/.git') ||
-    (!p.startsWith('/api/') && (p === '/licenses' || p.startsWith('/licenses/') || decoded.startsWith('/licenses/'))) ||
-    p.includes('..') || decoded.includes('..') ||
-    p.includes('%2e%2e')
+    (d.includes('/.env') && !d.includes('/.env.example')) ||
+    p.includes('/.git') || d.includes('/.git') ||
+    (!p.startsWith('/api/') && (p === '/licenses' || p.startsWith('/licenses/') || d.startsWith('/licenses/'))) ||
+    p.includes('..') || d.includes('..') ||
+    p.includes('%2e%2e') || d.includes('%2e%2e') ||
+    p.includes('\\') || d.includes('\\') ||
+    p.includes('\0') || d.includes('\0')
   ) {
     return res.status(403).json({ error: 'Access denied: forbidden resource.' });
   }
 
-  // For sensitive financial and tax document endpoints, strictly disable client/proxy caching
-  if (req.path.startsWith('/api/tax-docs') || req.path.startsWith('/api/scan') || req.path.startsWith('/api/qbo')) {
+  // For sensitive financial, auth, and tax document endpoints, strictly disable client/proxy caching
+  if (
+    req.path.startsWith('/api/tax-docs') ||
+    req.path.startsWith('/api/scan') ||
+    req.path.startsWith('/api/qbo') ||
+    req.path.startsWith('/api/admin')
+  ) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate, private');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
   }
   next();
 });
+
+// Prototype Pollution Defense Middleware: Recursively sanitize object keys
+function sanitizeObjectKeys(obj: any, depth = 0): any {
+  if (depth > 12 || !obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) {
+    return obj.map(item => sanitizeObjectKeys(item, depth + 1));
+  }
+  const clean: Record<string, any> = {};
+  for (const key of Object.keys(obj)) {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+    clean[key] = sanitizeObjectKeys(obj[key], depth + 1);
+  }
+  return clean;
+}
+
+app.use((req, _res, next) => {
+  if (req.body && typeof req.body === 'object') {
+    req.body = sanitizeObjectKeys(req.body);
+  }
+  if (req.query && typeof req.query === 'object') {
+    req.query = sanitizeObjectKeys(req.query);
+  }
+  next();
+});
+
+// In-Memory Sliding-Window Rate Limiter
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+const rateLimitStore = new Map<string, RateLimitBucket>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateLimitStore.entries()) {
+    if (bucket.resetAt <= now) {
+      rateLimitStore.delete(key);
+    }
+  }
+}, 300000); // Purge stale records every 5 minutes
+
+function rateLimiter(maxRequests: number, windowMs: number = 60000) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = (Array.isArray(rawIp) ? rawIp[0] : String(rawIp)).split(',')[0].trim();
+    const endpointPrefix = (req.path || '').split('/').slice(0, 3).join('/');
+    const key = `${clientIp}:${endpointPrefix}`;
+    const now = Date.now();
+
+    let bucket = rateLimitStore.get(key);
+    if (!bucket || bucket.resetAt <= now) {
+      bucket = { count: 1, resetAt: now + windowMs };
+      rateLimitStore.set(key, bucket);
+      return next();
+    }
+
+    bucket.count += 1;
+    if (bucket.count > maxRequests) {
+      const retryAfter = Math.ceil((bucket.resetAt - now) / 1000);
+      res.setHeader('Retry-After', String(retryAfter));
+      return res.status(429).json({
+        error: 'Too Many Requests: Rate limit exceeded. Please wait a moment before retrying.',
+        retryAfter
+      });
+    }
+
+    return next();
+  };
+}
+
+// Constant-Time String Comparison for Cryptographic Tokens and PINs (Timing Attack Defense)
+function timingSafeCompare(a: string | undefined | null, b: string | undefined | null): boolean {
+  if (!a || !b || typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf-8');
+  const bufB = Buffer.from(b, 'utf-8');
+  if (bufA.length !== bufB.length) {
+    crypto.timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 // Secure data directory (isolated from public static web root)
 const DATA_DIR = path.resolve(__dirname, '.data');
@@ -97,6 +197,33 @@ function decryptToken(ciphertext: string): string {
   return decrypted;
 }
 
+// Generic AES-256-GCM File Storage Helpers (Encrypted at Rest)
+function readSecureFile(filePath: string): any {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    if (!raw.trim()) return null;
+    let jsonStr = raw;
+    if (raw.startsWith('aes_gcm:')) {
+      jsonStr = decryptToken(raw);
+    }
+    return JSON.parse(jsonStr);
+  } catch (err) {
+    console.error(`[Security] Error reading secure file ${path.basename(filePath)}:`, err);
+    return null;
+  }
+}
+
+function writeSecureFile(filePath: string, data: any): void {
+  try {
+    const jsonStr = JSON.stringify(data, null, 2);
+    const encrypted = encryptToken(jsonStr);
+    fs.writeFileSync(filePath, encrypted, 'utf-8');
+  } catch (err) {
+    console.error(`[Security] Error writing secure file ${path.basename(filePath)}:`, err);
+  }
+}
+
 // Forensic PII & Federal Tax Information (FTI) Redaction Helpers
 function sanitizeSSN(ssnRaw: string | undefined | null): string {
   if (!ssnRaw) return '***-**-****';
@@ -121,78 +248,43 @@ function sanitizeEIN(einRaw: string | undefined | null): string {
 
 // Encrypted at Rest Tax Documents Persistence
 function loadTaxDocuments(): { w2s: any[]; form1099s: any[] } {
-  if (fs.existsSync(TAX_DOCS_FILE)) {
-    try {
-      const raw = fs.readFileSync(TAX_DOCS_FILE, 'utf-8');
-      let jsonStr = raw;
-      if (raw.startsWith('aes_gcm:')) {
-        jsonStr = decryptToken(raw);
-      }
-      const parsed = JSON.parse(jsonStr);
-      if (parsed && typeof parsed === 'object') {
-        return {
-          w2s: Array.isArray(parsed.w2s) ? parsed.w2s : [],
-          form1099s: Array.isArray(parsed.form1099s) ? parsed.form1099s : []
-        };
-      }
-    } catch (err) {
-      console.error('[Security] Error decrypting tax documents at rest:', err);
-    }
+  const parsed = readSecureFile(TAX_DOCS_FILE);
+  if (parsed && typeof parsed === 'object') {
+    return {
+      w2s: Array.isArray(parsed.w2s) ? parsed.w2s : [],
+      form1099s: Array.isArray(parsed.form1099s) ? parsed.form1099s : []
+    };
   }
   return { w2s: [], form1099s: [] };
 }
 
 function saveTaxDocuments(data: { w2s: any[]; form1099s: any[] }) {
-  try {
-    const jsonStr = JSON.stringify(data, null, 2);
-    // Encrypt at rest with AES-256-GCM
-    const encrypted = encryptToken(jsonStr);
-    fs.writeFileSync(TAX_DOCS_FILE, encrypted, 'utf-8');
-  } catch (err) {
-    console.error('[Security] Error saving encrypted tax documents:', err);
-  }
+  writeSecureFile(TAX_DOCS_FILE, data);
 }
 
 function loadAccounts(): any[] {
-  if (fs.existsSync(ACCOUNTS_FILE)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8'));
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-  }
+  const parsed = readSecureFile(ACCOUNTS_FILE);
+  if (Array.isArray(parsed)) return parsed;
   return [];
 }
 
 function saveAccounts(accounts: any[]) {
-  try {
-    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2), 'utf-8');
-  } catch {}
+  writeSecureFile(ACCOUNTS_FILE, accounts);
 }
 
 function loadSubmissions(): any[] {
-  if (fs.existsSync(SUBMISSIONS_FILE)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(SUBMISSIONS_FILE, 'utf-8'));
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-  }
+  const parsed = readSecureFile(SUBMISSIONS_FILE);
+  if (Array.isArray(parsed)) return parsed;
   return [];
 }
 
 function saveSubmissions(submissions: any[]) {
-  try {
-    fs.writeFileSync(SUBMISSIONS_FILE, JSON.stringify(submissions, null, 2), 'utf-8');
-  } catch {}
+  writeSecureFile(SUBMISSIONS_FILE, submissions);
 }
 
-// Config & Company Helpers
+// Config & Company Helpers (Encrypted at Rest)
 function getStoredConfig() {
-  let fileCfg: any = {};
-  if (fs.existsSync(CONFIG_FILE)) {
-    try {
-      fileCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    } catch {}
-  }
+  const fileCfg: any = readSecureFile(CONFIG_FILE) || {};
   const rawEnv = (fileCfg.environment || process.env.QBO_ENVIRONMENT || 'sandbox').toString().toLowerCase().trim();
   const environment = rawEnv === 'production' ? 'production' : 'sandbox';
   return {
@@ -208,7 +300,7 @@ function getStoredConfig() {
 function saveConfig(cfg: any) {
   const current = getStoredConfig();
   const merged = { ...current, ...cfg };
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf-8');
+  writeSecureFile(CONFIG_FILE, merged);
   return merged;
 }
 
@@ -221,21 +313,17 @@ function getInitialDefaultSyncLogs() {
 }
 
 function getCompanies() {
-  if (fs.existsSync(COMPANIES_FILE)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(COMPANIES_FILE, 'utf-8'));
-      if (parsed && typeof parsed === 'object') {
-        const cleaned: Record<string, any> = {};
-        for (const [k, v] of Object.entries(parsed)) {
-          const name = ((v as any)?.companyName || '').toLowerCase();
-          const rId = (v as any)?.realmId || k;
-          if (['934145791240', '934145794821', '934145798934'].includes(rId)) continue;
-          if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) continue;
-          cleaned[k] = v;
-        }
-        return cleaned;
-      }
-    } catch {}
+  const parsed = readSecureFile(COMPANIES_FILE);
+  if (parsed && typeof parsed === 'object') {
+    const cleaned: Record<string, any> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      const name = ((v as any)?.companyName || '').toLowerCase();
+      const rId = (v as any)?.realmId || k;
+      if (['934145791240', '934145794821', '934145798934'].includes(rId)) continue;
+      if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) continue;
+      cleaned[k] = v;
+    }
+    return cleaned;
   }
   const defaults = getInitialDefaultCompanies();
   saveCompanies(defaults);
@@ -243,7 +331,7 @@ function getCompanies() {
 }
 
 function saveCompanies(companies: any) {
-  fs.writeFileSync(COMPANIES_FILE, JSON.stringify(companies, null, 2), 'utf-8');
+  writeSecureFile(COMPANIES_FILE, companies);
 }
 
 async function getValidAccessTokenForCompany(target: any, companies: any): Promise<string | null> {
@@ -682,40 +770,6 @@ function getClientIp(req: express.Request): string {
   return normalizeIp(req.socket?.remoteAddress || '127.0.0.1');
 }
 
-// In-Memory IP Rate Limiter to mitigate DoS, brute-force & quota exhaustion
-const rateLimitBuckets = new Map<string, { count: number; resetAt: number }>();
-function rateLimiter(maxRequests: number, windowMs: number) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const ip = getClientIp(req);
-    const key = `${ip}:${req.baseUrl || ''}${req.path}`;
-    const now = Date.now();
-    const bucket = rateLimitBuckets.get(key);
-
-    if (!bucket || now > bucket.resetAt) {
-      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-
-    bucket.count++;
-    if (bucket.count > maxRequests) {
-      res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000));
-      return res.status(429).json({
-        success: false,
-        error: 'Too many requests. Please wait a moment before trying again.'
-      });
-    }
-
-    return next();
-  };
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of rateLimitBuckets.entries()) {
-    if (now > v.resetAt) rateLimitBuckets.delete(k);
-  }
-}, 300000);
-
 // Router Setup
 const router = express.Router();
 
@@ -728,7 +782,16 @@ router.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
+  next();
+});
 
+// Rate Limiting Protection on Sensitive & High-Throughput Endpoints
+router.use('/api/admin', rateLimiter(60));
+router.use('/api/scan', rateLimiter(60));
+router.use('/api/qbo/config', rateLimiter(45));
+router.use('/api/track-ip', rateLimiter(150));
+
+router.use((req, res, next) => {
   // Automatically record presence for any API request to track client and admin IPs in real time
   try {
     const path = req.path || '';
@@ -1854,7 +1917,11 @@ router.post('/api/admin/accounts/sync', (req, res) => {
 
     const merged = Array.from(map.values());
     saveAccounts(merged);
-    return res.json({ success: true, count: merged.length, accounts: merged });
+    const sanitized = merged.map((a: any) => {
+      const { passwordHash, salt, password, ...safe } = a;
+      return safe;
+    });
+    return res.json({ success: true, count: sanitized.length, accounts: sanitized });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }

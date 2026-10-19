@@ -565,14 +565,22 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
     // Cross-window postMessage listener for popup OAuth completion
     const handlePopupMessage = (event: MessageEvent) => {
       const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
-      const allowedOrigins = [
-        currentOrigin,
+      const isCurrentOrigin = Boolean(currentOrigin && event.origin === currentOrigin);
+      const isAllowedHost = [
         'https://moisttowlett247-a11y.github.io',
         'http://localhost:3000',
         'http://localhost:5173'
-      ].filter(Boolean);
+      ].includes(event.origin);
+      const isAllowedCloudRun = event.origin.endsWith('.run.app') && (
+        event.origin.includes('397811974491') ||
+        event.origin === currentOrigin
+      );
 
-      if (!allowedOrigins.includes(event.origin) && !event.origin.endsWith('.run.app')) {
+      if (!isCurrentOrigin && !isAllowedHost && !isAllowedCloudRun) {
+        return;
+      }
+
+      if (!event.data || typeof event.data !== 'object') {
         return;
       }
 
@@ -1072,23 +1080,31 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       showToast('No sync logs to export.');
       return;
     }
+    const sanitizeCsvCell = (val: any) => {
+      if (val === undefined || val === null) return '""';
+      let str = String(val).replace(/"/g, '""');
+      if (/^[=+@\-\t\r]/.test(str)) {
+        str = `'` + str;
+      }
+      return `"${str}"`;
+    };
     const headers = ['Pushed At', 'Company Name', 'Realm ID', 'Vendor', 'Date', 'Total', 'Tax', 'Schedule', 'IRS Line', 'QBO Account', 'QBO Doc Number', 'QBO Txn ID', 'Status'];
     const rows = syncLogs.map(l => [
-      `"${l.pushedAt}"`,
-      `"${l.companyName}"`,
-      `"${l.realmId}"`,
-      `"${l.vendor}"`,
-      `"${l.date}"`,
-      l.total.toFixed(2),
-      (l.tax || 0).toFixed(2),
-      `"${l.schedule}"`,
-      `"${l.irsLine}"`,
-      `"${l.accountName}"`,
-      `"${l.docNumber}"`,
-      `"${l.qboTxnId}"`,
-      `"${l.status}"`
+      sanitizeCsvCell(l.pushedAt),
+      sanitizeCsvCell(l.companyName),
+      sanitizeCsvCell(l.realmId),
+      sanitizeCsvCell(l.vendor),
+      sanitizeCsvCell(l.date),
+      sanitizeCsvCell(l.total.toFixed(2)),
+      sanitizeCsvCell((l.tax || 0).toFixed(2)),
+      sanitizeCsvCell(l.schedule),
+      sanitizeCsvCell(l.irsLine),
+      sanitizeCsvCell(l.accountName),
+      sanitizeCsvCell(l.docNumber),
+      sanitizeCsvCell(l.qboTxnId),
+      sanitizeCsvCell(l.status)
     ]);
-    const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    const csvContent = [headers.map(sanitizeCsvCell).join(','), ...rows.map(r => r.join(','))].join('\r\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

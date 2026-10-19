@@ -164,28 +164,38 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   };
 
   const handleExportCSV = () => {
+    const sanitizeCsvCell = (val: any) => {
+      if (val === undefined || val === null) return '""';
+      let str = String(val).replace(/"/g, '""');
+      if (/^[=+@\-\t\r]/.test(str)) {
+        str = `'` + str;
+      }
+      return `"${str}"`;
+    };
     const headers = ['Key', 'Client Name', 'Client Email', 'Plan', 'Duration Days', 'Status', 'In Use', 'Issued Date', 'Activated Date', 'Expires Date', 'Hardware ID'];
     const rows = keys.map(k => [
-      k.key,
-      `"${k.clientName}"`,
-      k.clientEmail,
-      k.plan,
-      getPlanDurationDays(k.plan),
-      isKeyExpired(k) ? 'EXPIRED' : k.status,
-      k.inUse ? 'YES' : 'NO',
-      k.issuedDate,
-      k.activatedDate || 'Not Activated',
-      k.expiresDate,
-      k.hardwareId || 'N/A'
+      sanitizeCsvCell(k.key),
+      sanitizeCsvCell(k.clientName),
+      sanitizeCsvCell(k.clientEmail),
+      sanitizeCsvCell(k.plan),
+      sanitizeCsvCell(getPlanDurationDays(k.plan)),
+      sanitizeCsvCell(isKeyExpired(k) ? 'EXPIRED' : k.status),
+      sanitizeCsvCell(k.inUse ? 'YES' : 'NO'),
+      sanitizeCsvCell(k.issuedDate),
+      sanitizeCsvCell(k.activatedDate || 'Not Activated'),
+      sanitizeCsvCell(k.expiresDate),
+      sanitizeCsvCell(k.hardwareId || 'N/A')
     ]);
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
+    const csvContent = [headers.map(sanitizeCsvCell).join(','), ...rows.map(e => e.join(','))].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `license_keys_registry_${new Date().toISOString().split('T')[0]}.csv`);
+    link.href = url;
+    link.download = `license_keys_registry_${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleExportJSON = () => {
