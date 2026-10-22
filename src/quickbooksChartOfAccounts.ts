@@ -1337,49 +1337,37 @@ export function normalizeToQboAccountItem(raw: any, index: number = 0): QboAccou
 }
 
 /**
- * Return all accounts safely merged with any live or custom accounts passed in.
+ * Normalize and return 100% ONLY the accounts belonging to the connected QuickBooks account.
+ * Strictly NEVER merges or prepends standard preloaded accounts.
+ */
+export function normalizeAccountOnlyList(incomingAccounts: (QboAccountItem | string | any)[] = []): QboAccountItem[] {
+  if (!Array.isArray(incomingAccounts) || incomingAccounts.length === 0) return [];
+  const normalizedIncoming: QboAccountItem[] = [];
+  const seenNames = new Set<string>();
+
+  incomingAccounts.forEach((item, idx) => {
+    const normalized = normalizeToQboAccountItem(item, idx);
+    if (normalized && normalized.name && normalized.name.trim()) {
+      const key = normalized.name.trim().toLowerCase();
+      if (!seenNames.has(key)) {
+        seenNames.add(key);
+        normalizedIncoming.push(normalized);
+      }
+    }
+  });
+
+  return normalizedIncoming;
+}
+
+/**
+ * Return 100% ONLY the accounts for the account, with NO preloaded catalog.
  * Fully resilient to strings, raw QBO v3 Account JSON, or QboAccountItem objects.
  */
 export function getAllStandardQboAccounts(liveOrCustomAccounts: (QboAccountItem | string | any)[] = []): QboAccountItem[] {
-  const normalizedIncoming: QboAccountItem[] = [];
-
   if (Array.isArray(liveOrCustomAccounts) && liveOrCustomAccounts.length > 0) {
-    liveOrCustomAccounts.forEach((item, idx) => {
-      const normalized = normalizeToQboAccountItem(item, idx);
-      if (normalized) {
-        normalizedIncoming.push(normalized);
-      }
-    });
+    return normalizeAccountOnlyList(liveOrCustomAccounts);
   }
-
-  // Deduplicate by clean lowercase name
-  const existingNames = new Set(normalizedIncoming.map(a => a.name.trim().toLowerCase()));
-
-  // Merge: incoming live/custom accounts first, followed by standard catalog accounts not already present
-  const merged: QboAccountItem[] = [
-    ...normalizedIncoming,
-    ...COMPREHENSIVE_STANDARD_ACCOUNTS.filter(std => !existingNames.has(std.name.trim().toLowerCase()))
-  ];
-
-  // Guarantee 'Mastercard' is always present in the returned list
-  if (!merged.some(a => a.name.trim().toLowerCase() === 'mastercard')) {
-    const mastercardStd = COMPREHENSIVE_STANDARD_ACCOUNTS.find(a => a.name.toLowerCase() === 'mastercard') || {
-      id: 'lia-2040',
-      accountNumber: '2040',
-      name: 'Mastercard',
-      qboType: 'Credit Card',
-      subType: 'CreditCard',
-      classification: 'Liability',
-      schedule: 'BALANCE_SHEET',
-      line: 'Mastercard Credit Card',
-      description: 'Corporate business Mastercard revolving credit card account for operating disbursements and business charges.',
-      active: true,
-      currentBalance: 2450.00
-    };
-    merged.unshift(mastercardStd);
-  }
-
-  return merged;
+  return [];
 }
 
 /**

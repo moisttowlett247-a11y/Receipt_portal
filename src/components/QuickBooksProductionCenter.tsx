@@ -146,21 +146,6 @@ const DEFAULT_ACCOUNT_MAPPINGS: Record<string, string> = {
   'Line 27 (C)': 'Other business expenses'
 };
 
-const STANDARD_SYNC_PRESETS = [
-  'Mastercard',
-  'Mastercard (Acct ****5512)',
-  'Operating Checking (Acct ****4120)',
-  'Farm Operating & Expense Ledger',
-  'Commercial Fleet & Fuel Account (Acct ****6021)',
-  'Commercial Equipment Financing (Acct ****8812)',
-  'Visa Business Card (Acct ****3344)',
-  'American Express Corporate Card (Acct ****8890)',
-  'Agricultural Payroll Reserve',
-  'Grain & Crop Sales Settlement Acct',
-  'Livestock & Cattle Trading Ledger',
-  'Farm Improvements & Maintenance Reserve',
-  'General Business Operating Acct (Acct ****1092)'
-];
 
 async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
   try {
@@ -1129,10 +1114,7 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         if (Array.isArray(resp.data.liveAccounts)) setLiveAccounts(resp.data.liveAccounts);
 
         const incomingAll = Array.isArray(resp.data.allAccounts) ? resp.data.allAccounts : [];
-        const mergedAll = getAllStandardQboAccounts([
-          ...incomingAll,
-          ...(Array.isArray(resp.data.liveAccounts) ? resp.data.liveAccounts : [])
-        ]);
+        const mergedAll = getAllStandardQboAccounts(incomingAll);
         setAllAccounts(mergedAll);
         try {
           localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(mergedAll));
@@ -1142,13 +1124,11 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
         if (targetRealm) {
           const updatedComps = companies.map(c => {
             if (c.realmId === targetRealm) {
-              const existingSynced = Array.isArray(c.syncedAccounts) ? c.syncedAccounts : [];
-              const combined = Array.from(new Set(['Mastercard', 'Mastercard (Acct ****5512)', ...allNames, ...existingSynced]));
               return {
                 ...c,
-                syncedAccounts: combined,
-                defaultPostingAccount: c.defaultPostingAccount || 'Mastercard',
-                selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard'
+                syncedAccounts: allNames,
+                defaultPostingAccount: c.defaultPostingAccount && allNames.includes(c.defaultPostingAccount) ? c.defaultPostingAccount : (allNames[0] || ''),
+                selectedWorkingAccount: c.selectedWorkingAccount && allNames.includes(c.selectedWorkingAccount) ? c.selectedWorkingAccount : (allNames[0] || '')
               };
             }
             return c;
@@ -1157,16 +1137,12 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           saveLocalCompanies(updatedComps);
         }
 
-        showToast(`Populated all ${mergedAll.length} standard & live QuickBooks Chart of Accounts (including Mastercard)!`);
+        showToast(`✓ Loaded ${mergedAll.length} accounts from QuickBooks Chart of Accounts for this account!`);
       } else {
-        const standardAll = getAllStandardQboAccounts();
-        setAllAccounts(standardAll);
-        showToast(`Populated ${standardAll.length} standard QuickBooks Chart of Accounts.`);
+        showToast('Could not load accounts from QuickBooks for this connected account.');
       }
     } catch {
-      const standardAll = getAllStandardQboAccounts();
-      setAllAccounts(standardAll);
-      showToast(`Populated ${standardAll.length} standard QuickBooks Chart of Accounts.`);
+      showToast('Could not load accounts from QuickBooks for this connected account.');
     } finally {
       setIsLoadingAccounts(false);
     }
@@ -1426,26 +1402,20 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
           localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(merged));
         } catch {}
 
-        const allNames = Array.from(new Set([
-          'Mastercard',
-          'Mastercard (Acct ****5512)',
-          ...(Array.isArray(updatedComp.syncedAccounts) ? updatedComp.syncedAccounts : []),
-          ...merged.map(a => a.name)
-        ]));
+        const allNames = Array.from(new Set(merged.map(a => a.name)));
 
         const updatedWithAll = companies.map(c => c.realmId === realmId ? {
           ...c,
           ...updatedComp,
           syncedAccounts: allNames,
-          defaultPostingAccount: updatedComp.defaultPostingAccount || 'Mastercard',
-          selectedWorkingAccount: updatedComp.selectedWorkingAccount || 'Mastercard'
+          defaultPostingAccount: (updatedComp.defaultPostingAccount && allNames.includes(updatedComp.defaultPostingAccount)) ? updatedComp.defaultPostingAccount : (allNames[0] || ''),
+          selectedWorkingAccount: (updatedComp.selectedWorkingAccount && allNames.includes(updatedComp.selectedWorkingAccount)) ? updatedComp.selectedWorkingAccount : (allNames[0] || '')
         } : c);
 
         setCompanies(updatedWithAll);
         saveLocalCompanies(updatedWithAll);
 
-        const hasMastercard = allNames.some((a: string) => a.toLowerCase().includes('mastercard'));
-        showToast(`✓ Populated all ${allNames.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}"${hasMastercard ? ' (including Mastercard)' : ''}! Default: "${updatedComp.defaultPostingAccount || 'Mastercard'}"`);
+        showToast(`✓ Populated ${allNames.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}"!`);
         return;
       }
     } catch {}
@@ -1455,47 +1425,33 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       const accResp = await safeFetchJson<any>(`/api/qbo/accounts?realmId=${encodeURIComponent(realmId)}`);
       if (accResp.ok && accResp.data) {
         const incomingAll = Array.isArray(accResp.data.allAccounts) ? accResp.data.allAccounts : [];
-        const mergedAll = getAllStandardQboAccounts([
-          ...incomingAll,
-          ...(Array.isArray(accResp.data.liveAccounts) ? accResp.data.liveAccounts : [])
-        ]);
+        const mergedAll = getAllStandardQboAccounts(incomingAll);
         setAllAccounts(mergedAll);
         if (Array.isArray(accResp.data.liveAccounts)) setLiveAccounts(accResp.data.liveAccounts);
         try {
           localStorage.setItem('receipt_processor_qbo_all_accounts_v1', JSON.stringify(mergedAll));
         } catch {}
 
-        const names = Array.from(new Set([
-          'Mastercard',
-          'Mastercard (Acct ****5512)',
-          ...mergedAll.map(a => a.name)
-        ]));
+        const names = Array.from(new Set(mergedAll.map(a => a.name)));
         const updated = companies.map(c =>
           c.realmId === realmId
-            ? { ...c, syncedAccounts: names, defaultPostingAccount: c.defaultPostingAccount || 'Mastercard', selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard' }
+            ? {
+                ...c,
+                syncedAccounts: names,
+                defaultPostingAccount: (c.defaultPostingAccount && names.includes(c.defaultPostingAccount)) ? c.defaultPostingAccount : (names[0] || ''),
+                selectedWorkingAccount: (c.selectedWorkingAccount && names.includes(c.selectedWorkingAccount)) ? c.selectedWorkingAccount : (names[0] || '')
+              }
             : c
         );
         setCompanies(updated);
         saveLocalCompanies(updated);
-        showToast(`✓ Populated all ${names.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}" (including Mastercard)!`);
+        showToast(`✓ Populated ${names.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}"!`);
         return;
       }
     } catch {}
 
-    // Standard fallback with all accounts and Mastercard included
-    const names = Array.from(new Set([
-      'Mastercard',
-      'Mastercard (Acct ****5512)',
-      ...allAccounts.map(a => a.name)
-    ]));
-    const updated = companies.map(c =>
-      c.realmId === realmId
-        ? { ...c, syncedAccounts: names, defaultPostingAccount: c.defaultPostingAccount || 'Mastercard', selectedWorkingAccount: c.selectedWorkingAccount || 'Mastercard' }
-        : c
-    );
-    setCompanies(updated);
-    saveLocalCompanies(updated);
-    showToast(`✓ Populated all ${names.length} accounts from QuickBooks Chart of Accounts for "${comp.companyName}" (including Mastercard)!`);
+    // If query returned no accounts, set empty list
+    showToast(`No accounts found in QuickBooks for "${comp.companyName}". Click "Sync Accounts" once accounts exist in QuickBooks.`);
   };
 
   const handleSaveAccountMappings = () => {
@@ -2626,11 +2582,6 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                         <option key={`sync_opt_${aIdx}`} value={acc}>{acc}</option>
                                       ))}
                                     </optgroup>
-                                    <optgroup label="Standard Chart of Accounts Catalog">
-                                      {allAccounts.filter(a => !syncedAccs.includes(a.name)).map(a => (
-                                        <option key={a.id} value={a.name}>{a.name} ({a.classification} • #{a.accountNumber})</option>
-                                      ))}
-                                    </optgroup>
                                   </select>
 
                                   <button
@@ -2730,11 +2681,6 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                           <optgroup label="🏦 Bank & Checking Accounts">
                                             {qboBankAccounts.filter((b: any) => !syncedAccs.includes(b.name)).map((b: any, bIdx: number) => (
                                               <option key={`bank_${bIdx}`} value={b.name}>🏦 {b.name} ({b.subType || b.qboType})</option>
-                                            ))}
-                                          </optgroup>
-                                          <optgroup label="⚡ Standard Preset Accounts">
-                                            {STANDARD_SYNC_PRESETS.filter(p => !syncedAccs.includes(p)).map((p, pIdx) => (
-                                              <option key={`pre_${pIdx}`} value={p}>{p}</option>
                                             ))}
                                           </optgroup>
                                           <optgroup label="📋 All Chart of Accounts">

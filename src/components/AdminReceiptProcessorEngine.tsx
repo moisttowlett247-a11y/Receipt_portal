@@ -166,6 +166,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
   const autoProcessOnUploadRef = useRef<boolean>(true);
   const autoSyncToCloudRef = useRef<boolean>(true);
   const executeBatchScanRef = useRef<((itemsOverride?: ReceiptInputItem[]) => Promise<void>) | null>(null);
+  const handlePushToQBORef = useRef<((receiptsOverride?: ProcessedReceipt[], isAuto?: boolean) => Promise<void>) | null>(null);
 
   useEffect(() => {
     autoProcessOnUploadRef.current = autoProcessOnUpload;
@@ -1384,6 +1385,33 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           }, 200);
         }
       }
+
+      // Auto-upload to QuickBooks if connected company exists for any receipt's email
+      try {
+        let rawCompanies: any[] = [];
+        const rawSaved = localStorage.getItem('receipt_processor_qbo_companies_v1');
+        if (rawSaved) rawCompanies = JSON.parse(rawSaved);
+        const activeQbo = (rawCompanies.length > 0 ? rawCompanies : qboCompanies).filter((c: any) => c.status === 'CONNECTED');
+        if (activeQbo.length > 0) {
+          const qboEligible = scannedResults.filter(r => {
+            const em = (r.detectedEmail || r.clientEmail || '').trim().toLowerCase();
+            if (!em) return false;
+            return activeQbo.some((c: any) =>
+              c.email && (
+                c.email.trim().toLowerCase() === em ||
+                em.includes(c.email.trim().toLowerCase()) ||
+                c.email.trim().toLowerCase().includes(em) ||
+                (em.includes('@') && c.email.includes('@') && em.split('@')[1] === c.email.split('@')[1])
+              )
+            );
+          });
+          if (qboEligible.length > 0) {
+            setTimeout(() => {
+              handlePushToQBORef.current?.(qboEligible, true);
+            }, 350);
+          }
+        }
+      } catch {}
     } catch (err: any) {
       console.error('Batch scanning failed:', err);
       if (onToast) onToast(`Error during parallel scan: ${err.message || String(err)}`);
@@ -1457,6 +1485,34 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       // Remove item from queuedFiles
       setQueuedFiles(prev => prev.filter((_, i) => i !== index));
+
+      // Auto-upload single receipt to QuickBooks if email matches
+      if (scanned && scanned.length > 0) {
+        try {
+          let rawCompanies: any[] = [];
+          const rawSaved = localStorage.getItem('receipt_processor_qbo_companies_v1');
+          if (rawSaved) rawCompanies = JSON.parse(rawSaved);
+          const activeQbo = (rawCompanies.length > 0 ? rawCompanies : qboCompanies).filter((c: any) => c.status === 'CONNECTED');
+          if (activeQbo.length > 0) {
+            const em = (scanned[0].detectedEmail || scanned[0].clientEmail || '').trim().toLowerCase();
+            if (em) {
+              const matched = activeQbo.some((c: any) =>
+                c.email && (
+                  c.email.trim().toLowerCase() === em ||
+                  em.includes(c.email.trim().toLowerCase()) ||
+                  c.email.trim().toLowerCase().includes(em) ||
+                  (em.includes('@') && c.email.includes('@') && em.split('@')[1] === c.email.split('@')[1])
+                )
+              );
+              if (matched) {
+                setTimeout(() => {
+                  handlePushToQBORef.current?.([scanned[0]], true);
+                }, 300);
+              }
+            }
+          }
+        } catch {}
+      }
 
       if (onToast) onToast(`✅ Scanned & reconciled ${item.fileName}! Removed from queue.`);
     } catch (err: any) {
@@ -1625,15 +1681,16 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
   const [isPushingToQBO, setIsPushingToQBO] = useState(false);
 
-  const handlePushToQBO = async () => {
-    if (receipts.length === 0) {
-      if (onToast) onToast('No receipts to push to QuickBooks.');
+  const handlePushToQBO = async (receiptsOverride?: ProcessedReceipt[], isAutoUpload: boolean = false) => {
+    const targetPool = receiptsOverride || receipts;
+    if (targetPool.length === 0) {
+      if (!isAutoUpload && onToast) onToast('No receipts to push to QuickBooks.');
       return;
     }
 
-    const valid = receipts.filter(r => r.status !== 'REJECTED');
+    const valid = targetPool.filter(r => r.status !== 'REJECTED');
     if (valid.length === 0) {
-      if (onToast) onToast('All receipts in this batch are flagged as rejected/duplicate. No new transactions to push.');
+      if (!isAutoUpload && onToast) onToast('All receipts in this batch are flagged as rejected/duplicate. No new transactions to push.');
       return;
     }
 
@@ -1650,8 +1707,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     }
 
     if (activeList.length === 0) {
-      if (onToast) onToast('No connected QuickBooks company found. Opening QuickBooks Connection Center...');
-      if (onNavigateToQBO) onNavigateToQBO();
+      if (!isAutoUpload) {
+        if (onToast) onToast('No connected QuickBooks company found. Opening QuickBooks Connection Center...');
+        if (onNavigateToQBO) onNavigateToQBO();
+      }
       return;
     }
 
@@ -1717,7 +1776,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
     const emailMatchedCount = routedReceipts.filter(r => r.detectedEmail).length;
     if (onToast) {
-      if (emailMatchedCount > 0) {
+      if (isAutoUpload) {
+        onToast(`⚡ Auto-uploading ${valid.length} receipt(s) directly to QuickBooks for matched email account...`);
+      } else if (emailMatchedCount > 0) {
         onToast(`Auto-detecting email on ${emailMatchedCount} receipt(s) & posting to default QuickBooks accounts...`);
       } else {
         onToast(`Syncing ${valid.length} transactions to QuickBooks (${targetCompany.companyName})...`);
@@ -1765,7 +1826,9 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
 
       const count = pushData?.pushedCount || valid.length;
       if (onToast) {
-        if (emailMatchedCount > 0) {
+        if (isAutoUpload) {
+          onToast(`⚡ Auto-uploaded ${count} receipt(s) directly to QuickBooks (${targetCompany.companyName})!`);
+        } else if (emailMatchedCount > 0) {
           onToast(`✓ Successfully posted ${count} receipt(s) to QuickBooks! Detected emails routed directly to selected default accounts.`);
         } else {
           onToast(`✓ Successfully pushed ${count} transaction(s) directly into QuickBooks Online (${targetCompany.companyName})!`);
@@ -1778,6 +1841,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
       setIsPushingToQBO(false);
     }
   };
+
+  useEffect(() => {
+    handlePushToQBORef.current = handlePushToQBO;
+  });
 
   const handleExportVaultZip = async () => {
     if (receipts.length === 0) {
