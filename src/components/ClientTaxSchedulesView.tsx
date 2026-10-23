@@ -528,7 +528,7 @@ export const ClientTaxSchedulesView: React.FC<ClientTaxSchedulesViewProps> = ({
 
                             <div className="text-right shrink-0">
                               <span className="font-mono font-bold text-emerald-400">
-                                ${rec.extractedAmount ? rec.extractedAmount.toFixed(2) : '0.00'}
+                                ${rec.extractedAmount ? Number(rec.extractedAmount).toFixed(2) : '0.00'}
                               </span>
                               <div className="text-[10px] text-emerald-500/80 flex items-center justify-end gap-1">
                                 <CheckCircle2 className="w-3 h-3" />
@@ -618,7 +618,7 @@ export const ClientTaxSchedulesView: React.FC<ClientTaxSchedulesViewProps> = ({
                       </td>
 
                       <td className="py-3 px-4 whitespace-nowrap font-mono font-bold text-emerald-400">
-                        ${submission.extractedAmount ? submission.extractedAmount.toFixed(2) : '0.00'}
+                        ${submission.extractedAmount ? Number(submission.extractedAmount).toFixed(2) : '0.00'}
                       </td>
 
                       <td className="py-3 px-4 text-right whitespace-nowrap">
@@ -810,7 +810,7 @@ export const ClientTaxSchedulesView: React.FC<ClientTaxSchedulesViewProps> = ({
                       {submission.memo || 'Business purchase'}
                     </td>
                     <td style={{ padding: '6px', textAlign: 'right', fontWeight: 'bold' }}>
-                      ${(submission.extractedAmount || 0).toFixed(2)}
+                      ${Number(submission.extractedAmount || 0).toFixed(2)}
                     </td>
                   </tr>
                 ))}

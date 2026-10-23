@@ -355,7 +355,9 @@ export function generateTaxScheduleSummary(
       continue;
     }
 
-    const amt = sub.extractedAmount || 0;
+    const rawAmt = sub.extractedAmount ?? (sub as any).total ?? 0;
+    const parsedAmt = typeof rawAmt === 'number' ? rawAmt : parseFloat(String(rawAmt));
+    const amt = isNaN(parsedAmt) ? 0 : parsedAmt;
     totalDeductions += amt;
     if (classification.schedule === 'SCHEDULE_C') {
       scheduleCTotal += amt;
@@ -465,7 +467,7 @@ export function exportTaxScheduleCSV(
       sub.extractedVendor || 'Unspecified Vendor',
       sub.memo || 'Business Operating Expense',
       sub.fileName,
-      (sub.extractedAmount || 0).toFixed(2),
+      Number(sub.extractedAmount || 0).toFixed(2),
       sub.status === 'SYNCED_QBO' ? 'Reconciled & Synced' : 'Intake Queue Verified',
       sub.id
     ]);
@@ -664,7 +666,7 @@ export async function exportAuditVaultZip(
         <td><span class="${cls.schedule === 'SCHEDULE_F' ? 'sch-f' : 'sch-c'}">${cls.schedule === 'SCHEDULE_F' ? 'Sched F' : 'Sched C'} ${cls.lineNumber}</span> (${cls.lineTitle})</td>
         <td><em>${sub.memo || 'Business purchase'}</em></td>
         <td><a href="Receipt_Images/${safeRef}">${safeRef}</a></td>
-        <td class="amt">$${(sub.extractedAmount || 0).toFixed(2)}</td>
+        <td class="amt">$${Number(sub.extractedAmount || 0).toFixed(2)}</td>
       </tr>`;
     index++;
   }

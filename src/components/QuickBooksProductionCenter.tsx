@@ -3007,11 +3007,6 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
                                 <option key={`cc2_${idx}`} value={a.name}>💳 {a.name}</option>
                               ))}
                           </optgroup>
-                          <optgroup label="⚡ Preset Accounts">
-                            {STANDARD_SYNC_PRESETS.filter(p => !syncedList.includes(p)).map((p, pIdx) => (
-                              <option key={pIdx} value={p}>{p}</option>
-                            ))}
-                          </optgroup>
                           <optgroup label="📋 All Chart of Accounts">
                             {allAccounts
                               .filter(a => !syncedList.includes(a.name))

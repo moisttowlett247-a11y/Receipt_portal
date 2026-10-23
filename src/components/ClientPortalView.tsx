@@ -64,6 +64,12 @@ import { ClientTaxDocumentsHub } from './ClientTaxDocumentsHub';
 import { classifyReceiptTaxSchedule } from '../taxScheduleService';
 import { startPresenceTracker } from '../webPresenceService';
 
+function formatCurrency(amount: any): string {
+  if (amount === undefined || amount === null || amount === '') return '—';
+  const val = typeof amount === 'number' ? amount : parseFloat(String(amount));
+  return isNaN(val) ? '—' : `$${val.toFixed(2)}`;
+}
+
 interface ClientPortalViewProps {
   licenseKeys: LicenseKeyRecord[];
   currentVersion: string;
@@ -481,7 +487,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     return sub.status === statusFilter;
   });
 
-  const totalAmountProcessed = submissions.reduce((sum, s) => sum + (s.extractedAmount || 0), 0);
+  const totalAmountProcessed = submissions.reduce((sum, s: any) => {
+    const raw = s.extractedAmount ?? s.total ?? 0;
+    const num = typeof raw === 'number' ? raw : parseFloat(String(raw));
+    return sum + (isNaN(num) ? 0 : num);
+  }, 0);
   const syncedCount = submissions.filter(s => s.status === 'SYNCED_QBO').length;
 
   return (
@@ -590,7 +600,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           <div className="flex items-center gap-3 shrink-0">
             <div className="px-4 py-2 rounded-xl bg-stone-950/80 border border-stone-800 text-center">
               <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">Total Reconciled</div>
-              <div className="text-sm sm:text-base font-bold font-mono text-emerald-400">${totalAmountProcessed.toFixed(2)}</div>
+              <div className="text-sm sm:text-base font-bold font-mono text-emerald-400">${Number(totalAmountProcessed || 0).toFixed(2)}</div>
             </div>
             <div className="px-4 py-2 rounded-xl bg-stone-950/80 border border-stone-800 text-center">
               <div className="text-[10px] text-stone-400 uppercase tracking-wider font-semibold">QBO Synced</div>
@@ -1513,7 +1523,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                           </td>
 
                           <td className="py-3 px-4 whitespace-nowrap font-mono font-bold text-emerald-400">
-                            {sub.extractedAmount ? `$${sub.extractedAmount.toFixed(2)}` : '—'}
+                            {formatCurrency(sub.extractedAmount ?? (sub as any).total)}
                           </td>
 
                           <td className="py-3 px-4 whitespace-nowrap">
@@ -1960,7 +1970,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                 <div className="p-3 rounded-xl bg-stone-950 border border-stone-800 space-y-1">
                   <span className="text-[10px] text-stone-500 uppercase font-semibold">Total Amount</span>
                   <p className="font-bold text-emerald-400 font-mono text-sm">
-                    {previewingSubmission.extractedAmount ? `$${previewingSubmission.extractedAmount.toFixed(2)}` : 'Pending Reconciliation'}
+                    {previewingSubmission.extractedAmount || (previewingSubmission as any).total ? formatCurrency(previewingSubmission.extractedAmount ?? (previewingSubmission as any).total) : 'Pending Reconciliation'}
                   </p>
                 </div>
 
