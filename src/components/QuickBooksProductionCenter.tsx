@@ -62,6 +62,7 @@ interface CompanyRecord {
   assignedToKey?: string | null;
   isActiveWorking?: boolean;
   syncedAccounts?: string[];
+  accountDetails?: any[];
   selectedWorkingAccount?: string;
   defaultPostingAccount?: string;
   targetChartOfAccounts?: string;
@@ -1080,8 +1081,8 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       sanitizeCsvCell(l.realmId),
       sanitizeCsvCell(l.vendor),
       sanitizeCsvCell(l.date),
-      sanitizeCsvCell(l.total.toFixed(2)),
-      sanitizeCsvCell((l.tax || 0).toFixed(2)),
+      sanitizeCsvCell(Number(l.total || 0).toFixed(2)),
+      sanitizeCsvCell(Number(l.tax || 0).toFixed(2)),
       sanitizeCsvCell(l.schedule),
       sanitizeCsvCell(l.irsLine),
       sanitizeCsvCell(l.accountName),

@@ -407,10 +407,22 @@ async function fetchLiveAccountsFromQbo(target: any, companies: any): Promise<an
       { id: 'bank-1020', accountNumber: '1020', name: 'Farm Operating & Expense Ledger', qboType: 'Bank', subType: 'CashOnHand', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Operating Ledger', active: true, currentBalance: 18400.00, description: 'Farm operational expense disbursements' },
       { id: 'bank-1030', accountNumber: '1030', name: 'Commercial Fleet & Fuel Account (Acct ****6021)', qboType: 'Bank', subType: 'Checking', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Fleet Checking', active: true, currentBalance: 6200.00, description: 'Fleet fuel disbursements' },
       { id: 'bank-1040', accountNumber: '1040', name: 'Agricultural Payroll Reserve', qboType: 'Bank', subType: 'Savings', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Payroll Reserve', active: true, currentBalance: 25000.00, description: 'Payroll reserve account' },
+      { id: 'bank-1070', accountNumber: '1070', name: 'Petty Cash & Field Till', qboType: 'Bank', subType: 'CashOnHand', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Petty Cash', active: true, currentBalance: 750.00, description: 'On-farm cash box and field change till' },
+      { id: 'ast-1100', accountNumber: '1100', name: 'Accounts Receivable (A/R)', qboType: 'Accounts Receivable', subType: 'AccountsReceivable', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'A/R', active: true, currentBalance: 12400.00, description: 'Customer invoices & grain delivery receivables' },
+      { id: 'ast-1310', accountNumber: '1310', name: 'Inventory Asset - Grain & Harvested Crops', qboType: 'Other Current Asset', subType: 'Inventory', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Crop Inventory', active: true, currentBalance: 38200.00, description: 'Corn, wheat, soybeans, and grain stored on-farm' },
+      { id: 'ast-1530', accountNumber: '1530', name: 'Tractors & Heavy Agricultural Machinery', qboType: 'Fixed Asset', subType: 'MachineryAndEquipment', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Machinery', active: true, currentBalance: 145000.00, description: 'Combines, tractors, planters, sprayers, and tillage' },
+      { id: 'lia-2010', accountNumber: '2010', name: 'Accounts Payable (A/P)', qboType: 'Accounts Payable', subType: 'AccountsPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'A/P', active: true, currentBalance: 8400.00, description: 'Vendor invoices & co-op billings due' },
       { id: 'lia-2020', accountNumber: '2020', name: 'Commercial Equipment Financing (Acct ****8812)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Revolving Line', active: true, currentBalance: 6420.50, description: 'Equipment dealer credit line' },
       { id: 'lia-2030', accountNumber: '2030', name: 'Commercial Fleet Fuel Card (Acct ****7714)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Fleet Card', active: true, currentBalance: 3840.10, description: 'Fleet fuel card' },
       { id: 'lia-2050', accountNumber: '2050', name: 'Visa Business Card (Acct ****3344)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Visa Business Card', active: true, currentBalance: 1250.00, description: 'Visa business card' },
       { id: 'lia-2060', accountNumber: '2060', name: 'American Express Corporate Card (Acct ****8890)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Amex Corporate', active: true, currentBalance: 3100.00, description: 'Amex corporate card' },
+      { id: 'lia-2100', accountNumber: '2100', name: 'Agricultural Operating Line of Credit (LOC)', qboType: 'Other Current Liability', subType: 'LineOfCredit', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'LOC', active: true, currentBalance: 15000.00, description: 'Seasonal bank crop input line of credit' },
+      { id: 'eq-3010', accountNumber: '3010', name: "Owner's Capital / Equity", qboType: 'Equity', subType: 'OwnersEquity', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Equity', active: true, currentBalance: 195000.00, description: 'Cumulative owner investment and capital contributions' },
+      { id: 'eq-3100', accountNumber: '3100', name: 'Retained Earnings', qboType: 'Equity', subType: 'RetainedEarnings', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Retained Earnings', active: true, currentBalance: 62400.00, description: 'Cumulative historical net profit retained' },
+      { id: 'inc-4010', accountNumber: '4010', name: 'Livestock & Cattle Market Gross Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 1', active: true, currentBalance: 88500.00, description: 'Revenue from sale of livestock, cattle, calves, and hogs' },
+      { id: 'inc-4020', accountNumber: '4020', name: 'Grain, Hay & Crop Harvest Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 2', active: true, currentBalance: 142000.00, description: 'Revenue from sale of harvested grain, corn, beans, and hay' },
+      { id: 'cogs-5010', accountNumber: '5010', name: 'Feed Purchased (Grain, Silage, Supplements)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 14', active: true, description: 'Feed, hay, protein tubs, and salt licks for livestock' },
+      { id: 'cogs-5020', accountNumber: '5020', name: 'Fertilizers and Lime (Anhydrous, Dry, Liquid)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 15', active: true, description: 'Crop nutrients, anhydrous ammonia, potash, and lime' },
       { id: 'exp-6010', accountNumber: '6010', name: 'Chemicals, Fertilizer & Lime', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 11', active: true, description: 'Bulk fertilizer and crop nutrients' },
       { id: 'exp-6040', accountNumber: '6040', name: 'Feed Purchased', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 16', active: true, description: 'Livestock feed and minerals' },
       { id: 'exp-6050', accountNumber: '6050', name: 'Gasoline, Fuel, and Oil (Bulk Diesel & Def)', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 17', active: true, description: 'Bulk farm off-road red diesel and fuel' },
@@ -684,8 +696,10 @@ async function pushReceiptsToQbo(
 
     const vendor = (rcpt.vendor || rcpt.merchant || rcpt.store || rcpt.extractedVendor || 'Unknown Vendor').toString().trim();
     const date = rcpt.date || nowStr.split('T')[0];
-    const total = parseFloat(rcpt.total || rcpt.extractedAmount || '0') || 0;
-    const tax = parseFloat(rcpt.tax || '0') || 0;
+    const totalRaw = String(rcpt.total !== undefined ? rcpt.total : (rcpt.extractedAmount !== undefined ? rcpt.extractedAmount : '0')).replace(/[^0-9.-]/g, '');
+    const total = parseFloat(totalRaw) || 0;
+    const taxRaw = String(rcpt.tax !== undefined ? rcpt.tax : '0').replace(/[^0-9.-]/g, '');
+    const tax = parseFloat(taxRaw) || 0;
     const docNumber = rcpt.invoiceNumber || rcpt.transactionNumber || rcpt.referenceId || rcpt.id || `RCPT-${Date.now().toString().slice(-6)}`;
     const lineTitle = rcpt.irsLineTitle || rcpt.irsCategory || 'Operating Expenses';
     const schedule = rcpt.schedule || rcpt.irsSchedule || 'SCHEDULE_F';
@@ -698,6 +712,10 @@ async function pushReceiptsToQbo(
         const fetchedAccounts = await fetchLiveAccountsFromQbo(activeCompany, companies);
         if (fetchedAccounts.length > 0) {
           activeCompany.accountDetails = fetchedAccounts;
+          if (activeRealmId && companies[activeRealmId]) {
+            companies[activeRealmId] = activeCompany;
+            saveCompanies(companies);
+          }
         }
       } catch (e: any) {
         console.warn('Could not populate accounts before push:', e.message);
@@ -2985,6 +3003,7 @@ router.get('/api/qbo/companies', (req, res) => {
         'Supplies Purchased (Baler Twine, Net Wrap, Tools)',
         'Repairs and Maintenance - Machinery & Tractors'
       ],
+      accountDetails: Array.isArray(c.accountDetails) ? c.accountDetails : [],
       selectedWorkingAccount: c.selectedWorkingAccount || (Array.isArray(c.syncedAccounts) && c.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)',
       defaultPostingAccount: c.defaultPostingAccount || c.selectedWorkingAccount || (Array.isArray(c.syncedAccounts) && c.syncedAccounts[0]) || 'Operating Checking (Acct ****4120)',
       targetChartOfAccounts: c.targetChartOfAccounts || 'Schedule F Agricultural Standard (28 Accounts)',
@@ -3631,7 +3650,7 @@ router.post('/api/qbo/webhook', (req, res) => {
   return res.json({ status: 'processed' });
 });
 
-router.post('/api/qbo/mock-connect', (req, res) => {
+router.post('/api/qbo/mock-connect', async (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || `934145${Math.floor(1000000 + Math.random() * 9000000)}`).toString().trim();
   const companyName = body.companyName || 'QuickBooks Sandbox Company';
@@ -3681,13 +3700,21 @@ router.post('/api/qbo/mock-connect', (req, res) => {
     refreshTokenExpiresAt: now.getTime() + (101 * 86400000),
     assignedToKey: body.licenseKey || 'ANNUAL-4819-2026'
   };
+
+  try {
+    await fetchLiveAccountsFromQbo(companies[realmId], companies);
+  } catch (e: any) {
+    console.warn('Could not auto-populate accounts on mock-connect:', e.message);
+  }
+
   saveCompanies(companies);
 
   return res.json({
     success: true,
     message: `Simulated connection established for '${companyName}'`,
     realmId,
-    companyName
+    companyName,
+    company: companies[realmId]
   });
 });
 
@@ -3721,10 +3748,14 @@ router.get('/api/qbo/accounts', async (req, res) => {
   let accountObjects: any[] = [];
 
   if (target) {
-    try {
-      accountObjects = await fetchLiveAccountsFromQbo(target, companies);
-    } catch (e) {
-      console.warn('Could not fetch live QBO accounts in /api/qbo/accounts:', e);
+    if (Array.isArray(target.accountDetails) && target.accountDetails.length > 0) {
+      accountObjects = target.accountDetails;
+    } else {
+      try {
+        accountObjects = await fetchLiveAccountsFromQbo(target, companies);
+      } catch (e) {
+        console.warn('Could not fetch live QBO accounts in /api/qbo/accounts:', e);
+      }
     }
 
     // If live API returned 0 accounts but company has cached syncedAccounts names, normalize those
