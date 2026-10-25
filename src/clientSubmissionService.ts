@@ -3,12 +3,16 @@
 // Stores submissions in localStorage and syncs with backend server & Cloudflare KV.
 
 import { getBackendApiUrl } from './urlUtils';
+import { getCurrentClientSession } from './clientAccountService';
 
 export interface ClientSubmission {
   id: string;
   clientId: string;
   clientName: string;
   clientEmail: string;
+  userId?: string;
+  companyName?: string;
+  realmId?: string;
   fileName: string;
   fileSize: number;
   fileType: string;
@@ -117,8 +121,12 @@ export function saveClientSubmissions(submissions: ClientSubmission[], skipBroad
 
 export function addClientSubmission(item: Omit<ClientSubmission, 'id' | 'uploadedAt' | 'status'>): ClientSubmission {
   const submissions = getClientSubmissions();
+  const session = getCurrentClientSession();
   const newSubmission: ClientSubmission = {
     ...item,
+    userId: item.userId || session?.userId || undefined,
+    companyName: item.companyName || session?.companyName || undefined,
+    clientEmail: item.clientEmail || session?.email || '',
     id: `sub-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
     uploadedAt: new Date().toISOString(),
     status: 'QUEUED'
@@ -136,9 +144,13 @@ export function addClientSubmission(item: Omit<ClientSubmission, 'id' | 'uploade
 export function addClientSubmissionsBatch(items: Array<Omit<ClientSubmission, 'id' | 'uploadedAt' | 'status'>>): ClientSubmission[] {
   if (!items || items.length === 0) return [];
   const submissions = getClientSubmissions();
+  const session = getCurrentClientSession();
   const now = new Date().toISOString();
   const newItems: ClientSubmission[] = items.map((item, idx) => ({
     ...item,
+    userId: item.userId || session?.userId || undefined,
+    companyName: item.companyName || session?.companyName || undefined,
+    clientEmail: item.clientEmail || session?.email || '',
     id: `sub-${Date.now()}-${idx}-${Math.floor(Math.random() * 10000)}`,
     uploadedAt: now,
     status: 'QUEUED'
@@ -311,7 +323,14 @@ function getSubmissionEndpoints(path: string = ''): string[] {
 }
 
 export async function fetchServerSubmissions(): Promise<ClientSubmission[] | null> {
-  const endpoints = getSubmissionEndpoints();
+  const session = getCurrentClientSession();
+  const qParams = new URLSearchParams();
+  if (session?.userId) qParams.set('userId', session.userId);
+  if (session?.email) qParams.set('email', session.email);
+  if (session?.companyName) qParams.set('companyName', session.companyName);
+  const qStr = qParams.toString() ? `?${qParams.toString()}` : '';
+
+  const endpoints = getSubmissionEndpoints(qStr);
 
   for (const url of endpoints) {
     try {
@@ -438,6 +457,7 @@ async function deleteSubmissionOnServer(id: string): Promise<boolean> {
 }
 
 async function batchSyncSubmissionsToServer(submissions: ClientSubmission[]): Promise<boolean> {
+  const session = getCurrentClientSession();
   const endpoints = getSubmissionEndpoints('/batch-sync');
 
   for (const url of endpoints) {
@@ -445,7 +465,12 @@ async function batchSyncSubmissionsToServer(submissions: ClientSubmission[]): Pr
       const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ submissions }),
+        body: JSON.stringify({
+          submissions,
+          userId: session?.userId,
+          email: session?.email,
+          companyName: session?.companyName
+        }),
         signal: AbortSignal.timeout(3000)
       });
       if (resp.ok) return true;

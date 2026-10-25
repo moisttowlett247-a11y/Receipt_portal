@@ -789,6 +789,21 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       const targetEnv = config.environment || 'production';
       const newRealmId = '93414579' + Math.floor(100000 + Math.random() * 900000);
 
+      const serverRes = await safeFetchJson<any>('/api/qbo/mock-connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyName: randomName,
+          realmId: newRealmId,
+          environment: targetEnv
+        })
+      });
+
+      if (!serverRes.ok || !serverRes.data?.success) {
+        showToast(serverRes.data?.error || `Company name '${randomName}' is already taken or registered.`);
+        return;
+      }
+
       const now = new Date();
       const newRecord: CompanyRecord = {
         realmId: newRealmId,
@@ -807,15 +822,6 @@ export const QuickBooksProductionCenter: React.FC<QuickBooksProductionCenterProp
       saveLocalCompanies(updated);
       setCompanies(updated);
       if (!selectedPushRealmId) setSelectedPushRealmId(newRealmId);
-
-      safeFetchJson('/api/qbo/mock-connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          companyName: randomName,
-          environment: targetEnv
-        })
-      });
 
       showToast(`Successfully connected simulated account: ${randomName}`);
     } catch (err: any) {

@@ -545,6 +545,102 @@ export function isUsernameAvailable(username: string, excludeAccountId?: string)
 }
 
 /**
+ * Normalizes company names to lowercase alphanumeric string (removing spaces & symbols)
+ * so "Acme Farm, LLC" and "acme farm llc" match identically.
+ */
+export function normalizeCompanyName(name: string | undefined | null): string {
+  if (!name) return '';
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Validates whether a proposed company name is available across Client accounts
+ * and connected QuickBooks company records.
+ */
+export function isCompanyNameAvailable(
+  companyName: string,
+  excludeAccountId?: string
+): { available: boolean; reason?: string } {
+  const clean = companyName.trim();
+  const norm = normalizeCompanyName(clean);
+  if (!norm || norm.length < 2) {
+    return { available: true };
+  }
+
+  // 1. Check existing client user accounts
+  const existingAccounts = getStoredClientAccounts();
+  const collision = existingAccounts.find(acc => {
+    if (!acc.companyName) return false;
+    if (excludeAccountId && (acc.id === excludeAccountId || acc.username.toLowerCase() === excludeAccountId.toLowerCase())) {
+      return false;
+    }
+    return normalizeCompanyName(acc.companyName) === norm;
+  });
+
+  if (collision) {
+    return {
+      available: false,
+      reason: `The company name '${collision.companyName}' is already registered to another account.`
+    };
+  }
+
+  // 2. Check locally cached QuickBooks companies
+  try {
+    const rawComps = localStorage.getItem('receipt_processor_qbo_companies_v1');
+    if (rawComps) {
+      const parsed = JSON.parse(rawComps);
+      const list = Array.isArray(parsed) ? parsed : Object.values(parsed);
+      const compCollision = list.find((c: any) => {
+        if (!c || (!c.companyName && !c.legalName)) return false;
+        const cOwner = String(c.ownerUserId || c.ownerAccountId || '').trim().toLowerCase();
+        const excClean = String(excludeAccountId || '').trim().toLowerCase();
+        if (excClean && cOwner === excClean) return false;
+        return normalizeCompanyName(c.companyName || c.legalName) === norm;
+      });
+      if (compCollision) {
+        return {
+          available: false,
+          reason: `The company name '${compCollision.companyName}' is already registered to an existing QuickBooks organization.`
+        };
+      }
+    }
+  } catch {}
+
+  return { available: true };
+}
+
+/**
+ * Asynchronously verifies company name availability against the backend server
+ * as well as the local client store.
+ */
+export async function isCompanyNameAvailableAsync(
+  companyName: string,
+  excludeAccountId?: string
+): Promise<{ available: boolean; reason?: string }> {
+  const localCheck = isCompanyNameAvailable(companyName, excludeAccountId);
+  if (!localCheck.available) {
+    return localCheck;
+  }
+
+  try {
+    const base = getBackendApiUrl();
+    const url = `${base}/api/client/check-company-name?name=${encodeURIComponent(companyName.trim())}&userId=${encodeURIComponent(excludeAccountId || '')}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(2000) });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && data.available === false) {
+        return { available: false, reason: data.reason || 'This company name is already registered.' };
+      }
+    }
+  } catch {}
+
+  return { available: true };
+}
+
+/**
  * Registers a new client user account with cryptographically salted password hashing.
  * Optionally links an existing license key or populates from inquiry/company data.
  */
@@ -562,6 +658,13 @@ export async function registerClientAccount(params: {
   const check = isUsernameAvailable(params.username);
   if (!check.available) {
     return { success: false, error: check.reason };
+  }
+
+  if (params.companyName && params.companyName.trim()) {
+    const compCheck = await isCompanyNameAvailableAsync(params.companyName.trim());
+    if (!compCheck.available) {
+      return { success: false, error: compCheck.reason || 'Company name is already registered to another user or account.' };
+    }
   }
 
   if (!params.password || params.password.length < 6) {
@@ -791,7 +894,7 @@ export function updateClientAccountProfile(
     licenseKey?: string | null;
     availableKeys?: LicenseKeyRecord[];
   }
-): { success: boolean; account?: ClientUserAccount } {
+): { success: boolean; account?: ClientUserAccount; error?: string } {
   const accounts = getStoredClientAccounts();
   const cleanId = String(userId || '').trim().toLowerCase();
   let idx = accounts.findIndex(
@@ -827,15 +930,22 @@ export function updateClientAccountProfile(
       accounts.push(restored);
       idx = accounts.length - 1;
     } else {
-      return { success: false };
+      return { success: false, error: 'Account not found' };
     }
+  }
+
+  if (updates.companyName !== undefined && updates.companyName.trim()) {
+    const compCheck = isCompanyNameAvailable(updates.companyName.trim(), accounts[idx].id);
+    if (!compCheck.available) {
+      return { success: false, error: compCheck.reason || 'Company name is already registered to another account.' };
+    }
+    accounts[idx].companyName = updates.companyName.trim();
+  } else if (updates.companyName !== undefined) {
+    accounts[idx].companyName = undefined;
   }
 
   if (updates.displayName !== undefined) {
     accounts[idx].displayName = updates.displayName.trim();
-  }
-  if (updates.companyName !== undefined) {
-    accounts[idx].companyName = updates.companyName.trim() || undefined;
   }
   if (updates.licenseKey !== undefined) {
     if (updates.licenseKey && updates.licenseKey.trim().length > 0) {

@@ -140,7 +140,7 @@ export const ClientAccountModal: React.FC<ClientAccountModalProps> = ({
         }, 5000);
       } else {
         setSaveSuccess(false);
-        setSaveMessage('Unable to update profile. Please verify your account credentials.');
+        setSaveMessage(res.error || 'Unable to update profile. Please verify your account credentials.');
         setTimeout(() => setSaveMessage(null), 5000);
       }
     } catch (err: any) {

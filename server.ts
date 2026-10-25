@@ -2322,11 +2322,15 @@ router.post('/api/client/submissions', async (req, res) => {
         userCompany = allConnected.find((c: any) => normalizeCompanyName(c.companyName) === normComp);
       }
       if (!userCompany && requestingEmail) {
-        userCompany = allConnected.find((c: any) => c.ownerEmail === requestingEmail || (c.email && c.email.toLowerCase() === requestingEmail));
+        userCompany = allConnected.find((c: any) =>
+          c.ownerEmail === requestingEmail ||
+          (c.email && c.email.toLowerCase() === requestingEmail) ||
+          (requestingEmail.includes('@') && c.email && c.email.includes('@') && requestingEmail.split('@')[1] === c.email.toLowerCase().split('@')[1])
+        );
       }
-      // If single default company without distinct owner, allow auto-sync fallback
-      if (!userCompany && allConnected.length === 1 && !allConnected[0].ownerUserId) {
-        userCompany = allConnected[0];
+      // If no specific userId was passed (e.g. general website client intake), route to active or primary connected company
+      if (!userCompany && !requestingUserId) {
+        userCompany = allConnected.find((c: any) => c.isActiveWorking) || allConnected.find((c: any) => !c.ownerUserId) || allConnected[0];
       }
 
       if (userCompany) {
@@ -2493,10 +2497,15 @@ router.post('/api/client/submissions/batch-sync', async (req, res) => {
               targetComp = connectedCompanies.find((c: any) => normalizeCompanyName(c.companyName) === norm);
             }
             if (!targetComp && s.clientEmail) {
-              targetComp = connectedCompanies.find((c: any) => c.ownerEmail === s.clientEmail || (c.email && c.email.toLowerCase() === s.clientEmail.toLowerCase()));
+              const sem = s.clientEmail.toLowerCase();
+              targetComp = connectedCompanies.find((c: any) =>
+                c.ownerEmail === sem ||
+                (c.email && c.email.toLowerCase() === sem) ||
+                (sem.includes('@') && c.email && c.email.includes('@') && sem.split('@')[1] === c.email.toLowerCase().split('@')[1])
+              );
             }
-            if (!targetComp && connectedCompanies.length === 1 && !connectedCompanies[0].ownerUserId) {
-              targetComp = connectedCompanies[0];
+            if (!targetComp && !s.userId) {
+              targetComp = connectedCompanies.find((c: any) => c.isActiveWorking) || connectedCompanies.find((c: any) => !c.ownerUserId) || connectedCompanies[0];
             }
 
             if (targetComp) {
@@ -4091,11 +4100,34 @@ router.post('/api/qbo/webhook', (req, res) => {
 router.post('/api/qbo/mock-connect', async (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || `934145${Math.floor(1000000 + Math.random() * 9000000)}`).toString().trim();
-  const companyName = body.companyName || 'QuickBooks Sandbox Company';
+  const companyName = (body.companyName || 'QuickBooks Sandbox Company').trim();
   const env = body.environment === 'sandbox' ? 'sandbox' : 'production';
+  const requestingUserId = (body.userId || body.ownerUserId || '').toString().trim();
+  const requestingEmail = (body.email || body.ownerEmail || '').toString().trim();
+  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+
+  // Company Name Collision Check across accounts and other companies
+  const conflict = findCompanyConflict(companyName, requestingUserId, realmId);
+  if (conflict.hasConflict) {
+    return res.status(409).json({
+      success: false,
+      error: conflict.reason || `The company name '${companyName}' is already registered to another user or account.`
+    });
+  }
+
+  const companies = getCompanies();
+  // Check Realm ownership
+  if (companies[realmId]) {
+    const existing = companies[realmId];
+    if (existing.ownerUserId && requestingUserId && existing.ownerUserId !== requestingUserId && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: This QuickBooks company realm is registered to a different account.'
+      });
+    }
+  }
 
   const now = new Date();
-  const companies = getCompanies();
   const mockSyncedAccounts = [
     'Mastercard',
     'Mastercard (Acct ****5512)',
@@ -4122,9 +4154,11 @@ router.post('/api/qbo/mock-connect', async (req, res) => {
     companyName,
     legalName: `${companyName} Holdings Inc.`,
     email: body.email || 'accounting@quickbooks-sandbox.com',
+    ownerUserId: requestingUserId || companies[realmId]?.ownerUserId || null,
+    ownerEmail: requestingEmail || companies[realmId]?.ownerEmail || null,
     country: 'US',
     currency: 'USD',
-    connectedAt: now.toISOString(),
+    connectedAt: companies[realmId]?.connectedAt || now.toISOString(),
     lastRefreshedAt: now.toISOString(),
     lastUsedAt: now.toISOString(),
     environment: env,

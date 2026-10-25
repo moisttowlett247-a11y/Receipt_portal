@@ -16,6 +16,7 @@ import {
   registerClientAccount, 
   authenticateClientAccount, 
   isUsernameAvailable,
+  isCompanyNameAvailableAsync,
   findLicenseRecordByEmail,
   lookupLicenseByEmailAsync
 } from '../clientAccountService';
@@ -73,6 +74,10 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
     checked: false,
     available: true
   });
+  const [companyStatus, setCompanyStatus] = useState<{ checked: boolean; available: boolean; message?: string }>({
+    checked: false,
+    available: true
+  });
 
   if (!isOpen) return null;
 
@@ -123,6 +128,23 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
     }
   };
 
+  // Real-time company name availability check on typing in register mode
+  const handleCompanyChange = (val: string) => {
+    setCompanyName(val);
+    setErrorMsg(null);
+    if (mode === 'register' && val.trim().length >= 2) {
+      isCompanyNameAvailableAsync(val).then(res => {
+        setCompanyStatus({
+          checked: true,
+          available: res.available,
+          message: res.reason
+        });
+      }).catch(() => {});
+    } else {
+      setCompanyStatus({ checked: false, available: true });
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
@@ -144,6 +166,15 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
           setErrorMsg(check.reason || 'Username is not available.');
           setIsLoading(false);
           return;
+        }
+
+        if (companyName.trim()) {
+          const compCheck = await isCompanyNameAvailableAsync(companyName.trim());
+          if (!compCheck.available) {
+            setErrorMsg(compCheck.reason || 'This company name is already registered to another user or account.');
+            setIsLoading(false);
+            return;
+          }
         }
 
         const res = await registerClientAccount({
@@ -352,17 +383,39 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
 
               {/* Company Name */}
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-stone-300 flex items-center gap-1.5">
-                  <Building2 className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Company or Organization Name <span className="text-stone-500 font-normal">(Optional)</span></span>
-                </label>
+                <div className="flex items-center justify-between text-xs">
+                  <label className="text-xs font-medium text-stone-300 flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Company or Organization Name <span className="text-stone-500 font-normal">(Optional)</span></span>
+                  </label>
+                  {mode === 'register' && companyStatus.checked && (
+                    <span className={`text-[10px] font-mono flex items-center gap-1 ${
+                      companyStatus.available ? 'text-emerald-400' : 'text-rose-400'
+                    }`}>
+                      {companyStatus.available ? (
+                        <>
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Available</span>
+                        </>
+                      ) : (
+                        <>
+                          <AlertCircle className="w-3 h-3" />
+                          <span>Taken</span>
+                        </>
+                      )}
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   value={companyName}
-                  onChange={(e) => setCompanyName(e.target.value)}
+                  onChange={(e) => handleCompanyChange(e.target.value)}
                   placeholder="e.g. Acme Farms LLC"
                   className="w-full px-3.5 py-2 bg-stone-950 border border-stone-700 focus:border-amber-500 rounded-xl text-xs text-stone-100 placeholder-stone-600 focus:outline-none transition-colors"
                 />
+                {mode === 'register' && companyStatus.checked && !companyStatus.available && (
+                  <p className="text-[11px] text-rose-400 mt-1">{companyStatus.message}</p>
+                )}
               </div>
             </>
           )}
@@ -392,7 +445,7 @@ export const ClientAuthModal: React.FC<ClientAuthModalProps> = ({
           <div className="pt-2">
             <button
               type="submit"
-              disabled={isLoading || (mode === 'register' && usernameStatus.checked && !usernameStatus.available)}
+              disabled={isLoading || (mode === 'register' && ((usernameStatus.checked && !usernameStatus.available) || (companyStatus.checked && !companyStatus.available)))}
               className="w-full py-2.5 px-4 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold rounded-xl shadow-md transition-all cursor-pointer flex items-center justify-center gap-2"
             >
               {isLoading ? (
