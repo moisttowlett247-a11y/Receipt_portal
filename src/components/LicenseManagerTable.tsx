@@ -540,7 +540,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
               fetchInquiries();
               setShowInquiriesModal(true);
             }}
-            title="View incoming client portal requests sent to moisttowlett247@gmail.com"
+            title="View incoming client portal access requests"
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800 rounded-md transition-colors cursor-pointer"
           >
             <Mail className="w-3.5 h-3.5 text-emerald-400" />
@@ -1324,7 +1324,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-stone-100">Access Requests & Software Inquiries</h3>
-                  <p className="text-[11px] text-stone-400">Inquiries submitted via Client Portal to <span className="text-amber-400 font-mono">moisttowlett247@gmail.com</span></p>
+                  <p className="text-[11px] text-stone-400">Inquiries submitted via Client Portal to administrator</p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
@@ -1446,7 +1446,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
             </div>
 
             <div className="pt-3 border-t border-stone-800 flex justify-between items-center text-xs text-stone-500">
-              <span>All requests are forwarded to moisttowlett247@gmail.com</span>
+              <span>All requests are forwarded to designated administrator</span>
               <button
                 type="button"
                 onClick={() => setShowInquiriesModal(false)}

@@ -1209,7 +1209,7 @@ export async function scanReceiptWithAI(params: ScanReceiptAiOptions): Promise<S
     if (apiKeys.length > 0) {
       if (onStep) onStep('Connecting to Gemini Vision API...');
       const modelsToTry = [
-        "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
         "gemini-3.1-flash-lite",
         "gemini-flash-latest"
       ];
@@ -1725,7 +1725,7 @@ export async function runParallelBatchScan(
       // Metadata context for ledger entries and Drive sync
       const targetWebhook = options.driveWebhookUrl || getStoredDriveWebhookUrl();
       const hasDriveDestination = Boolean(targetWebhook || options.googleAccessToken);
-      const submitterName = item.submittedBy || (item.clientEmail ? `${clientName} (${item.clientEmail})` : (clientName.toLowerCase().includes('admin') ? 'Administrator (moisttowlett247@gmail.com)' : clientName));
+      const submitterName = item.submittedBy || (item.clientEmail ? `${clientName} (${item.clientEmail})` : (clientName.toLowerCase().includes('admin') ? 'Administrator (Internal Operations)' : clientName));
       const submitterRole = item.submittedByRole || (clientName.toLowerCase().includes('admin') ? 'ADMIN' : 'CLIENT');
       const uploadTimestamp = item.uploadedAt || new Date().toISOString();
 

@@ -820,7 +820,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     setEditFormData({
       vendor: r.vendor,
       clientName: r.clientName || 'Administrator (Internal Operations)',
-      submittedBy: r.submittedBy || 'Administrator (moisttowlett247@gmail.com)',
+      submittedBy: r.submittedBy || 'Administrator (Internal Operations)',
       date: r.date,
       total: r.total,
       tax: r.tax,
@@ -1134,7 +1134,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const files = Array.from(e.target.files) as File[];
     const target = selectedClientTarget || 'Administrator (Internal Operations)';
     const isAdm = target.toLowerCase().includes('admin');
-    const submitter = isAdm ? 'Administrator (moisttowlett247@gmail.com)' : target;
+    const submitter = isAdm ? 'Administrator (Internal Operations)' : target;
     const role = isAdm ? 'ADMIN' as const : 'CLIENT' as const;
     const now = new Date().toISOString();
 
@@ -1166,7 +1166,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     const files = Array.from(e.dataTransfer.files) as File[];
     const target = selectedClientTarget || 'Administrator (Internal Operations)';
     const isAdm = target.toLowerCase().includes('admin');
-    const submitter = isAdm ? 'Administrator (moisttowlett247@gmail.com)' : target;
+    const submitter = isAdm ? 'Administrator (Internal Operations)' : target;
     const role = isAdm ? 'ADMIN' as const : 'CLIENT' as const;
     const now = new Date().toISOString();
 
@@ -1392,25 +1392,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
         const rawSaved = localStorage.getItem('receipt_processor_qbo_companies_v1');
         if (rawSaved) rawCompanies = JSON.parse(rawSaved);
         const activeQbo = (rawCompanies.length > 0 ? rawCompanies : qboCompanies).filter((c: any) => c.status === 'CONNECTED');
-        if (activeQbo.length > 0) {
-          const qboEligible = scannedResults.filter(r => {
-            const em = (r.detectedEmail || r.clientEmail || '').trim().toLowerCase();
-            if (em && em.includes('moisttowlett247')) return true;
-            if (!em) return false;
-            return activeQbo.some((c: any) =>
-              c.email && (
-                c.email.trim().toLowerCase() === em ||
-                em.includes(c.email.trim().toLowerCase()) ||
-                c.email.trim().toLowerCase().includes(em) ||
-                (em.includes('@') && c.email.includes('@') && em.split('@')[1] === c.email.split('@')[1])
-              )
-            );
-          });
-          if (qboEligible.length > 0) {
-            setTimeout(() => {
-              handlePushToQBORef.current?.(qboEligible, true);
-            }, 350);
-          }
+        if (activeQbo.length > 0 && scannedResults.length > 0) {
+          setTimeout(() => {
+            handlePushToQBORef.current?.(scannedResults, true);
+          }, 350);
         }
       } catch {}
     } catch (err: any) {
@@ -1494,23 +1479,10 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
           const rawSaved = localStorage.getItem('receipt_processor_qbo_companies_v1');
           if (rawSaved) rawCompanies = JSON.parse(rawSaved);
           const activeQbo = (rawCompanies.length > 0 ? rawCompanies : qboCompanies).filter((c: any) => c.status === 'CONNECTED');
-          if (activeQbo.length > 0) {
-            const em = (scanned[0].detectedEmail || scanned[0].clientEmail || '').trim().toLowerCase();
-            if (em) {
-              const matched = em.includes('moisttowlett247') || activeQbo.some((c: any) =>
-                c.email && (
-                  c.email.trim().toLowerCase() === em ||
-                  em.includes(c.email.trim().toLowerCase()) ||
-                  c.email.trim().toLowerCase().includes(em) ||
-                  (em.includes('@') && c.email.includes('@') && em.split('@')[1] === c.email.split('@')[1])
-                )
-              );
-              if (matched) {
-                setTimeout(() => {
-                  handlePushToQBORef.current?.([scanned[0]], true);
-                }, 300);
-              }
-            }
+          if (activeQbo.length > 0 && scanned && scanned.length > 0) {
+            setTimeout(() => {
+              handlePushToQBORef.current?.([scanned[0]], true);
+            }, 300);
           }
         } catch {}
       }
@@ -2324,7 +2296,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                 <span>Submitter Tag:</span>
                 <span className="px-2 py-0.2 rounded bg-stone-900 border border-stone-800 text-stone-200">
                   {selectedClientTarget.toLowerCase().includes('admin')
-                    ? 'Administrator (moisttowlett247@gmail.com)'
+                    ? 'Administrator (Internal Operations)'
                     : `${selectedClientTarget} (Client Submission)`}
                 </span>
               </div>
@@ -3423,7 +3395,7 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
                       type="text"
                       value={editFormData.submittedBy}
                       onChange={e => setEditFormData({ ...editFormData, submittedBy: e.target.value })}
-                      placeholder="e.g. Administrator (moisttowlett247@gmail.com)"
+                      placeholder="e.g. Administrator or client@example.com"
                       className="w-full px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-white font-medium focus:outline-none focus:border-emerald-500"
                     />
                   </div>

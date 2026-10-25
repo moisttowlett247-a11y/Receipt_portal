@@ -305,7 +305,67 @@ function saveConfig(cfg: any) {
 }
 
 function getInitialDefaultCompanies() {
-  return {};
+  const now = new Date();
+  const defaultAccs = [
+    { id: 'bank-1010', accountNumber: '1010', name: 'Operating Checking (Acct ****4120)', qboType: 'Bank', subType: 'Checking', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Operating Cash', active: true, currentBalance: 42150.80, description: 'Primary business checking' },
+    { id: 'bank-1020', accountNumber: '1020', name: 'Farm Operating & Expense Ledger', qboType: 'Bank', subType: 'CashOnHand', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Operating Ledger', active: true, currentBalance: 18400.00, description: 'Farm operational expense disbursements' },
+    { id: 'bank-1030', accountNumber: '1030', name: 'Commercial Fleet & Fuel Account (Acct ****6021)', qboType: 'Bank', subType: 'Checking', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Fleet Checking', active: true, currentBalance: 6200.00, description: 'Fleet fuel disbursements' },
+    { id: 'bank-1040', accountNumber: '1040', name: 'Agricultural Payroll Reserve', qboType: 'Bank', subType: 'Savings', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Payroll Reserve', active: true, currentBalance: 25000.00, description: 'Payroll reserve account' },
+    { id: 'bank-1070', accountNumber: '1070', name: 'Petty Cash & Field Till', qboType: 'Bank', subType: 'CashOnHand', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Petty Cash', active: true, currentBalance: 750.00, description: 'On-farm cash box and field change till' },
+    { id: 'ast-1100', accountNumber: '1100', name: 'Accounts Receivable (A/R)', qboType: 'Accounts Receivable', subType: 'AccountsReceivable', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'A/R', active: true, currentBalance: 12400.00, description: 'Customer invoices & grain delivery receivables' },
+    { id: 'ast-1310', accountNumber: '1310', name: 'Inventory Asset - Grain & Harvested Crops', qboType: 'Other Current Asset', subType: 'Inventory', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Crop Inventory', active: true, currentBalance: 38200.00, description: 'Corn, wheat, soybeans, and grain stored on-farm' },
+    { id: 'ast-1530', accountNumber: '1530', name: 'Tractors & Heavy Agricultural Machinery', qboType: 'Fixed Asset', subType: 'MachineryAndEquipment', classification: 'Asset', schedule: 'BALANCE_SHEET', line: 'Machinery', active: true, currentBalance: 145000.00, description: 'Combines, tractors, planters, sprayers, and tillage' },
+    { id: 'lia-2010', accountNumber: '2010', name: 'Accounts Payable (A/P)', qboType: 'Accounts Payable', subType: 'AccountsPayable', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'A/P', active: true, currentBalance: 8400.00, description: 'Vendor invoices & co-op billings due' },
+    { id: 'lia-2020', accountNumber: '2020', name: 'Commercial Equipment Financing (Acct ****8812)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Revolving Line', active: true, currentBalance: 6420.50, description: 'Equipment dealer credit line' },
+    { id: 'lia-2030', accountNumber: '2030', name: 'Commercial Fleet Fuel Card (Acct ****7714)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Fleet Card', active: true, currentBalance: 3840.10, description: 'Fleet fuel card' },
+    { id: 'lia-2040', accountNumber: '2040', name: 'Mastercard', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Mastercard Credit Card', active: true, currentBalance: 2450.00, description: 'Mastercard revolving business expense credit card' },
+    { id: 'lia-2041', accountNumber: '2041', name: 'Mastercard (Acct ****5512)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Mastercard Credit Card', active: true, currentBalance: 1850.75, description: 'Primary business Mastercard card' },
+    { id: 'lia-2050', accountNumber: '2050', name: 'Visa Business Card (Acct ****3344)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Visa Business Card', active: true, currentBalance: 1250.00, description: 'Visa business card' },
+    { id: 'lia-2060', accountNumber: '2060', name: 'American Express Corporate Card (Acct ****8890)', qboType: 'Credit Card', subType: 'CreditCard', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'Amex Corporate', active: true, currentBalance: 3100.00, description: 'Amex corporate card' },
+    { id: 'lia-2100', accountNumber: '2100', name: 'Agricultural Operating Line of Credit (LOC)', qboType: 'Other Current Liability', subType: 'LineOfCredit', classification: 'Liability', schedule: 'BALANCE_SHEET', line: 'LOC', active: true, currentBalance: 15000.00, description: 'Seasonal bank crop input line of credit' },
+    { id: 'eq-3010', accountNumber: '3010', name: "Owner's Capital / Equity", qboType: 'Equity', subType: 'OwnersEquity', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Equity', active: true, currentBalance: 195000.00, description: 'Cumulative owner investment and capital contributions' },
+    { id: 'eq-3100', accountNumber: '3100', name: 'Retained Earnings', qboType: 'Equity', subType: 'RetainedEarnings', classification: 'Equity', schedule: 'BALANCE_SHEET', line: 'Retained Earnings', active: true, currentBalance: 62400.00, description: 'Cumulative historical net profit retained' },
+    { id: 'inc-4010', accountNumber: '4010', name: 'Livestock & Cattle Market Gross Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 1', active: true, currentBalance: 88500.00, description: 'Revenue from sale of livestock, cattle, calves, and hogs' },
+    { id: 'inc-4020', accountNumber: '4020', name: 'Grain, Hay & Crop Harvest Sales', qboType: 'Income', subType: 'SalesOfProductIncome', classification: 'Revenue', schedule: 'SCHEDULE_F', line: 'Schedule F Line 2', active: true, currentBalance: 142000.00, description: 'Revenue from sale of harvested grain, corn, beans, and hay' },
+    { id: 'cogs-5010', accountNumber: '5010', name: 'Feed Purchased (Grain, Silage, Supplements)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 14', active: true, description: 'Feed, hay, protein tubs, and salt licks for livestock' },
+    { id: 'cogs-5020', accountNumber: '5020', name: 'Fertilizers and Lime (Anhydrous, Dry, Liquid)', qboType: 'Cost of Goods Sold', subType: 'SuppliesMaterialsCogs', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 15', active: true, description: 'Crop nutrients, anhydrous ammonia, potash, and lime' },
+    { id: 'exp-6010', accountNumber: '6010', name: 'Chemicals, Fertilizer & Lime', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 11', active: true, description: 'Bulk fertilizer and crop nutrients' },
+    { id: 'exp-6040', accountNumber: '6040', name: 'Feed Purchased', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 16', active: true, description: 'Livestock feed and minerals' },
+    { id: 'exp-6050', accountNumber: '6050', name: 'Gasoline, Fuel, and Oil (Bulk Diesel & Def)', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 17', active: true, description: 'Bulk farm off-road red diesel and fuel' },
+    { id: 'exp-6090', accountNumber: '6090', name: 'Repairs and Maintenance - Machinery & Tractors', qboType: 'Expense', subType: 'RepairMaintenance', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 21', active: true, description: 'Equipment maintenance and tractor parts' },
+    { id: 'exp-6100', accountNumber: '6100', name: 'Seeds and Plants Purchased', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 22', active: true, description: 'Seed and planting supplies' },
+    { id: 'exp-6120', accountNumber: '6120', name: 'Supplies Purchased (Baler Twine, Net Wrap, Tools)', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 24', active: true, description: 'Farm operational supplies' },
+    { id: 'exp-6140', accountNumber: '6140', name: 'Veterinary, Breeding, and Medicine for Livestock', qboType: 'Expense', subType: 'Supplies', classification: 'Expense', schedule: 'SCHEDULE_F', line: 'Line 26', active: true, description: 'Veterinary supplies and medicine' },
+    { id: 'exp-6210', accountNumber: '6210', name: 'Advertising & Marketing Promotions', qboType: 'Expense', subType: 'AdvertisingPromotional', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 8', active: true, description: 'Business advertising and branding' },
+    { id: 'exp-6220', accountNumber: '6220', name: 'Vehicle, Machinery & Heavy Equipment Rental', qboType: 'Expense', subType: 'RentExpense', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 20', active: true, description: 'Equipment rentals' },
+    { id: 'exp-6280', accountNumber: '6280', name: 'Office Expense & Administrative Supplies', qboType: 'Expense', subType: 'OfficeGeneralAdministrativeExpenses', classification: 'Expense', schedule: 'SCHEDULE_C', line: 'Line 18', active: true, description: 'Office supplies and software' }
+  ];
+
+  const defaultNames = defaultAccs.map(a => a.name);
+  return {
+    '9341451241444': {
+      realmId: '9341451241444',
+      companyName: 'Towlett Agricultural Enterprises LLC',
+      legalName: 'Towlett Agricultural Enterprises LLC',
+      email: process.env.QBO_COMPANY_EMAIL || 'accounting@agricultural-enterprise.com',
+      country: 'US',
+      currency: 'USD',
+      connectedAt: now.toISOString(),
+      lastRefreshedAt: now.toISOString(),
+      lastUsedAt: now.toISOString(),
+      environment: 'sandbox',
+      status: 'CONNECTED',
+      isActiveWorking: true,
+      syncedAccounts: defaultNames,
+      accountDetails: defaultAccs,
+      defaultPostingAccount: 'Mastercard (Acct ****5512)',
+      selectedWorkingAccount: 'Mastercard (Acct ****5512)',
+      refreshTokenEncrypted: encryptToken('mock_refresh_towlett_enterprise_qbo'),
+      accessTokenCached: 'mock_access_towlett_enterprise_qbo',
+      accessTokenExpiresAt: now.getTime() + 3600000,
+      refreshTokenExpiresAt: now.getTime() + (101 * 86400000)
+    }
+  };
 }
 
 function getInitialDefaultSyncLogs() {
@@ -323,7 +383,9 @@ function getCompanies() {
       if (name.includes('oak creek') || name.includes('high desert') || name.includes('cascade valley')) continue;
       cleaned[k] = v;
     }
-    return cleaned;
+    if (Object.keys(cleaned).length > 0) {
+      return cleaned;
+    }
   }
   const defaults = getInitialDefaultCompanies();
   saveCompanies(defaults);
@@ -648,7 +710,6 @@ async function pushReceiptsToQbo(
       matchedByEmail = !!rcptEmail;
     } else {
       const connectedList = Object.values(companies).filter((c: any) => c.status === 'CONNECTED');
-      // 2. Detect email registered to QuickBooks account (exact, domain, or contains)
       if (rcptEmail) {
         const emailMatch = connectedList.find((c: any) =>
           c.email && (
@@ -663,12 +724,6 @@ async function pushReceiptsToQbo(
           activeCompany = emailMatch;
           activeRealmId = emailMatch.realmId;
           matchedByEmail = true;
-        } else if (connectedList.length > 0 && rcptEmail.includes('moisttowlett247')) {
-          activeCompany = (connectedList.find((c: any) => c.isActiveWorking) || connectedList[0]) as any;
-          activeCompany.email = rcptEmail;
-          activeRealmId = activeCompany.realmId;
-          matchedByEmail = true;
-          companies[activeRealmId] = activeCompany;
         }
       }
 
@@ -687,6 +742,13 @@ async function pushReceiptsToQbo(
           activeCompany = kwMatch;
           activeRealmId = kwMatch.realmId;
         }
+      }
+
+      // 4. Default automatic resolution: If any QuickBooks account is synced to the website,
+      // route receipt to that synced company and post against its default designated account
+      if (!activeCompany && connectedList.length > 0) {
+        activeCompany = (connectedList.find((c: any) => c.isActiveWorking) || connectedList[0]) as any;
+        activeRealmId = activeCompany.realmId;
       }
     }
 
@@ -1049,6 +1111,7 @@ function recordWebPresenceSession(data: {
   licenseKey?: string;
   browserInfo?: string;
   deviceCategory?: string;
+  location?: string;
   status?: string;
 }) {
   const sessions = loadSessions();
@@ -1077,6 +1140,7 @@ function recordWebPresenceSession(data: {
   const key = data.licenseKey || existing.rawKey || (isCurrentAdmin ? 'ADMIN-ACTIVE-CONSOLE' : '');
   const keyMasked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : (key || existing.keyMasked || 'WEB-SESSION');
   const hash = crypto.createHash('sha256').update(rawId).digest('hex');
+  const defaultLocation = (cleanIp === '127.0.0.1' || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.')) ? 'Local Development Network' : 'Global IP';
 
   sessions[rawId] = {
     id: rawId,
@@ -1100,7 +1164,8 @@ function recordWebPresenceSession(data: {
     companyName: data.companyName || existing.companyName || undefined,
     portalName,
     browserInfo: data.browserInfo || existing.browserInfo,
-    deviceCategory: data.deviceCategory || existing.deviceCategory || 'Browser / Web Client'
+    deviceCategory: data.deviceCategory || existing.deviceCategory || 'Browser / Web Client',
+    location: data.location || existing.location || defaultLocation
   };
 
   saveSessions(sessions);
@@ -1168,12 +1233,21 @@ router.use((req, res, next) => {
       else if (userAgent.includes('Android')) os = 'Android';
 
       const browserInfo = `${browser} on ${os}`;
+      const cfCountry = (req.headers['cf-ipcountry'] || req.headers['x-country'] || '') as string;
+      const cfCity = (req.headers['cf-ipcity'] || '') as string;
+      const cfRegion = (req.headers['cf-region'] || '') as string;
+      let location = '';
+      if (cfCity && cfRegion && cfCountry) location = `${cfCity}, ${cfRegion}, ${cfCountry}`;
+      else if (cfCity && cfCountry) location = `${cfCity}, ${cfCountry}`;
+      else if (cfCountry) location = cfCountry;
+      else if (clientIp === '127.0.0.1' || clientIp.startsWith('192.168.') || clientIp.startsWith('10.')) location = 'Local Development Network';
       
       recordWebPresenceSession({
         sessionId: `ip_${clientIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
         portal,
         ip: clientIp,
         browserInfo,
+        location: location || undefined,
         status: 'ACTIVE'
       });
     }
@@ -1356,7 +1430,7 @@ router.post('/api/scan/receipt', rateLimiter(60, 60000), async (req, res) => {
   };
 
   const modelsToTry = [
-    "gemini-3.5-flash-lite",
+    "gemini-3.8-flash",
     "gemini-3.1-flash-lite",
     "gemini-flash-latest"
   ];
@@ -1638,37 +1712,24 @@ router.post('/api/scan/receipt', rateLimiter(60, 60000), async (req, res) => {
 
   const allProcessedReceipts = rawReceiptsList.map((r: any) => formatExtractedReceipt(r, fileName));
 
-  // Automatic QuickBooks Sync: If any receipt has an email matching a connected QuickBooks company, upload immediately
-  const clientEmailReq = (req.body.clientEmail || req.body.email || '').toString().trim().toLowerCase();
-  for (const rcpt of allProcessedReceipts) {
-    const emailToTest = (rcpt.detectedEmail || clientEmailReq || '').toString().trim().toLowerCase();
-    if (emailToTest) {
-      const connectedCompanies = Object.values(getCompanies()).filter((c: any) => c.status === 'CONNECTED');
-      const hasMatch = (emailToTest.includes('moisttowlett247') && connectedCompanies.length > 0) || connectedCompanies.some((c: any) =>
-        c.email && (
-          c.email.trim().toLowerCase() === emailToTest ||
-          emailToTest.includes(c.email.trim().toLowerCase()) ||
-          c.email.trim().toLowerCase().includes(emailToTest) ||
-          (emailToTest.includes('@') && c.email.includes('@') && emailToTest.split('@')[1] === c.email.split('@')[1])
-        )
-      );
-
-      if (hasMatch) {
-        try {
-          const autoPush = await pushReceiptsToQbo([rcpt]);
-          if (autoPush.success && autoPush.results.length > 0) {
-            const pushLog = autoPush.results[0];
-            const targetRcpt = rcpt as any;
-            targetRcpt.qboPushed = true;
-            targetRcpt.qboTxnId = pushLog.qboTxnId;
-            targetRcpt.qboDocNumber = pushLog.docNumber;
-            targetRcpt.qboSyncedAt = pushLog.pushedAt;
-            targetRcpt.matchedQboRealmId = pushLog.realmId;
-            targetRcpt.matchedQboCompanyName = pushLog.companyName;
-          }
-        } catch (err: any) {
-          console.warn('Auto QBO push error on scan:', err.message);
+  // Automatic QuickBooks Sync: If any QuickBooks account is connected to the website, recognize and upload to default account
+  const connectedCompanies = Object.values(getCompanies()).filter((c: any) => c.status === 'CONNECTED');
+  if (connectedCompanies.length > 0) {
+    for (const rcpt of allProcessedReceipts) {
+      try {
+        const autoPush = await pushReceiptsToQbo([rcpt]);
+        if (autoPush.success && autoPush.results.length > 0) {
+          const pushLog = autoPush.results[0];
+          const targetRcpt = rcpt as any;
+          targetRcpt.qboPushed = true;
+          targetRcpt.qboTxnId = pushLog.qboTxnId;
+          targetRcpt.qboDocNumber = pushLog.docNumber;
+          targetRcpt.qboSyncedAt = pushLog.pushedAt;
+          targetRcpt.matchedQboRealmId = pushLog.realmId;
+          targetRcpt.matchedQboCompanyName = pushLog.companyName;
         }
+      } catch (err: any) {
+        console.warn('Auto QBO push error on scan:', err.message);
       }
     }
   }
@@ -1811,11 +1872,21 @@ router.post('/api/licenses/heartbeat', rateLimiter(120, 60000), (req, res) => {
   }
 });
 
-router.get(['/api/presence/ip', '/api/my-ip', '/api/client/ip'], (req, res) => {
+router.get(['/api/presence/ip', '/api/my-ip', '/api/client/ip', '/api/track-ip'], (req, res) => {
   const clientIp = getClientIp(req);
+  const cfCountry = (req.headers['cf-ipcountry'] || req.headers['x-country'] || '') as string;
+  const cfCity = (req.headers['cf-ipcity'] || '') as string;
+  const cfRegion = (req.headers['cf-region'] || '') as string;
+  let location = '';
+  if (cfCity && cfRegion && cfCountry) location = `${cfCity}, ${cfRegion}, ${cfCountry}`;
+  else if (cfCity && cfCountry) location = `${cfCity}, ${cfCountry}`;
+  else if (cfCountry) location = cfCountry;
+  else if (clientIp === '127.0.0.1' || clientIp.startsWith('192.168.') || clientIp.startsWith('10.')) location = 'Local Development Network';
+
   return res.json({
     success: true,
     ip: clientIp,
+    location: location || 'Global Network',
     timestamp: new Date().toISOString()
   });
 });
@@ -1836,6 +1907,17 @@ router.post(['/api/presence/heartbeat', '/api/presence/ping'], (req, res) => {
       return res.json({ success: true, message: 'Presence session marked offline' });
     }
 
+    const cfCountry = (req.headers['cf-ipcountry'] || req.headers['x-country'] || '') as string;
+    const cfCity = (req.headers['cf-ipcity'] || '') as string;
+    const cfRegion = (req.headers['cf-region'] || '') as string;
+    let location = body.location || '';
+    if (!location) {
+      if (cfCity && cfRegion && cfCountry) location = `${cfCity}, ${cfRegion}, ${cfCountry}`;
+      else if (cfCity && cfCountry) location = `${cfCity}, ${cfCountry}`;
+      else if (cfCountry) location = cfCountry;
+      else if (clientIp === '127.0.0.1' || clientIp.startsWith('192.168.') || clientIp.startsWith('10.')) location = 'Local Development Network';
+    }
+
     recordWebPresenceSession({
       sessionId: body.sessionId,
       portal,
@@ -1849,6 +1931,7 @@ router.post(['/api/presence/heartbeat', '/api/presence/ping'], (req, res) => {
       licenseKey: body.licenseKey,
       browserInfo: body.browserInfo,
       deviceCategory: body.deviceCategory,
+      location: location || undefined,
       status: body.status || 'ACTIVE'
     });
 
@@ -2010,7 +2093,8 @@ router.route('/api/inquiries')
           list = JSON.parse(fs.readFileSync(INQUIRIES_FILE, 'utf-8'));
         } catch {}
       }
-      return res.json({ success: true, count: list.length, inquiries: list, recipient: 'moisttowlett247@gmail.com' });
+      const adminRecipient = process.env.ADMIN_EMAIL || 'admin@quickbooks-portal.local';
+      return res.json({ success: true, count: list.length, inquiries: list, recipient: adminRecipient });
     } catch (err: any) {
       return res.status(500).json({ success: false, error: err.message });
     }
@@ -2025,6 +2109,7 @@ router.route('/api/inquiries')
         } catch {}
       }
 
+      const adminRecipient = process.env.ADMIN_EMAIL || 'admin@quickbooks-portal.local';
       const newInquiry = {
         id: body.id || `inquiry-${Date.now()}`,
         name: body.name || 'Anonymous Client',
@@ -2034,7 +2119,7 @@ router.route('/api/inquiries')
         interestedPlan: body.interestedPlan || 'Standard',
         notes: body.notes || '',
         submittedAt: body.submittedAt || new Date().toISOString(),
-        recipient: 'moisttowlett247@gmail.com',
+        recipient: adminRecipient,
         status: 'NEW'
       };
 
@@ -2043,7 +2128,7 @@ router.route('/api/inquiries')
 
       return res.json({
         success: true,
-        message: 'Inquiry successfully submitted and queued for administrator moisttowlett247@gmail.com',
+        message: 'Inquiry successfully submitted and queued for administrator review',
         inquiry: newInquiry
       });
     } catch (err: any) {
@@ -2152,7 +2237,26 @@ router.post('/api/licenses/sync', (req, res) => {
 router.get('/api/client/submissions', (req, res) => {
   try {
     const subs = loadSubmissions();
-    return res.json({ success: true, count: subs.length, submissions: subs });
+    const qUserId = req.query.userId ? String(req.query.userId).trim().toLowerCase() : '';
+    const qEmail = req.query.email ? String(req.query.email).trim().toLowerCase() : '';
+    const qCompany = req.query.companyName ? normalizeCompanyName(String(req.query.companyName)) : '';
+    const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+
+    let result = subs;
+    if (!isAdmin && (qUserId || qEmail || qCompany)) {
+      result = subs.filter((s: any) => {
+        const sUser = String(s.userId || s.clientId || '').trim().toLowerCase();
+        const sEmail = String(s.clientEmail || '').trim().toLowerCase();
+        const sComp = normalizeCompanyName(s.companyName);
+
+        if (qUserId && sUser && sUser === qUserId) return true;
+        if (qEmail && sEmail && sEmail === qEmail) return true;
+        if (qCompany && sComp && sComp === qCompany) return true;
+        return false;
+      });
+    }
+
+    return res.json({ success: true, count: result.length, submissions: result });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -2166,34 +2270,74 @@ router.post('/api/client/submissions', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Invalid submission data' });
     }
 
+    const requestingUserId = (item.userId || item.clientId || body.userId || '').toString().trim();
+    const requestingEmail = (item.clientEmail || item.email || body.email || '').toString().trim().toLowerCase();
+    const requestingCompany = (item.companyName || body.companyName || '').toString().trim();
+
+    // Verify company name isn't spoofing another user's registered company
+    if (requestingCompany) {
+      const conflict = findCompanyConflict(requestingCompany, requestingUserId);
+      if (conflict.hasConflict && conflict.conflictType === 'CLIENT_ACCOUNT') {
+        return res.status(409).json({
+          success: false,
+          error: `Cannot submit receipts: ${conflict.reason}`
+        });
+      }
+    }
+
+    // Tenant Isolation: Verify user is not injecting into another user's QuickBooks realmId
+    if (item.realmId) {
+      const companies = getCompanies();
+      const targetCompany = companies[item.realmId];
+      if (targetCompany && targetCompany.ownerUserId && requestingUserId && targetCompany.ownerUserId !== requestingUserId) {
+        return res.status(403).json({
+          success: false,
+          error: "Access denied: You cannot submit receipts to another company's QuickBooks account."
+        });
+      }
+    }
+
     const current = loadSubmissions();
     const newSubmission = {
       ...item,
       id: item.id || `sub-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      userId: requestingUserId || item.userId || null,
+      companyName: requestingCompany || item.companyName || null,
+      clientEmail: requestingEmail || item.clientEmail || null,
       uploadedAt: item.uploadedAt || new Date().toISOString(),
       status: item.status || 'QUEUED'
     };
 
-    // Automatic QuickBooks Sync: If submission has receipt data and email matches a connected QuickBooks company, upload immediately
-    const clientEmail = (newSubmission.clientEmail || newSubmission.email || '').toString().trim().toLowerCase();
-    if (clientEmail && (newSubmission.extractedAmount || newSubmission.total)) {
-      const connectedCompanies = Object.values(getCompanies()).filter((c: any) => c.status === 'CONNECTED');
-      const hasMatch = (clientEmail.includes('moisttowlett247') && connectedCompanies.length > 0) || connectedCompanies.some((c: any) =>
-        c.email && (
-          c.email.trim().toLowerCase() === clientEmail ||
-          clientEmail.includes(c.email.trim().toLowerCase()) ||
-          c.email.trim().toLowerCase().includes(clientEmail) ||
-          (clientEmail.includes('@') && c.email.includes('@') && clientEmail.split('@')[1] === c.email.split('@')[1])
-        )
-      );
+    // Automatic QuickBooks Sync: Auto-push ONLY to the company owned/matched by THIS user or company!
+    const allConnected = Object.values(getCompanies()).filter((c: any) => c.status === 'CONNECTED');
+    if (allConnected.length > 0 && (newSubmission.extractedAmount || newSubmission.total)) {
+      let userCompany: any = null;
+      if (item.realmId && allConnected.some((c: any) => c.realmId === item.realmId)) {
+        userCompany = allConnected.find((c: any) => c.realmId === item.realmId);
+      } else if (requestingUserId) {
+        userCompany = allConnected.find((c: any) => c.ownerUserId === requestingUserId);
+      }
+      if (!userCompany && requestingCompany) {
+        const normComp = normalizeCompanyName(requestingCompany);
+        userCompany = allConnected.find((c: any) => normalizeCompanyName(c.companyName) === normComp);
+      }
+      if (!userCompany && requestingEmail) {
+        userCompany = allConnected.find((c: any) => c.ownerEmail === requestingEmail || (c.email && c.email.toLowerCase() === requestingEmail));
+      }
+      // If single default company without distinct owner, allow auto-sync fallback
+      if (!userCompany && allConnected.length === 1 && !allConnected[0].ownerUserId) {
+        userCompany = allConnected[0];
+      }
 
-      if (hasMatch) {
+      if (userCompany) {
         try {
-          const autoPush = await pushReceiptsToQbo([newSubmission]);
+          const autoPush = await pushReceiptsToQbo([newSubmission], userCompany.realmId);
           if (autoPush.success && autoPush.results.length > 0) {
             newSubmission.status = 'SYNCED_QBO';
             newSubmission.qboDocNumber = autoPush.results[0].docNumber;
             newSubmission.qboSyncedAt = autoPush.results[0].pushedAt;
+            newSubmission.matchedQboRealmId = userCompany.realmId;
+            newSubmission.matchedQboCompanyName = userCompany.companyName;
           }
         } catch (err: any) {
           console.warn('Auto QBO push error on client submission:', err.message);
@@ -2218,8 +2362,26 @@ router.put('/api/client/submissions/:id', (req, res) => {
     const body = req.body || {};
     const status = body.status;
     const details = body.details || {};
+    const requestingUserId = (req.query.userId || body.userId || '').toString().trim().toLowerCase();
+    const requestingEmail = (req.query.email || body.clientEmail || body.email || '').toString().trim().toLowerCase();
+    const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
 
     const current = loadSubmissions();
+    const target = current.find((s: any) => s.id === id);
+    if (!target) {
+      return res.status(404).json({ success: false, error: 'Submission not found' });
+    }
+
+    // Tenant Isolation: Only owner or admin can update submission
+    if (!isAdmin && (requestingUserId || requestingEmail)) {
+      const ownerUser = String(target.userId || target.clientId || '').trim().toLowerCase();
+      const ownerEmail = String(target.clientEmail || '').trim().toLowerCase();
+      const isOwner = (requestingUserId && ownerUser === requestingUserId) || (requestingEmail && ownerEmail === requestingEmail);
+      if (!isOwner && (ownerUser || ownerEmail)) {
+        return res.status(403).json({ success: false, error: 'Access denied: You do not have permission to modify another user\'s submission.' });
+      }
+    }
+
     let updatedItem: any = null;
     const updated = current.map((s: any) => {
       if (s.id === id) {
@@ -2248,7 +2410,27 @@ router.delete('/api/client/submissions/:id', (req, res) => {
     const rawId = req.params.id;
     const cleanId = decodeURIComponent(String(rawId || '').trim());
     const cleanIdLower = cleanId.toLowerCase();
+    const requestingUserId = (req.query.userId || '').toString().trim().toLowerCase();
+    const requestingEmail = (req.query.email || '').toString().trim().toLowerCase();
+    const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+
     const current = loadSubmissions();
+    const target = current.find((s: any) => {
+      if (!s) return false;
+      const sId = String(s.id || '').trim();
+      const sFileName = String(s.fileName || '').trim();
+      return sId === cleanId || sId.toLowerCase() === cleanIdLower || sFileName === cleanId;
+    });
+
+    if (target && !isAdmin && (requestingUserId || requestingEmail)) {
+      const ownerUser = String(target.userId || target.clientId || '').trim().toLowerCase();
+      const ownerEmail = String(target.clientEmail || '').trim().toLowerCase();
+      const isOwner = (requestingUserId && ownerUser === requestingUserId) || (requestingEmail && ownerEmail === requestingEmail);
+      if (!isOwner && (ownerUser || ownerEmail)) {
+        return res.status(403).json({ success: false, error: 'Access denied: You do not have permission to delete another user\'s submission.' });
+      }
+    }
+
     const updated = current.filter((s: any) => {
       if (!s) return false;
       const sId = String(s.id || '').trim();
@@ -2266,6 +2448,8 @@ router.post('/api/client/submissions/batch-sync', async (req, res) => {
   try {
     const body = req.body || {};
     const clientSubs = Array.isArray(body.submissions) ? body.submissions : [];
+    const requestingUserId = (body.userId || '').toString().trim();
+    const requestingEmail = (body.email || body.clientEmail || '').toString().trim().toLowerCase();
     const serverSubs = loadSubmissions();
 
     const map = new Map<string, any>();
@@ -2276,41 +2460,58 @@ router.post('/api/client/submissions/batch-sync', async (req, res) => {
       if (c && c.id) {
         const existing = map.get(c.id);
         if (!existing) {
-          map.set(c.id, c);
+          map.set(c.id, {
+            ...c,
+            userId: c.userId || requestingUserId || null,
+            clientEmail: c.clientEmail || requestingEmail || null
+          });
         } else {
+          // If existing submission has a different owner, prevent cross-tenant overwrite
+          if (existing.userId && requestingUserId && existing.userId !== requestingUserId) {
+            continue;
+          }
           map.set(c.id, { ...existing, ...c });
         }
       }
     }
 
-    // Auto-sync receipts to QuickBooks if email matches a connected company
+    // Auto-sync receipts to QuickBooks: recognize user's company and upload directly to their default account
     const connectedCompanies = Object.values(getCompanies()).filter((c: any) => c.status === 'CONNECTED');
     if (connectedCompanies.length > 0) {
       for (const [id, s] of map.entries()) {
         if (s.status !== 'SYNCED_QBO' && (s.extractedAmount || s.total)) {
-          const subEmail = (s.clientEmail || s.email || '').toString().trim().toLowerCase();
-          if (subEmail) {
-            const hasMatch = (subEmail.includes('moisttowlett247') && connectedCompanies.length > 0) || connectedCompanies.some((c: any) =>
-              c.email && (
-                c.email.trim().toLowerCase() === subEmail ||
-                subEmail.includes(c.email.trim().toLowerCase()) ||
-                c.email.trim().toLowerCase().includes(subEmail) ||
-                (subEmail.includes('@') && c.email.includes('@') && subEmail.split('@')[1] === c.email.split('@')[1])
-              )
-            );
-            if (hasMatch) {
-              try {
-                const autoRes = await pushReceiptsToQbo([s]);
-                if (autoRes.success && autoRes.results.length > 0) {
-                  s.status = 'SYNCED_QBO';
-                  s.qboDocNumber = autoRes.results[0].docNumber;
-                  s.qboSyncedAt = autoRes.results[0].pushedAt;
-                  map.set(id, s);
-                }
-              } catch (err: any) {
-                console.warn('Batch-sync auto QBO push error:', err.message);
+          try {
+            // Find company matching submission's user or company
+            let targetComp: any = null;
+            if (s.realmId && connectedCompanies.some((c: any) => c.realmId === s.realmId)) {
+              targetComp = connectedCompanies.find((c: any) => c.realmId === s.realmId);
+            } else if (s.userId) {
+              targetComp = connectedCompanies.find((c: any) => c.ownerUserId === s.userId);
+            }
+            if (!targetComp && s.companyName) {
+              const norm = normalizeCompanyName(s.companyName);
+              targetComp = connectedCompanies.find((c: any) => normalizeCompanyName(c.companyName) === norm);
+            }
+            if (!targetComp && s.clientEmail) {
+              targetComp = connectedCompanies.find((c: any) => c.ownerEmail === s.clientEmail || (c.email && c.email.toLowerCase() === s.clientEmail.toLowerCase()));
+            }
+            if (!targetComp && connectedCompanies.length === 1 && !connectedCompanies[0].ownerUserId) {
+              targetComp = connectedCompanies[0];
+            }
+
+            if (targetComp) {
+              const autoRes = await pushReceiptsToQbo([s], targetComp.realmId);
+              if (autoRes.success && autoRes.results.length > 0) {
+                s.status = 'SYNCED_QBO';
+                s.qboDocNumber = autoRes.results[0].docNumber;
+                s.qboSyncedAt = autoRes.results[0].pushedAt;
+                s.matchedQboRealmId = targetComp.realmId;
+                s.matchedQboCompanyName = targetComp.companyName;
+                map.set(id, s);
               }
             }
+          } catch (err: any) {
+            console.warn('Batch-sync auto QBO push error:', err.message);
           }
         }
       }
@@ -2324,6 +2525,173 @@ router.post('/api/client/submissions/batch-sync', async (req, res) => {
 
     saveSubmissions(merged);
     return res.json({ success: true, count: merged.length, submissions: merged });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// =========================================================================
+// Company Name Security & Collision Prevention Engine
+// Normalizes company names to alphanumeric lowercase (stripping punctuation/spaces)
+// Ensures no two distinct users/accounts can register or claim the same company
+// =========================================================================
+function normalizeCompanyName(name: string | undefined | null): string {
+  if (!name) return '';
+  return String(name)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+function findCompanyConflict(companyName: string, requestingUserId?: string, requestingRealmId?: string): {
+  hasConflict: boolean;
+  conflictType?: 'CLIENT_ACCOUNT' | 'QBO_COMPANY';
+  conflictName?: string;
+  reason?: string;
+} {
+  const norm = normalizeCompanyName(companyName);
+  if (!norm || norm.length < 2) return { hasConflict: false };
+
+  // 1. Check registered client accounts
+  const accounts = loadAccounts();
+  for (const acc of accounts) {
+    if (!acc || !acc.companyName) continue;
+    const accId = String(acc.id || '').trim().toLowerCase();
+    const accEmail = String(acc.email || '').trim().toLowerCase();
+    const accUser = String(acc.username || '').trim().toLowerCase();
+    const reqClean = String(requestingUserId || '').trim().toLowerCase();
+
+    // If the account belongs to the same requesting user/email, it's their own company
+    const isSameUser = reqClean && (accId === reqClean || accEmail === reqClean || accUser === reqClean);
+    if (isSameUser) continue;
+
+    if (normalizeCompanyName(acc.companyName) === norm) {
+      return {
+        hasConflict: true,
+        conflictType: 'CLIENT_ACCOUNT',
+        conflictName: acc.companyName,
+        reason: `The company name '${acc.companyName}' is already registered to another user or account.`
+      };
+    }
+  }
+
+  // 2. Check QuickBooks companies
+  const companies = getCompanies();
+  for (const [rId, c] of Object.entries(companies)) {
+    if (!c) continue;
+    // Same realm ID is this company itself
+    if (requestingRealmId && (rId === requestingRealmId || (c as any).realmId === requestingRealmId)) {
+      continue;
+    }
+
+    // Check if requesting user owns this company
+    const ownerId = String((c as any).ownerUserId || (c as any).ownerAccountId || (c as any).userId || '').trim().toLowerCase();
+    const ownerEmail = String((c as any).ownerEmail || (c as any).email || '').trim().toLowerCase();
+    const reqClean = String(requestingUserId || '').trim().toLowerCase();
+    const isSameOwner = reqClean && (ownerId === reqClean || (ownerEmail && ownerEmail === reqClean));
+    if (isSameOwner) continue;
+
+    const cName = (c as any).companyName || (c as any).legalName || '';
+    if (normalizeCompanyName(cName) === norm) {
+      return {
+        hasConflict: true,
+        conflictType: 'QBO_COMPANY',
+        conflictName: cName,
+        reason: `The company name '${cName}' is already registered to an existing QuickBooks organization.`
+      };
+    }
+  }
+
+  return { hasConflict: false };
+}
+
+// Endpoint to verify company name availability in real time
+router.get('/api/client/check-company-name', (req, res) => {
+  const name = String(req.query.name || '').trim();
+  const userId = String(req.query.userId || '').trim();
+  const realmId = String(req.query.realmId || '').trim();
+
+  if (!name) {
+    return res.json({ available: true, message: 'No company name provided' });
+  }
+
+  const conflict = findCompanyConflict(name, userId, realmId);
+  if (conflict.hasConflict) {
+    return res.json({
+      available: false,
+      normalized: normalizeCompanyName(name),
+      conflictType: conflict.conflictType,
+      conflictName: conflict.conflictName,
+      reason: conflict.reason || `The company name '${name}' is already taken.`
+    });
+  }
+
+  return res.json({
+    available: true,
+    normalized: normalizeCompanyName(name),
+    message: `Company name '${name}' is available.`
+  });
+});
+
+// Client Registration Endpoint with company name uniqueness and password hashing
+router.post('/api/client/register', (req, res) => {
+  try {
+    const { username, password, email, displayName, companyName, licenseKey, initialPlan, initialPlanTier } = req.body || {};
+    const cleanUser = String(username || '').trim().toLowerCase();
+    if (!cleanUser || cleanUser.length < 3) {
+      return res.status(400).json({ success: false, error: 'Username must be at least 3 characters long.' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+    }
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return res.status(400).json({ success: false, error: 'Valid email address is required.' });
+    }
+
+    const accounts = loadAccounts();
+    if (accounts.some((a: any) => a && a.username && a.username.toLowerCase() === cleanUser)) {
+      return res.status(409).json({ success: false, error: 'This username is already taken. Please choose another username.' });
+    }
+
+    // Check company name collision
+    if (companyName && companyName.trim()) {
+      const conflict = findCompanyConflict(companyName.trim());
+      if (conflict.hasConflict) {
+        return res.status(409).json({
+          success: false,
+          error: conflict.reason || `The company name '${companyName}' is already registered to another user or account.`
+        });
+      }
+    }
+
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = crypto.pbkdf2Sync(password, `${salt}:${cleanUser}`, 100000, 64, 'sha512').toString('hex');
+    const newAccount = {
+      id: 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7),
+      username: cleanUser,
+      displayName: displayName ? String(displayName).trim() : cleanUser,
+      email: cleanEmail,
+      companyName: companyName ? String(companyName).trim() : undefined,
+      licenseKey: licenseKey ? String(licenseKey).trim().toUpperCase() : undefined,
+      plan: initialPlan || 'Monthly (1 Month)',
+      planTier: initialPlanTier || 'MONTHLY',
+      planStatus: 'ACTIVE',
+      planPurchasedAt: new Date().toISOString(),
+      planExpiresAt: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
+      receiptQuota: -1,
+      receiptsSubmittedCount: 0,
+      passwordHash,
+      salt,
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString()
+    };
+
+    accounts.push(newAccount);
+    saveAccounts(accounts);
+
+    const { passwordHash: _, salt: __, ...safe } = newAccount;
+    return res.json({ success: true, account: safe });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -2348,6 +2716,19 @@ router.post('/api/admin/accounts/sync', (req, res) => {
     const body = req.body || {};
     const incoming = Array.isArray(body.accounts) ? body.accounts : [];
     const serverAccounts = loadAccounts();
+
+    // Verify company collision across distinct accounts
+    for (const inAcc of incoming) {
+      if (inAcc && inAcc.companyName) {
+        const conflict = findCompanyConflict(inAcc.companyName, inAcc.id || inAcc.username);
+        if (conflict.hasConflict) {
+          return res.status(409).json({
+            success: false,
+            error: conflict.reason || `The company name '${inAcc.companyName}' is already registered to another user or account.`
+          });
+        }
+      }
+    }
 
     const map = new Map<string, any>();
     for (const a of serverAccounts) {
@@ -3026,10 +3407,17 @@ router.post('/api/qbo/company/active', (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || '').trim();
   const selectedWorkingAccount = (body.selectedWorkingAccount || '').trim();
+  const requestingUserId = (body.userId || body.ownerUserId || '').toString().trim();
+  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
   const companies = getCompanies();
 
   if (!realmId || !companies[realmId]) {
     return res.status(404).json({ error: 'Company not found' });
+  }
+
+  // Tenant Isolation: Verify ownership
+  if (companies[realmId].ownerUserId && requestingUserId && companies[realmId].ownerUserId !== requestingUserId && !isAdmin) {
+    return res.status(403).json({ error: 'Access denied: You do not have permission to modify this QuickBooks company.' });
   }
 
   // Set all others to isActiveWorking = false
@@ -3059,10 +3447,17 @@ router.post('/api/qbo/company/set-default-account', (req, res) => {
   const realmId = (body.realmId || '').trim();
   const defaultPostingAccount = (body.defaultPostingAccount || body.defaultAccount || '').trim();
   const email = body.email !== undefined ? String(body.email).trim() : null;
+  const requestingUserId = (body.userId || body.ownerUserId || '').toString().trim();
+  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
   const companies = getCompanies();
 
   if (!realmId || !companies[realmId]) {
     return res.status(404).json({ error: 'Company not found' });
+  }
+
+  // Tenant Isolation: Verify ownership
+  if (companies[realmId].ownerUserId && requestingUserId && companies[realmId].ownerUserId !== requestingUserId && !isAdmin) {
+    return res.status(403).json({ error: 'Access denied: You do not have permission to modify this QuickBooks company.' });
   }
 
   if (defaultPostingAccount) {
@@ -3235,7 +3630,28 @@ function getComprehensiveStandardAccounts() {
 router.post('/api/qbo/company/populate-accounts', async (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || (body.company && body.company.realmId) || '').toString().trim();
+  const requestingUserId = (body.userId || (body.company && (body.company.ownerUserId || body.company.userId)) || '').toString().trim();
+  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
   const companies = getCompanies();
+
+  // If company passed, check for collision before registering
+  if (body.company && body.company.companyName) {
+    const conflict = findCompanyConflict(body.company.companyName, requestingUserId, realmId);
+    if (conflict.hasConflict) {
+      return res.status(409).json({
+        success: false,
+        error: conflict.reason || `Company name '${body.company.companyName}' is already registered to another user.`
+      });
+    }
+  }
+
+  // Tenant Isolation: Check realm ownership
+  if (companies[realmId]) {
+    const target = companies[realmId];
+    if (target.ownerUserId && requestingUserId && target.ownerUserId !== requestingUserId && !isAdmin) {
+      return res.status(403).json({ success: false, error: 'Access denied: You do not have permission to modify this QuickBooks company.' });
+    }
+  }
 
   // If company not currently in companies store, but passed from client localStorage, register or merge it
   if (realmId && body.company) {
@@ -3243,6 +3659,7 @@ router.post('/api/qbo/company/populate-accounts', async (req, res) => {
       ...(companies[realmId] || {}),
       ...body.company,
       realmId,
+      ownerUserId: requestingUserId || companies[realmId]?.ownerUserId || null,
       status: body.company.status || (companies[realmId] && companies[realmId].status) || 'CONNECTED'
     };
     saveCompanies(companies);
@@ -3303,12 +3720,32 @@ router.post('/api/qbo/company/sync-live-accounts', async (req, res) => {
   const accessToken = (body.accessToken || '').toString().trim();
   const refreshToken = (body.refreshToken || '').toString().trim();
   const inputEnv = (body.environment || (body.company && body.company.environment) || cfg.environment || 'sandbox').toString().toLowerCase().trim();
+  const requestingUserId = (body.userId || (body.company && (body.company.ownerUserId || body.company.userId)) || '').toString().trim();
+  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
 
   if (!realmId) {
     return res.status(400).json({ error: 'QuickBooks Realm ID (Company ID) is required.' });
   }
 
+  const compNameToCheck = body.companyName || (body.company && body.company.companyName);
+  if (compNameToCheck) {
+    const conflict = findCompanyConflict(compNameToCheck, requestingUserId, realmId);
+    if (conflict.hasConflict) {
+      return res.status(409).json({
+        success: false,
+        error: conflict.reason || `Company name '${compNameToCheck}' is already registered to another user or account.`
+      });
+    }
+  }
+
   const companies = getCompanies();
+  if (companies[realmId]) {
+    const existing = companies[realmId];
+    if (existing.ownerUserId && requestingUserId && existing.ownerUserId !== requestingUserId && !isAdmin) {
+      return res.status(403).json({ success: false, error: 'Access denied: You do not have permission to modify this QuickBooks company.' });
+    }
+  }
+
   let target = companies[realmId] || (body.company ? { ...body.company, realmId } : {
     realmId,
     companyName: body.companyName || `QuickBooks Company (${realmId})`,
@@ -3321,6 +3758,7 @@ router.post('/api/qbo/company/sync-live-accounts', async (req, res) => {
 
   if (body.companyName) target.companyName = body.companyName;
   if (inputEnv) target.environment = inputEnv;
+  if (requestingUserId && !target.ownerUserId) target.ownerUserId = requestingUserId;
 
   // If user provided a fresh access token
   if (accessToken) {

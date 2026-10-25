@@ -168,7 +168,7 @@ export default function App() {
                   id: `cf-${effectiveKey}`,
                   key: effectiveKey,
                   clientName: effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`,
-                  clientEmail: cf.user_email || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : 'client@example.com'),
+                  clientEmail: cf.user_email || (effectiveKey.includes('ADMIN') ? 'owner@quickbooks-portal.local' : 'client@example.com'),
                   plan: (cf.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
                   status,
                   inUse: true,
@@ -229,7 +229,7 @@ export default function App() {
                   id: `server-${s.hash.slice(0, 10)}`,
                   key: effectiveKey,
                   clientName: s.clientName || (effectiveKey.includes('ADMIN') ? 'Platform Owner / Lead Admin' : `Subscriber (${effectiveKey.slice(0, 8)}...)`),
-                  clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'moisttowlett247@gmail.com' : ''),
+                  clientEmail: s.clientEmail || (effectiveKey.includes('ADMIN') ? 'owner@quickbooks-portal.local' : ''),
                   plan: (s.plan as PlanTier) || (effectiveKey.includes('ADMIN') ? 'ADMIN' : 'MONTHLY'),
                   status,
                   inUse: s.inUse ?? true,
@@ -1058,7 +1058,7 @@ export default function App() {
           <button
             onClick={() => setIsInquiriesModalOpen(true)}
             className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-lg shadow-sm transition-all cursor-pointer"
-            title="View incoming client portal requests sent to moisttowlett247@gmail.com"
+            title="View incoming client portal requests"
           >
             <Mail className="w-4 h-4 text-amber-400" />
             <span>Access Requests</span>

@@ -55,7 +55,7 @@ async function runTests() {
     // TEST 2: Connect / Mock Connect a synced company with client email
     console.log('\n[Phase 2: Connecting Synced Account & COA Population]');
     const targetRealm = '9341451241444';
-    const clientEmail = 'moisttowlett247@gmail.com';
+    const clientEmail = 'owner@agricultural-enterprise.com';
     const companyName = 'Towlett Agricultural Enterprises LLC';
 
     const connectRes = await makeRequest({

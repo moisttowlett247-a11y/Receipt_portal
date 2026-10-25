@@ -51,7 +51,6 @@ const RESERVED_ADMIN_USERNAMES = [
   'system',
   'superadmin',
   'security',
-  'moisttowlett247',
   'billing',
   'support'
 ];
