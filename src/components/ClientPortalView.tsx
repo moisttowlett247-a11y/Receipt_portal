@@ -471,6 +471,14 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
       localStorage.setItem('receipt_processor_inquiries', JSON.stringify([newInquiry, ...existing]));
     } catch {}
 
+    try {
+      fetch('/api/inquiries', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newInquiry)
+      }).catch(() => {});
+    } catch {}
+
     if (onInquirySubmitted) {
       onInquirySubmitted(newInquiry);
     }
