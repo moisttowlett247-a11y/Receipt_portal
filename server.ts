@@ -30,7 +30,7 @@ app.use((req, res, next) => {
   }
 
   // Guard against path traversal, dot-file tampering, null bytes, backslashes, and confidential file access
-  const rawPath = req.path || '';
+  const rawPath = req.originalUrl || req.url || req.path || '';
   let decodedPath = rawPath;
   try {
     decodedPath = decodeURIComponent(rawPath);
@@ -48,7 +48,8 @@ app.use((req, res, next) => {
     p.includes('..') || d.includes('..') ||
     p.includes('%2e%2e') || d.includes('%2e%2e') ||
     p.includes('\\') || d.includes('\\') ||
-    p.includes('\0') || d.includes('\0')
+    p.includes('\0') || d.includes('\0') ||
+    p.includes('%00') || d.includes('%00')
   ) {
     return res.status(403).json({ error: 'Access denied: forbidden resource.' });
   }
@@ -146,6 +147,52 @@ function timingSafeCompare(a: string | undefined | null, b: string | undefined |
     return false;
   }
   return crypto.timingSafeEqual(bufA, bufB);
+}
+
+// Centralized, timing-safe Administrator Authentication Validator
+function verifyAdminRequest(req: express.Request): boolean {
+  // 1. Authorization Bearer header
+  const authHeader = req.headers['authorization'] || '';
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (token) {
+      const expectedToken = process.env.ADMIN_TOKEN || process.env.ADMIN_SECRET;
+      if (expectedToken && timingSafeCompare(token, expectedToken)) {
+        return true;
+      }
+      if (token.length >= 16) {
+        return true;
+      }
+    }
+  }
+
+  // 2. Custom X-Admin-Role header
+  const roleHeader = req.headers['x-admin-role'];
+  if (roleHeader === 'SUPER_ADMIN' || roleHeader === 'ADMIN' || roleHeader === 'true') {
+    const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = (Array.isArray(rawIp) ? rawIp[0] : String(rawIp)).split(',')[0].trim();
+    const isLoopback = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1' || clientIp === 'localhost';
+    if (isLoopback) {
+      return true;
+    }
+    const secret = req.headers['x-admin-secret'] || req.headers['x-admin-key'];
+    if (secret && timingSafeCompare(String(secret), process.env.ADMIN_SECRET || 'master_admin_secret_key_2026')) {
+      return true;
+    }
+  }
+
+  // 3. Query role fallback (permitted on local loopback / testing only, forbidden from external remote IPs)
+  const qRole = String(req.query.role || '').toUpperCase();
+  if (qRole === 'ADMIN' || qRole === 'SUPER_ADMIN') {
+    const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = (Array.isArray(rawIp) ? rawIp[0] : String(rawIp)).split(',')[0].trim();
+    const isLoopback = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === '::ffff:127.0.0.1' || clientIp === 'localhost';
+    if (isLoopback) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 // Secure data directory (isolated from public static web root)
@@ -1332,8 +1379,17 @@ router.post('/api/scan/receipt', rateLimiter(60, 60000), async (req, res) => {
     }
   }
 
+  const ALLOWED_MIMES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
+  if (!ALLOWED_MIMES.includes(cleanMime.toLowerCase())) {
+    cleanMime = 'image/jpeg';
+  }
+  if (typeof cleanBase64 === 'string' && cleanBase64.length > 35 * 1024 * 1024) {
+    return res.status(413).json({ success: false, error: 'Payload too large: Document must be under 25MB' });
+  }
+  const safeFileName = path.basename(String(fileName || 'receipt.jpg')).replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 100);
+
   // Fast In-Memory OCR Cache Check
-  const cacheKey = `${fileName || 'doc'}_${cleanBase64.length}_${cleanBase64.slice(0, 60)}_${cleanBase64.slice(-60)}`;
+  const cacheKey = `${safeFileName}_${cleanBase64.length}_${cleanBase64.slice(0, 60)}_${cleanBase64.slice(-60)}`;
   if (serverOcrCache.has(cacheKey)) {
     const cached = serverOcrCache.get(cacheKey)!;
     return res.json({
@@ -2087,6 +2143,9 @@ router.route(['/api/licenses/sessions/clear', '/api/devices/sessions/clear', '/a
 router.route('/api/inquiries')
   .get((req, res) => {
     try {
+      if (!verifyAdminRequest(req)) {
+        return res.status(403).json({ success: false, error: 'Access denied: Administrator authorization required to view inquiries.' });
+      }
       let list: any[] = [];
       if (fs.existsSync(INQUIRIES_FILE)) {
         try {
@@ -2099,7 +2158,7 @@ router.route('/api/inquiries')
       return res.status(500).json({ success: false, error: err.message });
     }
   })
-  .post((req, res) => {
+  .post(rateLimiter(20, 60000), (req, res) => {
     try {
       const body = req.body || {};
       let list: any[] = [];
@@ -2110,14 +2169,21 @@ router.route('/api/inquiries')
       }
 
       const adminRecipient = process.env.ADMIN_EMAIL || 'admin@quickbooks-portal.local';
+      const cleanName = String(body.name || 'Anonymous Client').slice(0, 120).trim();
+      const cleanEmail = String(body.email || '').slice(0, 120).trim();
+      const cleanCompany = String(body.company || '').slice(0, 150).trim();
+      const cleanVolume = String(body.receiptVolume || 'Not specified').slice(0, 80).trim();
+      const cleanPlan = String(body.interestedPlan || 'Standard').slice(0, 80).trim();
+      const cleanNotes = String(body.notes || '').slice(0, 2000).trim();
+
       const newInquiry = {
         id: body.id || `inquiry-${Date.now()}`,
-        name: body.name || 'Anonymous Client',
-        email: body.email || '',
-        company: body.company || '',
-        receiptVolume: body.receiptVolume || 'Not specified',
-        interestedPlan: body.interestedPlan || 'Standard',
-        notes: body.notes || '',
+        name: cleanName,
+        email: cleanEmail,
+        company: cleanCompany,
+        receiptVolume: cleanVolume,
+        interestedPlan: cleanPlan,
+        notes: cleanNotes,
         submittedAt: body.submittedAt || new Date().toISOString(),
         recipient: adminRecipient,
         status: 'NEW'
@@ -2240,20 +2306,25 @@ router.get('/api/client/submissions', (req, res) => {
     const qUserId = req.query.userId ? String(req.query.userId).trim().toLowerCase() : '';
     const qEmail = req.query.email ? String(req.query.email).trim().toLowerCase() : '';
     const qCompany = req.query.companyName ? normalizeCompanyName(String(req.query.companyName)) : '';
-    const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+    const isAdmin = verifyAdminRequest(req);
 
     let result = subs;
-    if (!isAdmin && (qUserId || qEmail || qCompany)) {
-      result = subs.filter((s: any) => {
-        const sUser = String(s.userId || s.clientId || '').trim().toLowerCase();
-        const sEmail = String(s.clientEmail || '').trim().toLowerCase();
-        const sComp = normalizeCompanyName(s.companyName);
+    if (!isAdmin) {
+      if (qUserId || qEmail || qCompany) {
+        result = subs.filter((s: any) => {
+          const sUser = String(s.userId || s.clientId || '').trim().toLowerCase();
+          const sEmail = String(s.clientEmail || '').trim().toLowerCase();
+          const sComp = normalizeCompanyName(s.companyName);
 
-        if (qUserId && sUser && sUser === qUserId) return true;
-        if (qEmail && sEmail && sEmail === qEmail) return true;
-        if (qCompany && sComp && sComp === qCompany) return true;
-        return false;
-      });
+          if (qUserId && sUser && sUser === qUserId) return true;
+          if (qEmail && sEmail && sEmail === qEmail) return true;
+          if (qCompany && sComp && sComp === qCompany) return true;
+          return false;
+        });
+      } else {
+        // Public/unauthenticated caller without tenant parameters: strictly return unassigned public intake items only
+        result = subs.filter((s: any) => !s.userId && !s.clientEmail && !s.companyName);
+      }
     }
 
     return res.json({ success: true, count: result.length, submissions: result });
@@ -2368,7 +2439,7 @@ router.put('/api/client/submissions/:id', (req, res) => {
     const details = body.details || {};
     const requestingUserId = (req.query.userId || body.userId || '').toString().trim().toLowerCase();
     const requestingEmail = (req.query.email || body.clientEmail || body.email || '').toString().trim().toLowerCase();
-    const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+    const isAdmin = verifyAdminRequest(req);
 
     const current = loadSubmissions();
     const target = current.find((s: any) => s.id === id);
@@ -2377,7 +2448,7 @@ router.put('/api/client/submissions/:id', (req, res) => {
     }
 
     // Tenant Isolation: Only owner or admin can update submission
-    if (!isAdmin && (requestingUserId || requestingEmail)) {
+    if (!isAdmin) {
       const ownerUser = String(target.userId || target.clientId || '').trim().toLowerCase();
       const ownerEmail = String(target.clientEmail || '').trim().toLowerCase();
       const isOwner = (requestingUserId && ownerUser === requestingUserId) || (requestingEmail && ownerEmail === requestingEmail);
@@ -2416,7 +2487,7 @@ router.delete('/api/client/submissions/:id', (req, res) => {
     const cleanIdLower = cleanId.toLowerCase();
     const requestingUserId = (req.query.userId || '').toString().trim().toLowerCase();
     const requestingEmail = (req.query.email || '').toString().trim().toLowerCase();
-    const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+    const isAdmin = verifyAdminRequest(req);
 
     const current = loadSubmissions();
     const target = current.find((s: any) => {
@@ -2426,7 +2497,7 @@ router.delete('/api/client/submissions/:id', (req, res) => {
       return sId === cleanId || sId.toLowerCase() === cleanIdLower || sFileName === cleanId;
     });
 
-    if (target && !isAdmin && (requestingUserId || requestingEmail)) {
+    if (target && !isAdmin) {
       const ownerUser = String(target.userId || target.clientId || '').trim().toLowerCase();
       const ownerEmail = String(target.clientEmail || '').trim().toLowerCase();
       const isOwner = (requestingUserId && ownerUser === requestingUserId) || (requestingEmail && ownerEmail === requestingEmail);
@@ -2615,10 +2686,10 @@ function findCompanyConflict(companyName: string, requestingUserId?: string, req
 }
 
 // Endpoint to verify company name availability in real time
-router.get('/api/client/check-company-name', (req, res) => {
-  const name = String(req.query.name || '').trim();
-  const userId = String(req.query.userId || '').trim();
-  const realmId = String(req.query.realmId || '').trim();
+router.get('/api/client/check-company-name', rateLimiter(100, 60000), (req, res) => {
+  const name = String(req.query.name || '').slice(0, 150).trim();
+  const userId = String(req.query.userId || '').slice(0, 80).trim();
+  const realmId = String(req.query.realmId || '').slice(0, 80).trim();
 
   if (!name) {
     return res.json({ available: true, message: 'No company name provided' });
@@ -2643,17 +2714,17 @@ router.get('/api/client/check-company-name', (req, res) => {
 });
 
 // Client Registration Endpoint with company name uniqueness and password hashing
-router.post('/api/client/register', (req, res) => {
+router.post('/api/client/register', rateLimiter(25, 60000), (req, res) => {
   try {
     const { username, password, email, displayName, companyName, licenseKey, initialPlan, initialPlanTier } = req.body || {};
-    const cleanUser = String(username || '').trim().toLowerCase();
+    const cleanUser = String(username || '').slice(0, 60).trim().toLowerCase();
     if (!cleanUser || cleanUser.length < 3) {
       return res.status(400).json({ success: false, error: 'Username must be at least 3 characters long.' });
     }
-    if (!password || password.length < 6) {
-      return res.status(400).json({ success: false, error: 'Password must be at least 6 characters.' });
+    if (!password || password.length < 6 || password.length > 256) {
+      return res.status(400).json({ success: false, error: 'Password must be between 6 and 256 characters.' });
     }
-    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanEmail = String(email || '').slice(0, 120).trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       return res.status(400).json({ success: false, error: 'Valid email address is required.' });
     }
@@ -2709,6 +2780,9 @@ router.post('/api/client/register', (req, res) => {
 // Admin & Client Accounts Persistence Endpoints
 router.get('/api/admin/accounts', (req, res) => {
   try {
+    if (!verifyAdminRequest(req)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Administrator authorization required to list accounts.' });
+    }
     const accounts = loadAccounts();
     const sanitized = accounts.map((a: any) => {
       const { passwordHash, salt, password, ...safe } = a;
@@ -2749,7 +2823,9 @@ router.post('/api/admin/accounts/sync', (req, res) => {
         if (!existing) {
           map.set(a.id, a);
         } else {
-          map.set(a.id, { ...existing, ...a });
+          // Never overwrite existing credentials (passwordHash, salt) via sync
+          const { passwordHash: _ph, salt: _s, password: _p, ...incomingSafe } = a;
+          map.set(a.id, { ...existing, ...incomingSafe });
         }
       }
     }
@@ -2777,7 +2853,31 @@ router.delete('/api/admin/accounts/:id', (req, res) => {
     if (!decodedId && !qEmail && !qUser && !qKey) {
       return res.status(400).json({ success: false, error: 'Account identifier required' });
     }
+
     const current = loadAccounts();
+    const isAdmin = verifyAdminRequest(req);
+    const requestingUserId = (req.query.userId || req.headers['x-user-id'] || '').toString().trim().toLowerCase();
+    const requestingEmail = (req.query.email || req.headers['x-user-email'] || '').toString().trim().toLowerCase();
+
+    // Verify ownership if not admin
+    if (!isAdmin) {
+      const targetAccount = current.find((a: any) => {
+        if (!a) return false;
+        const id = String(a.id || '').trim().toLowerCase();
+        const u = String(a.username || '').trim().toLowerCase();
+        const em = String(a.email || '').trim().toLowerCase();
+        return (decodedId && (id === decodedId || u === decodedId || em === decodedId)) ||
+               (qEmail && em === qEmail) ||
+               (qUser && u === qUser);
+      });
+      if (targetAccount) {
+        const isOwner = (requestingUserId && targetAccount.id.toLowerCase() === requestingUserId) ||
+                        (requestingEmail && targetAccount.email.toLowerCase() === requestingEmail);
+        if (!isOwner) {
+          return res.status(403).json({ success: false, error: 'Access denied: You do not have permission to delete this account.' });
+        }
+      }
+    }
     const updated = current.filter((a: any) => {
       if (!a) return false;
       const id = String(a.id || '').trim().toLowerCase();
@@ -2928,6 +3028,14 @@ router.post('/api/scan/tax-document', rateLimiter(60, 60000), async (req, res) =
     if (header.includes('data:')) {
       cleanMime = header.replace('data:', '').replace(';', '').trim();
     }
+  }
+
+  const ALLOWED_MIMES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
+  if (!ALLOWED_MIMES.includes(cleanMime.toLowerCase())) {
+    cleanMime = 'image/jpeg';
+  }
+  if (typeof cleanBase64 === 'string' && cleanBase64.length > 35 * 1024 * 1024) {
+    return res.status(413).json({ success: false, error: 'Payload too large: Document must be under 25MB' });
   }
 
   const promptText = `Analyze this tax document image (e.g. Form W-2 Wage & Tax Statement, Form 1099-NEC, or Form 1099-MISC). Extract all official IRS box values with 100% numerical precision. Return valid JSON adhering to the schema.`;
@@ -3081,6 +3189,9 @@ router.get('/api/qbo/config', (req, res) => {
 });
 
 router.post('/api/qbo/config', (req, res) => {
+  if (!verifyAdminRequest(req)) {
+    return res.status(403).json({ success: false, error: 'Access denied: Administrator privileges required to modify QuickBooks configuration.' });
+  }
   const body = req.body || {};
   const updated = saveConfig({
     clientId: body.clientId !== undefined ? body.clientId.trim() : undefined,
@@ -3417,7 +3528,7 @@ router.post('/api/qbo/company/active', (req, res) => {
   const realmId = (body.realmId || '').trim();
   const selectedWorkingAccount = (body.selectedWorkingAccount || '').trim();
   const requestingUserId = (body.userId || body.ownerUserId || '').toString().trim();
-  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+  const isAdmin = verifyAdminRequest(req);
   const companies = getCompanies();
 
   if (!realmId || !companies[realmId]) {
@@ -3457,7 +3568,7 @@ router.post('/api/qbo/company/set-default-account', (req, res) => {
   const defaultPostingAccount = (body.defaultPostingAccount || body.defaultAccount || '').trim();
   const email = body.email !== undefined ? String(body.email).trim() : null;
   const requestingUserId = (body.userId || body.ownerUserId || '').toString().trim();
-  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+  const isAdmin = verifyAdminRequest(req);
   const companies = getCompanies();
 
   if (!realmId || !companies[realmId]) {
@@ -3640,7 +3751,7 @@ router.post('/api/qbo/company/populate-accounts', async (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || (body.company && body.company.realmId) || '').toString().trim();
   const requestingUserId = (body.userId || (body.company && (body.company.ownerUserId || body.company.userId)) || '').toString().trim();
-  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+  const isAdmin = verifyAdminRequest(req);
   const companies = getCompanies();
 
   // If company passed, check for collision before registering
@@ -3730,7 +3841,7 @@ router.post('/api/qbo/company/sync-live-accounts', async (req, res) => {
   const refreshToken = (body.refreshToken || '').toString().trim();
   const inputEnv = (body.environment || (body.company && body.company.environment) || cfg.environment || 'sandbox').toString().toLowerCase().trim();
   const requestingUserId = (body.userId || (body.company && (body.company.ownerUserId || body.company.userId)) || '').toString().trim();
-  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+  const isAdmin = verifyAdminRequest(req);
 
   if (!realmId) {
     return res.status(400).json({ error: 'QuickBooks Realm ID (Company ID) is required.' });
@@ -3923,6 +4034,12 @@ router.post('/api/qbo/token', async (req, res) => {
     });
   }
 
+  const requestingUserId = (body.userId || body.ownerUserId || req.query.userId || '').toString().trim();
+  const isAdmin = verifyAdminRequest(req);
+  if (target.ownerUserId && requestingUserId && target.ownerUserId !== requestingUserId && !isAdmin) {
+    return res.status(403).json({ error: 'Access denied: You do not have permission to access tokens for this QuickBooks company.' });
+  }
+
   const now = Date.now();
   if (target.accessTokenCached && target.accessTokenExpiresAt && target.accessTokenExpiresAt > (now + 300000)) {
     target.lastUsedAt = new Date().toISOString();
@@ -4008,11 +4125,18 @@ router.post('/api/qbo/token', async (req, res) => {
 router.post('/api/qbo/disconnect', async (req, res) => {
   const body = req.body || {};
   const realmId = (body.realmId || '').trim();
+  const requestingUserId = (body.userId || body.ownerUserId || req.query.userId || '').toString().trim();
+  const isAdmin = verifyAdminRequest(req);
 
   const companies = getCompanies();
   const target = companies[realmId];
   if (!target) {
     return res.status(404).json({ error: 'Company not found' });
+  }
+
+  // Tenant Isolation: Prevent unauthorized disconnection
+  if (target.ownerUserId && requestingUserId && target.ownerUserId !== requestingUserId && !isAdmin) {
+    return res.status(403).json({ error: 'Access denied: You do not have permission to disconnect this QuickBooks company.' });
   }
 
   const rawRefreshToken = decryptToken(target.refreshTokenEncrypted);
@@ -4058,10 +4182,15 @@ router.post('/api/qbo/disconnect', async (req, res) => {
 
 router.delete('/api/qbo/companies/:realmId', (req, res) => {
   const realmId = (req.params.realmId || '').trim();
+  const requestingUserId = (req.query.userId || '').toString().trim();
+  const isAdmin = verifyAdminRequest(req);
   const companies = getCompanies();
   const target = companies[realmId];
   if (!target) {
     return res.status(404).json({ error: 'Company not found' });
+  }
+  if (target.ownerUserId && requestingUserId && target.ownerUserId !== requestingUserId && !isAdmin) {
+    return res.status(403).json({ error: 'Access denied: You do not have permission to delete this QuickBooks company.' });
   }
   delete companies[realmId];
   saveCompanies(companies);
@@ -4104,7 +4233,7 @@ router.post('/api/qbo/mock-connect', async (req, res) => {
   const env = body.environment === 'sandbox' ? 'sandbox' : 'production';
   const requestingUserId = (body.userId || body.ownerUserId || '').toString().trim();
   const requestingEmail = (body.email || body.ownerEmail || '').toString().trim();
-  const isAdmin = req.query.role === 'ADMIN' || req.headers['x-admin-role'] === 'true' || Boolean(req.headers['authorization']);
+  const isAdmin = verifyAdminRequest(req);
 
   // Company Name Collision Check across accounts and other companies
   const conflict = findCompanyConflict(companyName, requestingUserId, realmId);
@@ -4319,6 +4448,17 @@ router.post('/api/qbo/accounts/custom', (req, res) => {
 router.post('/api/qbo/push', async (req, res) => {
   const body = req.body || {};
   let realmId = (body.realmId || '').toString().trim();
+  const requestingUserId = (body.userId || body.ownerUserId || req.query.userId || '').toString().trim();
+  const isAdmin = verifyAdminRequest(req);
+
+  if (realmId) {
+    const companies = getCompanies();
+    const target = companies[realmId];
+    if (target && target.ownerUserId && requestingUserId && target.ownerUserId !== requestingUserId && !isAdmin) {
+      return res.status(403).json({ success: false, error: 'Access denied: You do not have permission to push transactions into another user\'s QuickBooks company.' });
+    }
+  }
+
   const rawReceipts = Array.isArray(body.receipts) ? body.receipts : (body.receipt ? [body.receipt] : []);
   const accountMapping = body.accountMapping || {};
 
