@@ -113,6 +113,15 @@ async function run() {
   });
   assert(unauthorizedInquiriesRes.status === 403, 'External spoofed admin blocked from GET /api/inquiries (403 Forbidden)');
 
+  const unauthorizedInquiryDeleteRes = await makeRequest({
+    hostname: 'localhost',
+    port: 3000,
+    path: '/api/inquiries/test-inq-123?role=ADMIN',
+    method: 'DELETE',
+    headers: { 'x-forwarded-for': '198.51.100.42' }
+  });
+  assert(unauthorizedInquiryDeleteRes.status === 403, 'External spoofed admin blocked from DELETE /api/inquiries/:id (403 Forbidden)');
+
   // 4. Cross-Tenant QBO Token & Push Defense
   console.log('\n[Phase 4: Cross-Tenant QuickBooks Token & Push Protection]');
   const realmIdA = `sec_realm_${Date.now()}`;

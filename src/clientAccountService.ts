@@ -1058,6 +1058,9 @@ export function deleteClientAccountAndData(
   const filtered = accounts.filter(a => a.id !== userId);
   saveStoredClientAccounts(filtered);
 
+  // Synchronize deletion with server and Cloudflare KV
+  deleteAccountFromServer(userId, account.email, account.username, account.licenseKey).catch(() => {});
+
   // Clear session
   const current = getCurrentClientSession();
   if (current && current.userId === userId) {

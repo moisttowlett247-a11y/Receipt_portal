@@ -39,6 +39,7 @@ import {
   Edit2
 } from 'lucide-react';
 import { getBackendApiUrl } from '../urlUtils';
+import { getAdminToken } from '../licenseSyncService';
 import {
   QboAccountItem,
   getAllStandardQboAccounts,
@@ -151,7 +152,12 @@ const DEFAULT_ACCOUNT_MAPPINGS: Record<string, string> = {
 async function safeFetchJson<T = any>(url: string, options?: RequestInit): Promise<{ ok: boolean; data: T | null }> {
   try {
     const finalUrl = url.startsWith('/') ? getBackendApiUrl() + url : url;
-    const res = await fetch(finalUrl, options);
+    const adminToken = getAdminToken();
+    const headers = new Headers(options?.headers || {});
+    if (adminToken && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${adminToken}`);
+    }
+    const res = await fetch(finalUrl, { ...options, headers });
     if (!res.ok) return { ok: false, data: null };
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {

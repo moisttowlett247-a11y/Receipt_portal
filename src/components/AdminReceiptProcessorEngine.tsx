@@ -83,6 +83,7 @@ import { googleSignIn, logoutGoogle, initAuth } from '../firebaseAuthService';
 import { User as FirebaseUser } from 'firebase/auth';
 import { getStoredClientAccounts } from '../clientAccountService';
 import { IRS_SCHEDULE_F_LINES, IRS_SCHEDULE_C_LINES } from '../taxScheduleService';
+import { getAdminToken } from '../licenseSyncService';
 
 interface AdminReceiptProcessorEngineProps {
   onToast?: (msg: string) => void;
@@ -1759,9 +1760,14 @@ export const AdminReceiptProcessorEngine: React.FC<AdminReceiptProcessorEnginePr
     }
 
     try {
+      const adminToken = getAdminToken();
+      const pushHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (adminToken) {
+        pushHeaders['Authorization'] = `Bearer ${adminToken}`;
+      }
       const pushResp = await fetch('/api/qbo/push', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: pushHeaders,
         body: JSON.stringify({
           realmId: targetCompany.realmId,
           receipts: routedReceipts

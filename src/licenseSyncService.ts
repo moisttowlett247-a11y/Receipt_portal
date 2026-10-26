@@ -304,7 +304,7 @@ export async function deleteInquiry(id: string): Promise<{ success: boolean; mes
   try {
     await fetch(getBackendApiUrl() + `/api/inquiries/${encodeURIComponent(id)}`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ id })
     });
   } catch {}

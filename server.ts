@@ -2202,6 +2202,29 @@ router.route('/api/inquiries')
     }
   });
 
+router.delete('/api/inquiries/:id', (req, res) => {
+  try {
+    if (!verifyAdminRequest(req)) {
+      return res.status(403).json({ success: false, error: 'Access denied: Administrator authorization required to delete inquiries.' });
+    }
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Inquiry ID required' });
+    }
+    let list: any[] = [];
+    if (fs.existsSync(INQUIRIES_FILE)) {
+      try {
+        list = JSON.parse(fs.readFileSync(INQUIRIES_FILE, 'utf-8'));
+      } catch {}
+    }
+    const filtered = list.filter((item: any) => item.id !== id);
+    fs.writeFileSync(INQUIRIES_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+    return res.json({ success: true, message: `Inquiry ${id} deleted`, remaining: filtered.length });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get(['/api/licenses/all', '/api/licenses'], (req, res) => {
   try {
     if (!fs.existsSync(LICENSES_DIR)) {
