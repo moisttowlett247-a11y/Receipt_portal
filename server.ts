@@ -261,11 +261,23 @@ function readSecureFile(filePath: string): any {
   }
 }
 
+function atomicWriteFile(filePath: string, content: string): void {
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmpPath, content, 'utf-8');
+  fs.renameSync(tmpPath, filePath);
+}
+
+function atomicWriteJson(filePath: string, data: any): void {
+  atomicWriteFile(filePath, JSON.stringify(data, null, 2));
+}
+
 function writeSecureFile(filePath: string, data: any): void {
   try {
     const jsonStr = JSON.stringify(data, null, 2);
     const encrypted = encryptToken(jsonStr);
-    fs.writeFileSync(filePath, encrypted, 'utf-8');
+    atomicWriteFile(filePath, encrypted);
   } catch (err) {
     console.error(`[Security] Error writing secure file ${path.basename(filePath)}:`, err);
   }
@@ -717,7 +729,7 @@ function getSyncLogs(): any[] {
 
 function saveSyncLogs(logs: any[]) {
   try {
-    fs.writeFileSync(SYNC_LOG_FILE, JSON.stringify(logs.slice(-250), null, 2), 'utf-8');
+    atomicWriteJson(SYNC_LOG_FILE, logs.slice(-250));
   } catch {}
 }
 
@@ -1083,7 +1095,7 @@ function loadSessions() {
 
 function saveSessions(sessions: any) {
   try {
-    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf-8');
+    atomicWriteJson(SESSIONS_FILE, sessions);
   } catch {}
 }
 
@@ -2190,7 +2202,7 @@ router.route('/api/inquiries')
       };
 
       list = [newInquiry, ...list.filter((x: any) => x.id !== newInquiry.id)];
-      fs.writeFileSync(INQUIRIES_FILE, JSON.stringify(list, null, 2), 'utf-8');
+      atomicWriteJson(INQUIRIES_FILE, list);
 
       return res.json({
         success: true,
@@ -2218,7 +2230,7 @@ router.delete('/api/inquiries/:id', (req, res) => {
       } catch {}
     }
     const filtered = list.filter((item: any) => item.id !== id);
-    fs.writeFileSync(INQUIRIES_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+    atomicWriteJson(INQUIRIES_FILE, filtered);
     return res.json({ success: true, message: `Inquiry ${id} deleted`, remaining: filtered.length });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -2391,10 +2403,33 @@ router.post('/api/client/submissions', async (req, res) => {
       }
     }
 
+    const safeFileName = path.basename(String(item.fileName || 'receipt.jpg')).replace(/[^a-zA-Z0-9._ -]/g, '').slice(0, 150);
+    const cleanTotalStr = String(item.total ?? item.extractedAmount ?? 0).replace(/[^0-9.-]/g, '');
+    const rawTotal = parseFloat(cleanTotalStr);
+    const safeTotal = isNaN(rawTotal) || !isFinite(rawTotal) || rawTotal < 0 ? 0 : Math.min(rawTotal, 999999999.99);
+    const cleanTaxStr = String(item.tax ?? 0).replace(/[^0-9.-]/g, '');
+    const rawTax = parseFloat(cleanTaxStr);
+    const safeTax = isNaN(rawTax) || !isFinite(rawTax) || rawTax < 0 ? 0 : Math.min(rawTax, 999999999.99);
+    const safeVendor = String(item.vendor || item.extractedVendor || '').slice(0, 150).replace(/[<>]/g, '').trim();
+    const safeMemo = typeof item.memo === 'string' ? item.memo.slice(0, 1000).replace(/[<>]/g, '') : undefined;
+    const safeInvoiceNum = String(item.invoiceNumber || item.docNumber || item.referenceId || '').slice(0, 21).trim();
+    const safeCategory = String(item.categoryHint || item.irsCategory || '').slice(0, 100).replace(/[<>]/g, '').trim();
+    const safeClientName = String(item.clientName || '').slice(0, 150).replace(/[<>]/g, '').trim();
+
     const current = loadSubmissions();
     const newSubmission = {
       ...item,
       id: item.id || `sub-${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+      fileName: safeFileName,
+      clientName: safeClientName || item.clientName || 'Client Entity',
+      total: safeTotal,
+      extractedAmount: safeTotal,
+      tax: safeTax,
+      vendor: safeVendor,
+      extractedVendor: safeVendor,
+      memo: safeMemo,
+      invoiceNumber: safeInvoiceNum,
+      categoryHint: safeCategory,
       userId: requestingUserId || item.userId || null,
       companyName: requestingCompany || item.companyName || null,
       clientEmail: requestingEmail || item.clientEmail || null,
@@ -2480,13 +2515,17 @@ router.put('/api/client/submissions/:id', (req, res) => {
       }
     }
 
+    const ALLOWED_STATUSES = ['QUEUED', 'PROCESSING', 'SYNCED_QBO', 'ARCHIVED'];
+    const cleanStatus = status && ALLOWED_STATUSES.includes(status) ? status : undefined;
+    const { userId: _u, clientEmail: _em, realmId: _r, id: _id, ...safeDetails } = (details || {});
+
     let updatedItem: any = null;
     const updated = current.map((s: any) => {
       if (s.id === id) {
         updatedItem = {
           ...s,
-          ...(status ? { status } : {}),
-          ...details
+          ...(cleanStatus ? { status: cleanStatus } : {}),
+          ...safeDetails
         };
         return updatedItem;
       }

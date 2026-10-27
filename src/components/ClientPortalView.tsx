@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
   ShieldCheck, 
   UploadCloud, 
@@ -38,7 +38,8 @@ import {
   Printer, 
   Download,
   Eye,
-  X
+  X,
+  Zap
 } from 'lucide-react';
 import { LicenseKeyRecord, ProductInquiry, ClientAccountSession, PlanTier } from '../types';
 import { 
@@ -489,18 +490,55 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
     }, 400);
   };
 
-  // Calculations
-  const filteredSubmissions = submissions.filter(sub => {
-    if (statusFilter === 'ALL') return true;
-    return sub.status === statusFilter;
-  });
+  // Account-isolated submissions vs public/guest demonstration information
+  const visibleSubmissions = useMemo(() => {
+    if (clientSession) {
+      const sUserId = (clientSession.userId || '').trim().toLowerCase();
+      const sEmail = (clientSession.email || '').trim().toLowerCase();
+      const sComp = (clientSession.companyName || '').trim().toLowerCase();
+      const sName = (clientSession.displayName || '').trim().toLowerCase();
 
-  const totalAmountProcessed = submissions.reduce((sum, s: any) => {
-    const raw = s.extractedAmount ?? s.total ?? 0;
-    const num = typeof raw === 'number' ? raw : parseFloat(String(raw));
-    return sum + (isNaN(num) ? 0 : num);
-  }, 0);
-  const syncedCount = submissions.filter(s => s.status === 'SYNCED_QBO').length;
+      return submissions.filter(s => {
+        const uId = (s.userId || s.clientId || '').trim().toLowerCase();
+        const em = (s.clientEmail || '').trim().toLowerCase();
+        const comp = (s.companyName || '').trim().toLowerCase();
+        const nm = (s.clientName || '').trim().toLowerCase();
+
+        if (sUserId && uId && uId === sUserId) return true;
+        if (sEmail && em && em === sEmail) return true;
+        if (sComp && comp && comp === sComp) return true;
+        if (sName && nm && nm === sName) return true;
+        return false;
+      });
+    }
+
+    // If no account is logged in, show unassigned / public demonstration intake submissions
+    return submissions.filter(s => !s.userId && !s.clientEmail && !s.companyName);
+  }, [submissions, clientSession]);
+
+  // Calculations strictly based on visibleSubmissions
+  const filteredSubmissions = useMemo(() => {
+    return visibleSubmissions.filter(sub => {
+      if (statusFilter === 'ALL') return true;
+      return sub.status === statusFilter;
+    });
+  }, [visibleSubmissions, statusFilter]);
+
+  const totalAmountProcessed = useMemo(() => {
+    return visibleSubmissions.reduce((sum, s: any) => {
+      const raw = s.extractedAmount ?? s.total ?? 0;
+      const num = typeof raw === 'number' ? raw : parseFloat(String(raw));
+      return sum + (isNaN(num) ? 0 : num);
+    }, 0);
+  }, [visibleSubmissions]);
+
+  const syncedCount = useMemo(() => {
+    return visibleSubmissions.filter(s => s.status === 'SYNCED_QBO').length;
+  }, [visibleSubmissions]);
+
+  const queuedCount = useMemo(() => {
+    return visibleSubmissions.filter(s => s.status === 'QUEUED').length;
+  }, [visibleSubmissions]);
 
   return (
     <div className="min-h-screen bg-stone-950 text-stone-100 flex flex-col font-sans antialiased selection:bg-amber-500 selection:text-stone-950">
@@ -1386,6 +1424,111 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
               </div>
             )}
 
+            {/* Account Status Banner (When Logged In) vs QBO Integration Information Card (When No Account Is Logged In) */}
+            {clientSession ? (
+              <div className="p-4 rounded-2xl bg-stone-900/90 border border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-md">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center shrink-0">
+                    <Building2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="font-bold text-white flex items-center gap-2">
+                      <span>{clientSession.companyName || clientSession.displayName || 'Active Account'}</span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-semibold">
+                        ACCOUNT-ISOLATED LEDGER
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-stone-400 font-mono mt-0.5">
+                      {clientSession.email} • Plan: {clientSession.plan || 'Bookkeeping Active'} • Auto-Sync: Active
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="px-3 py-1.5 rounded-xl bg-stone-950 border border-stone-800 text-center">
+                    <div className="text-[9px] uppercase tracking-wider text-stone-400 font-mono font-semibold">Account Reconciled</div>
+                    <div className="text-xs font-bold font-mono text-emerald-400">${Number(totalAmountProcessed || 0).toFixed(2)}</div>
+                  </div>
+                  <div className="px-3 py-1.5 rounded-xl bg-stone-950 border border-stone-800 text-center">
+                    <div className="text-[9px] uppercase tracking-wider text-stone-400 font-mono font-semibold">QBO Synced</div>
+                    <div className="text-xs font-bold font-mono text-amber-400">{syncedCount} / {visibleSubmissions.length}</div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-stone-900 via-stone-900 to-stone-950 border border-stone-800 space-y-4 shadow-xl">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+                      <Info className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>Submission Ledger &amp; QuickBooks Online Status</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/30">
+                          GUEST / PUBLIC INFORMATION
+                        </span>
+                      </h4>
+                      <p className="text-xs text-stone-400 leading-relaxed mt-1">
+                        No account is currently logged in. Showing general system information and public intakes below.
+                        Sign in or register an account to view and manage your company's dedicated private ledger and live QuickBooks sync history.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 self-start sm:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('login');
+                        setShowAuthModal(true);
+                      }}
+                      className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs rounded-xl transition-colors cursor-pointer"
+                    >
+                      Sign In
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAuthModalMode('register');
+                        setShowAuthModal(true);
+                      }}
+                      className="px-3.5 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 font-bold text-xs rounded-xl transition-colors cursor-pointer border border-stone-700"
+                    >
+                      Register Account
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs border-t border-stone-800/80">
+                  <div className="p-3 rounded-xl bg-stone-950/60 border border-stone-800/80 space-y-1">
+                    <div className="text-[10px] uppercase font-mono tracking-wider text-amber-400 font-semibold flex items-center gap-1.5">
+                      <Zap className="w-3.5 h-3.5" />
+                      <span>QBO Sync Broker</span>
+                    </div>
+                    <div className="font-bold text-white">Live Broker Active</div>
+                    <div className="text-[11px] text-stone-400">OAuth 2.0 with rolling 101-day renewal.</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-stone-950/60 border border-stone-800/80 space-y-1">
+                    <div className="text-[10px] uppercase font-mono tracking-wider text-emerald-400 font-semibold flex items-center gap-1.5">
+                      <CreditCard className="w-3.5 h-3.5" />
+                      <span>Default Posting Routing</span>
+                    </div>
+                    <div className="font-bold text-white">Mastercard &amp; Checking</div>
+                    <div className="text-[11px] text-stone-400">Auto-routes to your company's default account.</div>
+                  </div>
+                  <div className="p-3 rounded-xl bg-stone-950/60 border border-stone-800/80 space-y-1">
+                    <div className="text-[10px] uppercase font-mono tracking-wider text-sky-400 font-semibold flex items-center gap-1.5">
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      <span>Tax Deductions</span>
+                    </div>
+                    <div className="font-bold text-white">IRS Sch C &amp; Sch F</div>
+                    <div className="text-[11px] text-stone-400">Classifies expenses into official IRS line items.</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Filter bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-stone-900/90 border border-stone-800 text-xs">
               <div className="flex items-center gap-2">
@@ -1399,7 +1542,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
                   }`}
                 >
-                  All ({submissions.length})
+                  All ({visibleSubmissions.length})
                 </button>
                 <button
                   type="button"
@@ -1421,7 +1564,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
                   }`}
                 >
-                  In Intake Queue ({submissions.filter(s => s.status === 'QUEUED').length})
+                  In Intake Queue ({queuedCount})
                 </button>
               </div>
 
@@ -1435,7 +1578,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   <span>View Tax Schedules (C & F)</span>
                 </button>
                 <span className="text-[11px] text-stone-400">
-                  Showing {filteredSubmissions.length} of {submissions.length} receipts
+                  Showing {filteredSubmissions.length} of {visibleSubmissions.length} receipts
                 </span>
               </div>
             </div>
@@ -1444,9 +1587,13 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
             {filteredSubmissions.length === 0 ? (
               <div className="p-12 text-center rounded-2xl bg-stone-900/40 border border-stone-800 space-y-3">
                 <Receipt className="w-10 h-10 text-stone-600 mx-auto" />
-                <h4 className="text-sm font-bold text-stone-300">No receipts found for this filter</h4>
+                <h4 className="text-sm font-bold text-stone-300">
+                  {clientSession ? 'No receipts found for this account' : 'No public demonstration receipts found'}
+                </h4>
                 <p className="text-xs text-stone-500 max-w-sm mx-auto">
-                  Click 'Upload New Receipts' to add receipts or forward receipt attachments to your intake email address.
+                  {clientSession
+                    ? "Click 'Upload First Receipt' to submit receipts for your business, or forward receipt attachments to your intake email address."
+                    : "Sign in or register to access your company's private submission records, or upload a receipt to begin."}
                 </p>
                 <button
                   type="button"
@@ -1602,7 +1749,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
         {/* TAB 3: Tax Schedules (C & F) */}
         {activeTab === 'tax_schedules' && (
           <ClientTaxSchedulesView
-            submissions={submissions}
+            submissions={visibleSubmissions}
             clientSession={clientSession}
             onSubscribeClick={() => setActiveTab('services')}
             onActivateKeyClick={() => {
