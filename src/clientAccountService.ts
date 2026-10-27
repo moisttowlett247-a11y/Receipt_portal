@@ -814,12 +814,88 @@ export async function authenticateClientAccount(
   };
 
   if (!account) {
+    // Attempt backend server login for cross-device authentication
+    try {
+      const resp = await fetch(`${getBackendApiUrl()}/api/client/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: clean, password }),
+        signal: AbortSignal.timeout(3000)
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.success && data.account) {
+          clearFailedClientAttempts();
+          const serverAcc = data.account;
+          const session: ClientAccountSession = {
+            userId: serverAcc.id,
+            username: serverAcc.username,
+            displayName: serverAcc.displayName,
+            email: serverAcc.email,
+            companyName: serverAcc.companyName,
+            licenseKey: serverAcc.licenseKey,
+            plan: serverAcc.plan,
+            planTier: serverAcc.planTier,
+            planStatus: serverAcc.planStatus || (serverAcc.licenseKey ? 'ACTIVE' : 'NONE'),
+            planPurchasedAt: serverAcc.planPurchasedAt,
+            planExpiresAt: serverAcc.planExpiresAt,
+            receiptQuota: serverAcc.receiptQuota,
+            receiptsSubmittedCount: serverAcc.receiptsSubmittedCount || 0,
+            token: 'tk_' + generateCryptographicSalt(24),
+            loggedInAt: new Date().toISOString()
+          };
+          saveClientSession(session);
+          const currentLocal = getStoredClientAccounts();
+          if (!currentLocal.some(a => a.id === serverAcc.id)) {
+            saveStoredClientAccounts([...currentLocal, serverAcc]);
+          }
+          return { success: true, session };
+        }
+      }
+    } catch {}
+
     recordFailedClientAttempt();
     return { success: false, error: 'Invalid username/email or password.' };
   }
 
   const computed = await computeClientPasswordHash(password, account.salt, account.username);
   if (computed !== account.passwordHash) {
+    // Also verify against server in case password was updated elsewhere
+    try {
+      const resp = await fetch(`${getBackendApiUrl()}/api/client/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: clean, password }),
+        signal: AbortSignal.timeout(2500)
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data && data.success && data.account) {
+          clearFailedClientAttempts();
+          const serverAcc = data.account;
+          const session: ClientAccountSession = {
+            userId: serverAcc.id,
+            username: serverAcc.username,
+            displayName: serverAcc.displayName,
+            email: serverAcc.email,
+            companyName: serverAcc.companyName,
+            licenseKey: serverAcc.licenseKey,
+            plan: serverAcc.plan,
+            planTier: serverAcc.planTier,
+            planStatus: serverAcc.planStatus || (serverAcc.licenseKey ? 'ACTIVE' : 'NONE'),
+            planPurchasedAt: serverAcc.planPurchasedAt,
+            planExpiresAt: serverAcc.planExpiresAt,
+            receiptQuota: serverAcc.receiptQuota,
+            receiptsSubmittedCount: serverAcc.receiptsSubmittedCount || 0,
+            token: 'tk_' + generateCryptographicSalt(24),
+            loggedInAt: new Date().toISOString()
+          };
+          saveClientSession(session);
+          return { success: true, session };
+        }
+      }
+    } catch {}
+
     recordFailedClientAttempt();
     return { success: false, error: 'Invalid username/email or password.' };
   }

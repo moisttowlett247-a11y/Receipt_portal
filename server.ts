@@ -2839,6 +2839,45 @@ router.post('/api/client/register', rateLimiter(25, 60000), (req, res) => {
   }
 });
 
+// Client Login Endpoint with rate limiting and timing-safe hash verification
+router.post('/api/client/login', rateLimiter(20, 60000), (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    const cleanUser = String(username || '').slice(0, 120).trim().toLowerCase();
+    if (!cleanUser || !password) {
+      return res.status(400).json({ success: false, error: 'Username/email and password required.' });
+    }
+
+    const accounts = loadAccounts();
+    const account = accounts.find((a: any) => 
+      a && ((a.username && a.username.toLowerCase() === cleanUser) || (a.email && a.email.toLowerCase() === cleanUser))
+    );
+
+    if (!account || !account.passwordHash || !account.salt) {
+      return res.status(401).json({ success: false, error: 'Invalid username/email or password.' });
+    }
+
+    const computedHash = crypto.pbkdf2Sync(password, `${account.salt}:${account.username}`, 100000, 64, 'sha512').toString('hex');
+    
+    // Constant-time buffer comparison to prevent side-channel timing attacks
+    const bufA = Buffer.from(computedHash, 'hex');
+    const bufB = Buffer.from(account.passwordHash, 'hex');
+    const isValid = bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB);
+
+    if (!isValid) {
+      return res.status(401).json({ success: false, error: 'Invalid username/email or password.' });
+    }
+
+    account.lastLoginAt = new Date().toISOString();
+    saveAccounts(accounts);
+
+    const { passwordHash: _, salt: __, ...safe } = account;
+    return res.json({ success: true, account: safe });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Admin & Client Accounts Persistence Endpoints
 router.get('/api/admin/accounts', (req, res) => {
   try {
@@ -4266,6 +4305,24 @@ router.post('/api/qbo/webhook', (req, res) => {
   const body = req.body || {};
   const signature = req.headers['intuit-signature'];
   console.log('[QBO Webhook] Received event payload:', JSON.stringify(body), 'signature:', signature);
+
+  // HMAC-SHA256 signature verification if webhookVerifierToken is configured
+  const cfg = getStoredConfig();
+  if (cfg.webhookVerifierToken && signature) {
+    try {
+      const payloadString = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      const computedSig = crypto.createHmac('sha256', cfg.webhookVerifierToken).update(payloadString).digest('base64');
+      const bufA = Buffer.from(computedSig);
+      const bufB = Buffer.from(String(signature));
+      if (bufA.length !== bufB.length || !crypto.timingSafeEqual(bufA, bufB)) {
+        console.warn('[QBO Webhook] Invalid webhook signature detected');
+        return res.status(401).json({ error: 'Invalid webhook signature' });
+      }
+    } catch (sigErr) {
+      console.warn('[QBO Webhook] Signature verification error:', sigErr);
+      return res.status(401).json({ error: 'Signature verification failed' });
+    }
+  }
 
   const notifications = body?.eventNotifications || [];
   for (const notification of notifications) {
