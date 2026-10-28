@@ -36,7 +36,11 @@ import {
   FileSpreadsheet,
   Menu,
   Home,
-  ArrowLeft
+  ArrowLeft,
+  Search,
+  Command,
+  Activity,
+  BookOpen
 } from 'lucide-react';
 import { 
   LicenseKeyRecord, 
@@ -62,6 +66,10 @@ import { AdminReceiptProcessorEngine } from './components/AdminReceiptProcessorE
 import { AdminTaxDocumentsCenter } from './components/AdminTaxDocumentsCenter';
 import { AdminHomeOverview } from './components/AdminHomeOverview';
 import { AdminHamburgerMenu, AdminTab } from './components/AdminHamburgerMenu';
+import { AdminCommandPalette } from './components/AdminCommandPalette';
+import { AdminDiagnosticsCenter } from './components/AdminDiagnosticsCenter';
+import { AdminAuditLogCenter } from './components/AdminAuditLogCenter';
+import { AdminResourcesCenter } from './components/AdminResourcesCenter';
 import { downloadFullBundleZip, triggerFileDownload, getReceiptProcessorPyCode } from './bundleDownloadService';
 import { getStoredGitHubConfig, syncSingleKeyToGitHub } from './githubSyncService';
 import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCloudflareLicenses, clearAdminToken, logoutFromCloudflareAdmin } from './licenseSyncService';
@@ -76,6 +84,8 @@ const INITIAL_KEYS: LicenseKeyRecord[] = [];
 export default function App() {
   const [activeTab, setActiveTab] = useState<AdminTab>('home');
   const [isHamburgerOpen, setIsHamburgerOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'security' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
@@ -311,12 +321,51 @@ export default function App() {
       // Operator shortcut: Ctrl+Shift+A or Alt+A to navigate to admin console
       if ((e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'a') || (e.altKey && e.key.toLowerCase() === 'a')) {
         navigateTo('/admin');
+        return;
       }
+
+      // Check if inside authenticated Admin Console
+      const inAdmin = checkIsAdminPath();
+      const isAuth = sessionStorage.getItem('receipt_processor_admin_auth') === 'true';
+
+      // Admin Command Palette: Ctrl+K or Cmd+K
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        if (inAdmin && isAuth) {
+          e.preventDefault();
+          setIsCommandPaletteOpen(prev => !prev);
+        }
+        return;
+      }
+
+      // Direct Quick Tab Navigation: Alt + [1-9, 0]
+      if (inAdmin && isAuth && e.altKey && !e.ctrlKey && !e.metaKey) {
+        const tabMap: Record<string, AdminTab> = {
+          '1': 'home',
+          '2': 'scanner',
+          '3': 'intake',
+          '4': 'qbo',
+          '5': 'tax_hub',
+          '6': 'licensing',
+          '7': 'devices',
+          '8': 'diagnostics',
+          '9': 'audit_logs',
+          '0': 'resources'
+        };
+        if (tabMap[e.key]) {
+          e.preventDefault();
+          setActiveTab(tabMap[e.key]);
+        }
+      }
+    };
+
+    const handleOpenPalette = () => {
+      setIsCommandPaletteOpen(true);
     };
 
     window.addEventListener('popstate', handleLocationChange);
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('open_admin_command_palette', handleOpenPalette);
 
     // Periodic background synchronization for client accounts and submissions
     const syncInterval = setInterval(() => {
@@ -366,6 +415,7 @@ export default function App() {
       window.removeEventListener('popstate', handleLocationChange);
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('open_admin_command_palette', handleOpenPalette);
       clearInterval(syncInterval);
     };
   }, []);
@@ -1134,100 +1184,234 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Admin Navigation Bar with Hamburger Menu & Home Button */}
-      <nav className="border-b border-stone-800/80 bg-stone-900/60 px-6 py-2.5 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          {/* Hamburger Menu Toggle Button */}
+      {/* Main Admin Navigation Bar with Quick Command, Core Tabs, and More Tools */}
+      <nav className="border-b border-stone-800/80 bg-stone-900/80 backdrop-blur-md px-4 sm:px-6 py-2 flex items-center justify-between gap-3 sticky top-0 z-30">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+          {/* Quick Command Omni-Search (Ctrl+K) */}
           <button
-            onClick={() => setIsHamburgerOpen(true)}
-            className="flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-stone-850 hover:bg-stone-800 text-stone-200 border border-stone-700 hover:border-amber-500/50 transition-all cursor-pointer shadow-sm group"
-            title="Open navigation menu to choose from all 10 admin sections"
+            onClick={() => setIsCommandPaletteOpen(true)}
+            className="flex items-center gap-2 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-stone-950 hover:bg-stone-800 text-stone-200 border border-stone-750 hover:border-amber-500/50 transition-all cursor-pointer shadow-sm group shrink-0 mr-1"
+            title="Open Command Palette & Omni-Search (Ctrl+K or ⌘K)"
           >
-            <Menu className="w-4 h-4 text-amber-400 group-hover:scale-110 transition-transform" />
-            <span>All Sections</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-semibold">
-              10
-            </span>
+            <Search className="w-3.5 h-3.5 text-amber-400 group-hover:scale-110 transition-transform" />
+            <span className="hidden md:inline font-mono text-[11px] text-stone-300">Command</span>
+            <kbd className="hidden sm:inline-flex items-center text-[10px] font-mono px-1.5 py-0.2 rounded bg-stone-850 text-amber-300/90 border border-stone-750 font-bold">
+              ⌘K
+            </kbd>
           </button>
 
-          {/* Dedicated Home Overview Button */}
-          <button
-            onClick={() => setActiveTab('home')}
-            className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-bold rounded-lg border transition-all cursor-pointer shadow-sm ${
-              activeTab === 'home'
-                ? 'bg-amber-500 text-stone-950 border-amber-400 shadow-amber-500/20 shadow-md font-extrabold'
-                : 'bg-stone-850 hover:bg-stone-800 text-stone-300 border-stone-700'
-            }`}
-            title="Return to Home Overview Dashboard"
-          >
-            <Home className="w-4 h-4" />
-            <span>Home Overview</span>
-          </button>
-
-          {/* Breadcrumb / Active Module Indicator */}
-          <div className="h-4 w-px bg-stone-800 hidden sm:block" />
-
-          {activeTab === 'home' ? (
-            <div className="hidden sm:flex items-center gap-2 text-xs text-stone-400">
-              <span className="text-stone-500 font-mono">Overview:</span>
-              <span className="text-stone-300 font-medium">Platform Command Center &amp; Directory</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-stone-500">Active Module:</span>
-              <span className="font-semibold text-stone-200 px-2.5 py-1 rounded-lg bg-stone-950 border border-stone-800 flex items-center gap-1.5 shadow-inner">
-                {activeTab === 'scanner' && <Cpu className="w-3.5 h-3.5 text-emerald-400" />}
-                {activeTab === 'intake' && <Inbox className="w-3.5 h-3.5 text-amber-400" />}
-                {activeTab === 'tax_hub' && <FileSpreadsheet className="w-3.5 h-3.5 text-purple-400" />}
-                {activeTab === 'qbo' && <Building2 className="w-3.5 h-3.5 text-emerald-400" />}
-                {activeTab === 'devices' && <Radio className="w-3.5 h-3.5 text-emerald-400" />}
-                {activeTab === 'licensing' && <Key className="w-3.5 h-3.5 text-amber-400" />}
-                {activeTab === 'updater' && <RefreshCw className="w-3.5 h-3.5 text-sky-400" />}
-                {activeTab === 'guide' && <Layers className="w-3.5 h-3.5 text-emerald-400" />}
-                {activeTab === 'code' && <FileCode2 className="w-3.5 h-3.5 text-purple-400" />}
-                <span>
-                  {activeTab === 'scanner' && 'Receipt Processing & Parallel Engine'}
-                  {activeTab === 'intake' && 'Client Intake & Multi-VM Cluster'}
-                  {activeTab === 'tax_hub' && 'W-2 & 1099 Tax Hub'}
-                  {activeTab === 'qbo' && 'QuickBooks Online Production'}
-                  {activeTab === 'devices' && 'Live Connected Devices & Active IPs'}
-                  {activeTab === 'licensing' && 'Subscription & Key Registry'}
-                  {activeTab === 'updater' && 'Auto-Update System'}
-                  {activeTab === 'guide' && 'Subscription Architecture Guide'}
-                  {activeTab === 'code' && 'Integrated Python Code'}
-                </span>
-              </span>
-
+          {/* Primary Interactive Module Tabs */}
+          {[
+            { id: 'home' as AdminTab, label: 'Overview', icon: Home, shortcut: 'Alt+1' },
+            { id: 'scanner' as AdminTab, label: 'Scanner Engine', icon: Cpu, shortcut: 'Alt+2' },
+            { id: 'intake' as AdminTab, label: 'Client Intake', icon: Inbox, shortcut: 'Alt+3', count: pendingSubmissionsCount },
+            { id: 'qbo' as AdminTab, label: 'QuickBooks', icon: Building2, shortcut: 'Alt+4' },
+            { id: 'tax_hub' as AdminTab, label: 'Tax Hub', icon: FileSpreadsheet, shortcut: 'Alt+5' },
+            { id: 'licensing' as AdminTab, label: 'Licenses', icon: Key, shortcut: 'Alt+6' },
+            { id: 'devices' as AdminTab, label: 'Active IPs', icon: Radio, shortcut: 'Alt+7' },
+          ].map(tab => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
               <button
-                onClick={() => setActiveTab('home')}
-                className="text-stone-400 hover:text-amber-400 text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ml-1"
-                title="Return to Home Overview"
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  setIsMoreMenuOpen(false);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-all cursor-pointer shrink-0 border ${
+                  isActive
+                    ? 'bg-amber-500 text-stone-950 border-amber-400 font-bold shadow-sm shadow-amber-500/20'
+                    : 'text-stone-300 hover:text-white bg-transparent hover:bg-stone-800/80 border-transparent hover:border-stone-750'
+                }`}
+                title={`Switch to ${tab.label} (${tab.shortcut})`}
               >
-                <span>&larr; Back to Home</span>
+                <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-stone-950' : 'text-stone-400'}`} />
+                <span>{tab.label}</span>
+                {tab.count !== undefined && tab.count > 0 && (
+                  <span className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded ${
+                    isActive ? 'bg-stone-950 text-amber-400' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                  }`}>
+                    {tab.count}
+                  </span>
+                )}
               </button>
-            </div>
-          )}
+            );
+          })}
+
+          {/* More Tools Dropdown */}
+          <div className="relative shrink-0">
+            <button
+              onClick={() => setIsMoreMenuOpen(prev => !prev)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-all cursor-pointer ${
+                isMoreMenuOpen || ['updater', 'guide', 'code', 'diagnostics', 'audit_logs', 'resources'].includes(activeTab)
+                  ? 'bg-stone-800 text-stone-100 border-stone-700'
+                  : 'text-stone-400 hover:text-stone-200 bg-transparent hover:bg-stone-800/60 border-transparent'
+              }`}
+              title="More System Modules and Tools"
+            >
+              <span>More</span>
+              <ChevronDown className={`w-3 h-3 text-stone-400 transition-transform ${isMoreMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {isMoreMenuOpen && (
+              <>
+                <div 
+                  className="fixed inset-0 z-40" 
+                  onClick={() => setIsMoreMenuOpen(false)} 
+                />
+                <div className="absolute left-0 mt-1.5 w-64 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+                  <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-stone-500 font-semibold border-b border-stone-800 mb-1">
+                    Diagnostics &amp; System Tools
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('diagnostics');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
+                      activeTab === 'diagnostics' ? 'bg-amber-500/10 text-amber-300 font-medium' : 'text-stone-300 hover:bg-stone-800 hover:text-stone-100'
+                    }`}
+                  >
+                    <Activity className="w-3.5 h-3.5 text-amber-400" />
+                    <div className="flex-1">
+                      <div>System Health &amp; Diagnostics</div>
+                      <div className="text-[10px] text-stone-500">Live latency probe &amp; memory heap</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('audit_logs');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
+                      activeTab === 'audit_logs' ? 'bg-amber-500/10 text-amber-300 font-medium' : 'text-stone-300 hover:bg-stone-800 hover:text-stone-100'
+                    }`}
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                    <div className="flex-1">
+                      <div>Security &amp; Activity Audit Log</div>
+                      <div className="text-[10px] text-stone-500">Forensics, severity filter &amp; CSV</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('resources');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
+                      activeTab === 'resources' ? 'bg-amber-500/10 text-amber-300 font-medium' : 'text-stone-300 hover:bg-stone-800 hover:text-stone-100'
+                    }`}
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+                    <div className="flex-1">
+                      <div>Operator Resource Hub</div>
+                      <div className="text-[10px] text-stone-500">QBO setup, IRS tax &amp; systemd</div>
+                    </div>
+                  </button>
+
+                  <div className="my-1 border-t border-stone-800" />
+                  
+                  <button
+                    onClick={() => {
+                      setActiveTab('updater');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
+                      activeTab === 'updater' ? 'bg-amber-500/10 text-amber-300 font-medium' : 'text-stone-300 hover:bg-stone-800 hover:text-stone-100'
+                    }`}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 text-sky-400" />
+                    <div className="flex-1">
+                      <div>Auto-Update Center</div>
+                      <div className="text-[10px] text-stone-500">v{currentVersion} • Git &amp; Server Sync</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('guide');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
+                      activeTab === 'guide' ? 'bg-amber-500/10 text-amber-300 font-medium' : 'text-stone-300 hover:bg-stone-800 hover:text-stone-100'
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5 text-emerald-400" />
+                    <div className="flex-1">
+                      <div>Architecture Guide</div>
+                      <div className="text-[10px] text-stone-500">Subscription &amp; Multi-VM design</div>
+                    </div>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab('code');
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left transition-colors cursor-pointer ${
+                      activeTab === 'code' ? 'bg-amber-500/10 text-amber-300 font-medium' : 'text-stone-300 hover:bg-stone-800 hover:text-stone-100'
+                    }`}
+                  >
+                    <FileCode2 className="w-3.5 h-3.5 text-purple-400" />
+                    <div className="flex-1">
+                      <div>Python Engine Code</div>
+                      <div className="text-[10px] text-stone-500">Standalone CLI &amp; parser scripts</div>
+                    </div>
+                  </button>
+
+                  <div className="my-1 border-t border-stone-800" />
+
+                  <button
+                    onClick={() => {
+                      setIsInquiriesModalOpen(true);
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left text-stone-300 hover:bg-stone-800 hover:text-stone-100 transition-colors cursor-pointer"
+                  >
+                    <Mail className="w-3.5 h-3.5 text-sky-400" />
+                    <span>Inquiries &amp; Support Messages</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsBundleModalOpen(true);
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left text-stone-300 hover:bg-stone-800 hover:text-stone-100 transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Download Desktop Package</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsHamburgerOpen(true);
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-left text-amber-400 hover:bg-stone-800 transition-colors cursor-pointer font-medium border-t border-stone-800/80 mt-1"
+                  >
+                    <Menu className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Open Full 10-Section Drawer</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Right side quick status / switcher */}
-        <div className="flex items-center gap-2">
-          {pendingSubmissionsCount > 0 && (
-            <button
-              onClick={() => setActiveTab('intake')}
-              className="px-2.5 py-1 rounded-md text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 hover:bg-amber-500/30 transition-colors cursor-pointer"
-            >
-              <Inbox className="w-3 h-3 text-amber-400" />
-              <span>{pendingSubmissionsCount} Intake Pending</span>
-            </button>
-          )}
-
+        {/* Right Utility Buttons */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={() => setIsHamburgerOpen(true)}
-            className="px-2.5 py-1 text-xs text-stone-300 hover:text-amber-300 hover:bg-stone-800 rounded-md transition-colors cursor-pointer flex items-center gap-1.5 border border-stone-800"
-            title="Browse all 10 sections in hamburger drawer"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg bg-stone-850 hover:bg-stone-800 text-stone-300 border border-stone-750 hover:border-amber-500/40 transition-colors cursor-pointer"
+            title="Browse all 10 sections in complete drawer menu"
           >
-            <span>Choose Section</span>
-            <ChevronDown className="w-3.5 h-3.5 text-stone-400" />
+            <Menu className="w-3.5 h-3.5 text-amber-400" />
+            <span className="hidden sm:inline">All Sections</span>
           </button>
         </div>
       </nav>
@@ -2280,6 +2464,26 @@ class UpdateManager:
             </div>
           </div>
         )}
+
+        {/* TAB 10: SYSTEM HEALTH & DIAGNOSTICS */}
+        {activeTab === 'diagnostics' && (
+          <AdminDiagnosticsCenter
+            onToast={showToast}
+            onNavigateToQBO={() => setActiveTab('qbo')}
+            onNavigateToIntake={() => setActiveTab('intake')}
+            onNavigateToLicenses={() => setActiveTab('licensing')}
+          />
+        )}
+
+        {/* TAB 11: SECURITY & ACTIVITY AUDIT LOG */}
+        {activeTab === 'audit_logs' && (
+          <AdminAuditLogCenter onToast={showToast} />
+        )}
+
+        {/* TAB 12: ENTERPRISE OPERATOR RESOURCES & GUIDES */}
+        {activeTab === 'resources' && (
+          <AdminResourcesCenter onToast={showToast} />
+        )}
       </main>
 
       {/* DISMISSIBLE UPDATE MODAL SIMULATOR */}
@@ -2460,6 +2664,41 @@ class UpdateManager:
         onOpenBundleModal={() => setIsBundleModalOpen(true)}
         onLockConsole={handleLockAdminPanel}
         onGoToPublicPortal={() => navigateTo('/')}
+      />
+
+      {/* Admin Command & Omni-Search Palette (Ctrl+K / ⌘K) */}
+      <AdminCommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        activeTab={activeTab}
+        onNavigateTab={(tab) => {
+          setActiveTab(tab);
+          setIsCommandPaletteOpen(false);
+        }}
+        licenseKeys={licenseKeys}
+        pendingSubmissionsCount={pendingSubmissionsCount}
+        onOpenBundleModal={() => {
+          setIsCommandPaletteOpen(false);
+          setIsBundleModalOpen(true);
+        }}
+        onOpenInquiriesModal={() => {
+          setIsCommandPaletteOpen(false);
+          setIsInquiriesModalOpen(true);
+        }}
+        onOpenUpdateModal={() => {
+          setIsCommandPaletteOpen(false);
+          setShowUpdateModal(true);
+          setUpdateDismissed(false);
+        }}
+        onOpenPinModal={() => {
+          setIsCommandPaletteOpen(false);
+          setShowPinModal(true);
+        }}
+        onLockConsole={() => {
+          setIsCommandPaletteOpen(false);
+          handleLockAdminPanel();
+        }}
+        onToast={showToast}
       />
 
       {/* Toast Notification Banner */}

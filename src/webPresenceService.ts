@@ -16,17 +16,53 @@ export interface WebPresencePayload {
   role?: string;
 }
 
-function getBrowserAndOsInfo(): { browser: string; os: string; isMobile: boolean; summary: string } {
+export interface ClientHardwareTelemetry {
+  browser: string;
+  browserVersion?: string;
+  os: string;
+  osVersion?: string;
+  isMobile: boolean;
+  summary: string;
+  screenResolution?: string;
+  viewport?: string;
+  deviceMemory?: string;
+  hardwareConcurrency?: string;
+  language?: string;
+  timezone?: string;
+  connectionType?: string;
+  pixelRatio?: string;
+  touchSupported?: boolean;
+  colorDepth?: string;
+  platform?: string;
+}
+
+function getBrowserAndOsInfo(): ClientHardwareTelemetry {
   if (typeof navigator === 'undefined') {
     return { browser: 'Browser', os: 'OS', isMobile: false, summary: 'Web Client' };
   }
 
   const ua = navigator.userAgent;
   let browser = 'Chrome';
-  if (ua.includes('Firefox')) browser = 'Firefox';
-  else if (ua.includes('Edg/')) browser = 'Edge';
-  else if (ua.includes('Safari') && !ua.includes('Chrome')) browser = 'Safari';
-  else if (ua.includes('OPR/') || ua.includes('Opera')) browser = 'Opera';
+  let browserVersion = '';
+  if (ua.includes('Firefox')) {
+    browser = 'Firefox';
+    const match = ua.match(/Firefox\/(\d+(\.\d+)?)/);
+    if (match) browserVersion = match[1];
+  } else if (ua.includes('Edg/')) {
+    browser = 'Edge';
+    const match = ua.match(/Edg\/(\d+(\.\d+)?)/);
+    if (match) browserVersion = match[1];
+  } else if (ua.includes('Safari') && !ua.includes('Chrome')) {
+    browser = 'Safari';
+    const match = ua.match(/Version\/(\d+(\.\d+)?)/);
+    if (match) browserVersion = match[1];
+  } else if (ua.includes('OPR/') || ua.includes('Opera')) {
+    browser = 'Opera';
+  } else if (ua.includes('Chrome')) {
+    browser = 'Chrome';
+    const match = ua.match(/Chrome\/(\d+(\.\d+)?)/);
+    if (match) browserVersion = match[1];
+  }
 
   let os = 'Windows';
   if (ua.includes('Macintosh') || ua.includes('Mac OS')) os = 'macOS';
@@ -35,9 +71,42 @@ function getBrowserAndOsInfo(): { browser: string; os: string; isMobile: boolean
   else if (ua.includes('Android')) os = 'Android';
 
   const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
-  const summary = `${browser} on ${os}${isMobile ? ' (Mobile)' : ''}`;
+  const summary = `${browser} ${browserVersion} on ${os}${isMobile ? ' (Mobile)' : ''}`.trim();
 
-  return { browser, os, isMobile, summary };
+  const screenRes = typeof window !== 'undefined' && window.screen ? `${window.screen.width}x${window.screen.height}` : undefined;
+  const viewport = typeof window !== 'undefined' ? `${window.innerWidth}x${window.innerHeight}` : undefined;
+  const navAny = typeof navigator !== 'undefined' ? (navigator as any) : {};
+  const deviceMem = navAny.deviceMemory ? `${navAny.deviceMemory} GB` : undefined;
+  const hwConcurrency = navigator.hardwareConcurrency ? `${navigator.hardwareConcurrency} Cores` : undefined;
+  const lang = navigator.language || 'en-US';
+  let tz = 'UTC';
+  try {
+    tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  } catch {}
+  const connType = navAny.connection?.effectiveType ? `${navAny.connection.effectiveType.toUpperCase()}` : undefined;
+  const pixelRatio = typeof window !== 'undefined' && window.devicePixelRatio ? `${window.devicePixelRatio}x` : '1x';
+  const touch = typeof navigator !== 'undefined' ? (navigator.maxTouchPoints > 0) : false;
+  const colorDepth = typeof window !== 'undefined' && window.screen ? `${window.screen.colorDepth}-bit` : '24-bit';
+  const platform = typeof navigator !== 'undefined' ? navigator.platform : undefined;
+
+  return {
+    browser,
+    browserVersion,
+    os,
+    isMobile,
+    summary,
+    screenResolution: screenRes,
+    viewport,
+    deviceMemory: deviceMem,
+    hardwareConcurrency: hwConcurrency,
+    language: lang,
+    timezone: tz,
+    connectionType: connType,
+    pixelRatio,
+    touchSupported: touch,
+    colorDepth,
+    platform
+  };
 }
 
 function getOrCreateWebSessionId(): string {
@@ -114,8 +183,23 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
     licenseKey: payload.licenseKey || '',
     ip: clientIp || '', // Pass detected IP to worker
     browserInfo: sys.summary,
+    browserName: sys.browser,
+    browserVersion: sys.browserVersion,
+    osName: sys.os,
     isMobile: sys.isMobile,
     deviceCategory: sys.isMobile ? 'Mobile Web' : 'Browser / Web Client',
+    screenResolution: sys.screenResolution,
+    viewport: sys.viewport,
+    deviceMemory: sys.deviceMemory,
+    hardwareConcurrency: sys.hardwareConcurrency,
+    language: sys.language,
+    timezone: sys.timezone,
+    connectionType: sys.connectionType,
+    pixelRatio: sys.pixelRatio,
+    touchSupported: sys.touchSupported,
+    colorDepth: sys.colorDepth,
+    platform: sys.platform,
+    lastActiveRoute: typeof window !== 'undefined' ? (window.location.pathname + (window.location.search ? window.location.search : '')) : '/',
     timestamp: new Date().toISOString()
   };
 

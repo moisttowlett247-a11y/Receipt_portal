@@ -764,9 +764,11 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
           >
             <Receipt className="w-4 h-4" />
             <span>Submission Ledger & QBO Status</span>
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-stone-800 font-mono text-stone-300">
-              {submissions.length}
-            </span>
+            {clientSession && (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-stone-800 font-mono text-stone-300">
+                {visibleSubmissions.length}
+              </span>
+            )}
           </button>
 
           <button
@@ -1542,7 +1544,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
                   }`}
                 >
-                  All ({visibleSubmissions.length})
+                  All {clientSession ? `(${visibleSubmissions.length})` : ''}
                 </button>
                 <button
                   type="button"
@@ -1553,7 +1555,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
                   }`}
                 >
-                  Synced to QBO ({syncedCount})
+                  Synced to QBO {clientSession ? `(${syncedCount})` : ''}
                 </button>
                 <button
                   type="button"
@@ -1564,7 +1566,7 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                       : 'bg-stone-800 text-stone-300 hover:bg-stone-700'
                   }`}
                 >
-                  In Intake Queue ({queuedCount})
+                  In Intake Queue {clientSession ? `(${queuedCount})` : ''}
                 </button>
               </div>
 
@@ -1577,9 +1579,15 @@ export const ClientPortalView: React.FC<ClientPortalViewProps> = ({
                   <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
                   <span>View Tax Schedules (C & F)</span>
                 </button>
-                <span className="text-[11px] text-stone-400">
-                  Showing {filteredSubmissions.length} of {visibleSubmissions.length} receipts
-                </span>
+                {clientSession ? (
+                  <span className="text-[11px] text-stone-400">
+                    Showing {filteredSubmissions.length} of {visibleSubmissions.length} receipts
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-stone-500 italic">
+                    Public Intake View
+                  </span>
+                )}
               </div>
             </div>
 

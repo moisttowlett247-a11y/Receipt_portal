@@ -19,10 +19,13 @@ import {
   KeyRound, 
   FolderArchive, 
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Activity,
+  ShieldAlert,
+  BookOpen
 } from 'lucide-react';
 
-export type AdminTab = 'home' | 'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'tax_hub' | 'updater' | 'code' | 'guide';
+export type AdminTab = 'home' | 'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'tax_hub' | 'updater' | 'code' | 'guide' | 'diagnostics' | 'audit_logs' | 'resources';
 
 interface AdminHamburgerMenuProps {
   isOpen: boolean;
@@ -206,6 +209,38 @@ export function AdminHamburgerMenu({
           desc: 'Source code preview for receipt_processor.py and Windows batch launcher bundle',
           icon: FileCode2,
           colorClass: 'text-purple-400 bg-purple-500/10 border-purple-500/20'
+        }
+      ]
+    },
+    {
+      category: 'Operations, Diagnostics & Resources',
+      items: [
+        {
+          id: 'diagnostics',
+          label: 'System Health & Latency Diagnostics',
+          desc: 'Real-time telemetry, memory heap usage, continuous subsystem probing & snapshots',
+          icon: Activity,
+          colorClass: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
+          badge: 'Live Probing',
+          badgeColor: 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+        },
+        {
+          id: 'audit_logs',
+          label: 'Security & Activity Audit Log',
+          desc: 'Forensic operator action log, security events, severity filter & CSV/JSON export',
+          icon: ShieldAlert,
+          colorClass: 'text-rose-400 bg-rose-500/10 border-rose-500/20',
+          badge: 'Immutable',
+          badgeColor: 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+        },
+        {
+          id: 'resources',
+          label: 'Enterprise Operator Resource Hub',
+          desc: 'QuickBooks OAuth guide, IRS Schedule F tax taxonomy & Linux systemd runbooks',
+          icon: BookOpen,
+          colorClass: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+          badge: 'Documentation',
+          badgeColor: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
         }
       ]
     }

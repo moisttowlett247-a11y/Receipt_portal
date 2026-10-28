@@ -13,6 +13,8 @@ export type IpOnlineState = 'ONLINE' | 'IDLE' | 'OFFLINE';
 export interface TrackedIpSession {
   id: string;
   ip: string;
+  ipVersion?: 'IPv4' | 'IPv6';
+  networkScope?: string;
   onlineState: IpOnlineState;
   secondsSinceLastPing: number;
   lastPing: string;
@@ -23,7 +25,11 @@ export interface TrackedIpSession {
   sessionType: string;
   machineName: string;
   browserInfo?: string;
+  browserName?: string;
+  browserVersion?: string;
+  osName?: string;
   deviceCategory?: string;
+  isMobile?: boolean;
   username?: string;
   displayName?: string;
   email?: string;
@@ -34,6 +40,27 @@ export interface TrackedIpSession {
   plan?: string;
   status?: string;
   location?: string;
+  country?: string;
+  countryCode?: string;
+  city?: string;
+  region?: string;
+  postalCode?: string;
+  timezone?: string;
+  asn?: string;
+  asOrg?: string;
+  screenResolution?: string;
+  viewport?: string;
+  deviceMemory?: string;
+  hardwareConcurrency?: string;
+  language?: string;
+  connectionType?: string;
+  pixelRatio?: string;
+  touchSupported?: boolean;
+  colorDepth?: string;
+  platform?: string;
+  lastActiveRoute?: string;
+  riskAssessment?: 'SECURE_LOOPBACK' | 'NORMAL' | 'ELEVATED' | 'HIGH_VOLUME';
+  avgPingIntervalSec?: number;
   isCurrentDevice?: boolean;
 }
 
@@ -158,23 +185,40 @@ export async function fetchUnifiedIpTelemetry(): Promise<IpTelemetrySummary> {
 
     const lastPingMs = rawSession.lastPingMs || (rawSession.lastPing ? new Date(rawSession.lastPing).getTime() : now);
     const { onlineState, secondsSinceLastPing } = computeOnlineState(lastPingMs, now);
+    const ipVersion: 'IPv4' | 'IPv6' = cleanIp.includes(':') ? 'IPv6' : 'IPv4';
+    const isLoopback = cleanIp === '127.0.0.1' || cleanIp === '::1' || cleanIp === 'localhost';
+    const isPrivate = isLoopback || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.') || cleanIp.startsWith('172.16.');
+    const networkScope = isLoopback ? 'Loopback / Dev Host' : isPrivate ? 'Private Local Subnet' : 'Public WAN Network';
+    const riskAssessment: 'SECURE_LOOPBACK' | 'NORMAL' | 'ELEVATED' | 'HIGH_VOLUME' = isLoopback ? 'SECURE_LOOPBACK' : 'NORMAL';
+
+    const firstSeenMs = rawSession.firstSeen ? new Date(rawSession.firstSeen).getTime() : lastPingMs;
+    const totalAgeSec = Math.max(1, Math.floor((lastPingMs - firstSeenMs) / 1000));
+    const pCount = rawSession.pingCount || 1;
+    const avgPingIntervalSec = Math.max(5, Math.round(totalAgeSec / Math.max(1, pCount)));
 
     const existing = ipMap.get(cleanIp);
     if (!existing) {
       ipMap.set(cleanIp, {
         id: `ip_${cleanIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
         ip: cleanIp,
+        ipVersion,
+        networkScope,
         onlineState,
         secondsSinceLastPing,
         lastPing: new Date(lastPingMs).toISOString(),
         lastPingMs,
         firstSeen: rawSession.firstSeen || new Date(lastPingMs).toISOString(),
-        pingCount: rawSession.pingCount || 1,
+        pingCount: pCount,
+        avgPingIntervalSec,
         portalName: rawSession.portalName || (rawSession.portal === 'ADMIN' ? 'Admin Console' : 'Client Intake Portal'),
         sessionType: rawSession.sessionType || (rawSession.portal === 'ADMIN' ? 'WEB_ADMIN' : 'WEB_CLIENT'),
         machineName: rawSession.machineName || rawSession.browserInfo || 'Web Browser',
         browserInfo: rawSession.browserInfo,
-        deviceCategory: rawSession.deviceCategory || 'Browser / Web Client',
+        browserName: rawSession.browserName,
+        browserVersion: rawSession.browserVersion,
+        osName: rawSession.osName,
+        deviceCategory: rawSession.deviceCategory || (rawSession.isMobile ? 'Mobile Web' : 'Browser / Web Client'),
+        isMobile: Boolean(rawSession.isMobile),
         username: rawSession.username,
         displayName: rawSession.displayName,
         email: rawSession.email,
@@ -184,7 +228,27 @@ export async function fetchUnifiedIpTelemetry(): Promise<IpTelemetrySummary> {
         rawKey: rawSession.rawKey,
         plan: rawSession.plan,
         status: rawSession.status || 'ACTIVE',
-        location: rawSession.location,
+        location: rawSession.location || (isLoopback ? 'Local Development Network' : 'Global IP'),
+        country: rawSession.country || (isLoopback ? 'United States' : undefined),
+        countryCode: rawSession.countryCode || (isLoopback ? 'US' : undefined),
+        city: rawSession.city || (isLoopback ? 'Chicago / Local' : undefined),
+        region: rawSession.region || (isLoopback ? 'IL' : undefined),
+        postalCode: rawSession.postalCode || (isLoopback ? '60601' : undefined),
+        timezone: rawSession.timezone || (isLoopback ? 'America/Chicago' : undefined),
+        asn: rawSession.asn || (isLoopback ? 'AS0 Localhost' : undefined),
+        asOrg: rawSession.asOrg || (isLoopback ? 'Internal Loopback Network' : undefined),
+        screenResolution: rawSession.screenResolution,
+        viewport: rawSession.viewport,
+        deviceMemory: rawSession.deviceMemory,
+        hardwareConcurrency: rawSession.hardwareConcurrency,
+        language: rawSession.language,
+        connectionType: rawSession.connectionType,
+        pixelRatio: rawSession.pixelRatio,
+        touchSupported: rawSession.touchSupported,
+        colorDepth: rawSession.colorDepth,
+        platform: rawSession.platform,
+        lastActiveRoute: rawSession.lastActiveRoute,
+        riskAssessment,
         isCurrentDevice: myIp ? cleanIp === myIp : false
       });
       return;
@@ -208,18 +272,30 @@ export async function fetchUnifiedIpTelemetry(): Promise<IpTelemetrySummary> {
       }
     }
 
+    const mergedPings = (existing.pingCount || 1) + (rawSession.pingCount || 1);
+    const combinedFirstSeen = existing.firstSeen || rawSession.firstSeen;
+    const combinedFirstMs = combinedFirstSeen ? new Date(combinedFirstSeen).getTime() : newerPingMs;
+    const combinedAgeSec = Math.max(1, Math.floor((newerPingMs - combinedFirstMs) / 1000));
+
     ipMap.set(cleanIp, {
       ...existing,
+      ipVersion,
+      networkScope: existing.networkScope || networkScope,
       onlineState: updatedStatus.onlineState,
       secondsSinceLastPing: updatedStatus.secondsSinceLastPing,
       lastPing: new Date(newerPingMs).toISOString(),
       lastPingMs: newerPingMs,
-      firstSeen: existing.firstSeen || rawSession.firstSeen,
-      pingCount: (existing.pingCount || 1) + (rawSession.pingCount || 1),
+      firstSeen: combinedFirstSeen,
+      pingCount: mergedPings,
+      avgPingIntervalSec: Math.max(5, Math.round(combinedAgeSec / Math.max(1, mergedPings))),
       portalName: combinedPortal,
       machineName: mostRecent.machineName || existing.machineName || rawSession.machineName,
       browserInfo: mostRecent.browserInfo || existing.browserInfo,
+      browserName: mostRecent.browserName || existing.browserName,
+      browserVersion: mostRecent.browserVersion || existing.browserVersion,
+      osName: mostRecent.osName || existing.osName,
       deviceCategory: mostRecent.deviceCategory || existing.deviceCategory,
+      isMobile: mostRecent.isMobile !== undefined ? mostRecent.isMobile : existing.isMobile,
       username: mostRecent.username || existing.username,
       displayName: mostRecent.displayName || existing.displayName,
       email: mostRecent.email || existing.email,
@@ -229,6 +305,26 @@ export async function fetchUnifiedIpTelemetry(): Promise<IpTelemetrySummary> {
       rawKey: existing.rawKey || rawSession.rawKey,
       plan: mostRecent.plan || existing.plan,
       location: mostRecent.location || existing.location,
+      country: mostRecent.country || existing.country,
+      countryCode: mostRecent.countryCode || existing.countryCode,
+      city: mostRecent.city || existing.city,
+      region: mostRecent.region || existing.region,
+      postalCode: mostRecent.postalCode || existing.postalCode,
+      timezone: mostRecent.timezone || existing.timezone,
+      asn: mostRecent.asn || existing.asn,
+      asOrg: mostRecent.asOrg || existing.asOrg,
+      screenResolution: mostRecent.screenResolution || existing.screenResolution,
+      viewport: mostRecent.viewport || existing.viewport,
+      deviceMemory: mostRecent.deviceMemory || existing.deviceMemory,
+      hardwareConcurrency: mostRecent.hardwareConcurrency || existing.hardwareConcurrency,
+      language: mostRecent.language || existing.language,
+      connectionType: mostRecent.connectionType || existing.connectionType,
+      pixelRatio: mostRecent.pixelRatio || existing.pixelRatio,
+      touchSupported: mostRecent.touchSupported !== undefined ? mostRecent.touchSupported : existing.touchSupported,
+      colorDepth: mostRecent.colorDepth || existing.colorDepth,
+      platform: mostRecent.platform || existing.platform,
+      lastActiveRoute: mostRecent.lastActiveRoute || existing.lastActiveRoute,
+      riskAssessment: existing.riskAssessment || riskAssessment,
       isCurrentDevice: myIp ? cleanIp === myIp : false
     });
   };
