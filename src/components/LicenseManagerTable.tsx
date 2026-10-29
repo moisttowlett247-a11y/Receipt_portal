@@ -53,6 +53,7 @@ import { fetchAllInquiries, deleteInquiry } from '../licenseSyncService';
 interface LicenseManagerTableProps {
   keys: LicenseKeyRecord[];
   onToggleStatus: (id: string) => void;
+  onSetStatus?: (id: string, status: LicenseStatus) => void;
   onToggleInUse: (id: string) => void;
   onDeleteKey: (id: string) => void;
   onAddManualKey: (record: Omit<LicenseKeyRecord, 'id'>) => void;
@@ -66,6 +67,7 @@ interface LicenseManagerTableProps {
 export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   keys,
   onToggleStatus,
+  onSetStatus,
   onToggleInUse,
   onDeleteKey,
   onAddManualKey,
@@ -163,7 +165,10 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
     return Math.ceil((expTime - new Date().setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24));
   };
 
-  const handleExportCSV = () => {
+  const [selectedKeyIds, setSelectedKeyIds] = useState<Set<string>>(new Set());
+
+  const handleExportCSV = (subsetKeys?: LicenseKeyRecord[]) => {
+    const targetKeys = subsetKeys || keys;
     const sanitizeCsvCell = (val: any) => {
       if (val === undefined || val === null) return '""';
       let str = String(val).replace(/"/g, '""');
@@ -173,7 +178,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
       return `"${str}"`;
     };
     const headers = ['Key', 'Client Name', 'Client Email', 'Plan', 'Duration Days', 'Status', 'In Use', 'Issued Date', 'Activated Date', 'Expires Date', 'Hardware ID'];
-    const rows = keys.map(k => [
+    const rows = targetKeys.map(k => [
       sanitizeCsvCell(k.key),
       sanitizeCsvCell(k.clientName),
       sanitizeCsvCell(k.clientEmail),
@@ -191,20 +196,21 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `license_keys_registry_${new Date().toISOString().split('T')[0]}.csv`;
+    link.download = `license_keys_registry_${subsetKeys ? 'selected_' : ''}${new Date().toISOString().split('T')[0]}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   };
 
-  const handleExportJSON = () => {
-    const jsonStr = JSON.stringify(keys, null, 2);
+  const handleExportJSON = (subsetKeys?: LicenseKeyRecord[]) => {
+    const targetKeys = subsetKeys || keys;
+    const jsonStr = JSON.stringify(targetKeys, null, 2);
     const blob = new Blob([jsonStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'license_registry.json';
+    link.download = subsetKeys ? 'license_registry_selected.json' : 'license_registry.json';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -293,11 +299,14 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
   };
 
   const filteredKeys = keys.filter(k => {
+    const q = searchTerm.toLowerCase();
     const matchesSearch = 
-      k.key.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      k.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      k.clientEmail.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      k.plan.toLowerCase().includes(searchTerm.toLowerCase());
+      !q ||
+      k.key.toLowerCase().includes(q) ||
+      k.clientName.toLowerCase().includes(q) ||
+      k.clientEmail.toLowerCase().includes(q) ||
+      k.plan.toLowerCase().includes(q) ||
+      (Boolean(k.hardwareId) && k.hardwareId!.toLowerCase().includes(q));
 
     if (!matchesSearch) return false;
 
@@ -310,6 +319,68 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
     if (filterStatus === 'AVAILABLE') return !k.inUse;
     return true;
   });
+
+  const isAllKeysSelected = filteredKeys.length > 0 && filteredKeys.every(k => selectedKeyIds.has(k.id));
+  const isPartiallyKeysSelected = filteredKeys.some(k => selectedKeyIds.has(k.id)) && !isAllKeysSelected;
+
+  const handleToggleSelectAllKeys = () => {
+    if (isAllKeysSelected) {
+      setSelectedKeyIds(prev => {
+        const next = new Set(prev);
+        filteredKeys.forEach(k => next.delete(k.id));
+        return next;
+      });
+    } else {
+      setSelectedKeyIds(prev => {
+        const next = new Set(prev);
+        filteredKeys.forEach(k => next.add(k.id));
+        return next;
+      });
+    }
+  };
+
+  const handleToggleSelectKey = (id: string) => {
+    setSelectedKeyIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleBatchStatus = (targetStatus: 'ACTIVE' | 'NOT ACTIVE') => {
+    const targetKeys = keys.filter(k => selectedKeyIds.has(k.id) && k.status !== targetStatus);
+    targetKeys.forEach(k => {
+      if (onSetStatus) {
+        onSetStatus(k.id, targetStatus);
+      } else {
+        onToggleStatus(k.id);
+      }
+    });
+    setImportStatusMsg(`Updated status to ${targetStatus} for ${targetKeys.length} license key(s).`);
+    setTimeout(() => setImportStatusMsg(null), 3000);
+  };
+
+  const handleBatchInUse = () => {
+    const targetKeys = keys.filter(k => selectedKeyIds.has(k.id));
+    targetKeys.forEach(k => onToggleInUse(k.id));
+    setImportStatusMsg(`Toggled In-Use status for ${targetKeys.length} license key(s).`);
+    setTimeout(() => setImportStatusMsg(null), 3000);
+  };
+
+  const handleBatchDeleteKeys = () => {
+    const count = selectedKeyIds.size;
+    if (count === 0) return;
+    if (!window.confirm(`Are you sure you want to permanently delete ${count} selected license key(s)?`)) return;
+
+    selectedKeyIds.forEach(id => onDeleteKey(id));
+    setSelectedKeyIds(new Set());
+    setImportStatusMsg(`Permanently deleted ${count} license key(s).`);
+    setTimeout(() => setImportStatusMsg(null), 3000);
+  };
 
   const totalKeys = keys.length;
   const expiredKeysCount = keys.filter(isKeyExpired).length;
@@ -621,12 +692,95 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
         </div>
       )}
 
+      {/* Floating Bulk Action Bar */}
+      {selectedKeyIds.size > 0 && (
+        <div className="sticky top-4 z-30 p-3 rounded-xl bg-stone-900 border border-amber-500/40 shadow-2xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-2.5">
+            <span className="w-6 h-6 rounded-md bg-amber-500/20 border border-amber-500/40 text-amber-300 font-mono font-bold text-xs flex items-center justify-center">
+              {selectedKeyIds.size}
+            </span>
+            <span className="text-xs font-semibold text-white">
+              {selectedKeyIds.size === 1 ? '1 license key selected' : `${selectedKeyIds.size} license keys selected`}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => handleBatchStatus('ACTIVE')}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Activate</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleBatchStatus('NOT ACTIVE')}
+              className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-medium transition-colors cursor-pointer"
+            >
+              <span>Deactivate</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleBatchInUse}
+              className="px-3 py-1.5 rounded-lg bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-800 font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <UserCheck className="w-3.5 h-3.5" />
+              <span>Toggle In-Use</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleExportJSON(keys.filter(k => selectedKeyIds.has(k.id)))}
+              className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileJson className="w-3.5 h-3.5" />
+              <span>Export JSON ({selectedKeyIds.size})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleExportCSV(keys.filter(k => selectedKeyIds.has(k.id)))}
+              className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleBatchDeleteKeys}
+              className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Delete</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedKeyIds(new Set())}
+              className="px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Keys Table */}
       <div className="bg-stone-900 border border-stone-800 rounded-xl overflow-hidden shadow-lg">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-stone-950/80 border-b border-stone-800 text-stone-400 font-medium select-none">
+                <th className="py-3 px-3 text-center w-10">
+                  <input
+                    type="checkbox"
+                    checked={isAllKeysSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = isPartiallyKeysSelected;
+                    }}
+                    onChange={handleToggleSelectAllKeys}
+                    aria-label="Select all license keys"
+                    className="w-4 h-4 rounded border-stone-700 bg-stone-950 text-amber-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                  />
+                </th>
                 <th className="py-3 px-4">License Key</th>
                 <th className="py-3 px-4">Status</th>
                 <th className="py-3 px-4">In Use?</th>
@@ -640,7 +794,7 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
             <tbody className="divide-y divide-stone-800/60">
               {filteredKeys.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-8 text-center text-stone-500">
+                  <td colSpan={9} className="py-8 text-center text-stone-500">
                     No license keys match your current filter. Generate a new key above or adjust search.
                   </td>
                 </tr>
@@ -650,9 +804,21 @@ export const LicenseManagerTable: React.FC<LicenseManagerTableProps> = ({
                   const isExpired = isKeyExpired(k);
                   const isActive = k.status === 'ACTIVE' && !isExpired;
                   const daysLeft = getDaysLeft(k.expiresDate);
+                  const isSelected = selectedKeyIds.has(k.id);
 
                   return (
-                    <tr key={k.id} className="hover:bg-stone-800/30 transition-colors">
+                    <tr key={k.id} className={`transition-colors ${isSelected ? 'bg-amber-950/20' : 'hover:bg-stone-850/50'}`}>
+                      {/* Checkbox Column */}
+                      <td className="py-3 px-3 text-center">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelectKey(k.id)}
+                          aria-label={`Select key for ${k.clientName}`}
+                          className="w-4 h-4 rounded border-stone-700 bg-stone-950 text-amber-500 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                        />
+                      </td>
+
                       {/* Key Column */}
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">

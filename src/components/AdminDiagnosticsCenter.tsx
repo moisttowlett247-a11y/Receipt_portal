@@ -132,9 +132,14 @@ export const AdminDiagnosticsCenter: React.FC<AdminDiagnosticsCenterProps> = ({
     const endpointsToProbe = [
       { label: 'Admin Telemetry & Diagnostics', endpoint: '/api/admin/diagnostics', category: 'SYSTEM' },
       { label: 'QuickBooks OAuth & Broker', endpoint: '/api/qbo/config', category: 'QBO' },
+      { label: 'QuickBooks Chart of Accounts', endpoint: '/api/qbo/accounts', category: 'QBO' },
       { label: 'Client Intake & Work Queue', endpoint: '/api/client/submissions', category: 'INTAKE' },
       { label: 'License Key Registry', endpoint: '/api/licenses', category: 'LICENSING' },
-      { label: 'IP Telemetry & Active Sessions', endpoint: '/api/licenses/sessions', category: 'NETWORK' }
+      { label: 'IP Telemetry & Active Sessions', endpoint: '/api/licenses/sessions', category: 'NETWORK' },
+      { label: 'Public IP Discovery Socket', endpoint: '/api/presence/ip', category: 'NETWORK' },
+      { label: 'Security & Audit Trail Log', endpoint: '/api/admin/audit-logs', category: 'SECURITY' },
+      { label: 'W-2 Wage Intelligence Hub', endpoint: '/api/tax-docs/w2', category: 'TAX' },
+      { label: 'Form 1099 Compliance Hub', endpoint: '/api/tax-docs/1099', category: 'TAX' }
     ];
 
     const token = sessionStorage.getItem('receipt_processor_admin_token') || 'local_admin_session';

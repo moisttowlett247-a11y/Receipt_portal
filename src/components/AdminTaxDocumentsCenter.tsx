@@ -20,6 +20,7 @@ import {
   Check,
   X,
   FileSpreadsheet,
+  FileJson,
   Clock,
   Layers,
   ArrowRight,
@@ -128,6 +129,193 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
     return matchesSearch && matchesState && matchesReturn;
   });
 
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
+
+  // Visible document IDs based on current filters
+  const visibleDocIds = [
+    ...(filterType === 'ALL' || filterType === 'W2' ? filteredW2s.map(w => w.id) : []),
+    ...(filterType === 'ALL' || filterType === '1099' ? filtered1099s.map(f => f.id) : [])
+  ];
+
+  const isAllSelected = visibleDocIds.length > 0 && visibleDocIds.every(id => selectedDocIds.has(id));
+  const isPartiallySelected = visibleDocIds.some(id => selectedDocIds.has(id)) && !isAllSelected;
+
+  const handleToggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedDocIds(prev => {
+        const next = new Set(prev);
+        visibleDocIds.forEach(id => next.delete(id));
+        return next;
+      });
+    } else {
+      setSelectedDocIds(prev => {
+        const next = new Set(prev);
+        visibleDocIds.forEach(id => next.add(id));
+        return next;
+      });
+    }
+  };
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedDocIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleBatchVerify = (verify: boolean) => {
+    let count = 0;
+    w2s.forEach(w => {
+      if (selectedDocIds.has(w.id)) {
+        saveW2Record({
+          ...w,
+          verifiedByAdmin: verify,
+          verifiedAt: verify ? new Date().toISOString() : undefined
+        });
+        count++;
+      }
+    });
+    refreshData();
+    if (onToast) {
+      if (count > 0) {
+        onToast(`${verify ? 'Verified' : 'Unverified'} ${count} W-2 form(s)`);
+      } else {
+        onToast('Form 1099 filings are auto-verified upon receipt.');
+      }
+    }
+  };
+
+  const exportTaxDocumentsSubsetCSV = () => {
+    const targetW2s = w2s.filter(w => selectedDocIds.has(w.id));
+    const target1099s = form1099s.filter(f => selectedDocIds.has(f.id));
+
+    if (targetW2s.length === 0 && target1099s.length === 0) {
+      if (onToast) onToast('No tax documents selected to export.');
+      return;
+    }
+
+    const sanitizeCSVCell = (val: string | number | undefined | null): string => {
+      if (val === undefined || val === null) return '""';
+      let str = String(val).trim();
+      if (/^[=+@\-\t\r]/.test(str)) {
+        str = `'${str}`;
+      }
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
+    const rows: string[] = [];
+    rows.push('Document Type,Client Name,Tax Year,Employer / Payer,EIN / TIN,Federal Wages / Gross,Fed Tax Withheld,Social Security Tax,Medicare Tax,State Code,State Name,State Wages,State Tax Withheld,State Return Required?,Filing Guidance,Notes');
+
+    for (const w of targetW2s) {
+      rows.push([
+        'Form W-2',
+        sanitizeCSVCell(w.clientName),
+        w.taxYear,
+        sanitizeCSVCell(w.employerName),
+        sanitizeCSVCell(w.employerEin),
+        (w.box1Wages || 0).toFixed(2),
+        (w.box2FedTaxWithheld || 0).toFixed(2),
+        (w.box4SocialSecurityTax || 0).toFixed(2),
+        (w.box6MedicareTax || 0).toFixed(2),
+        sanitizeCSVCell(w.box15State || 'N/A'),
+        sanitizeCSVCell(w.stateAssessment?.stateName || ''),
+        (w.box16StateWages || 0).toFixed(2),
+        (w.box17StateTaxWithheld || 0).toFixed(2),
+        w.stateAssessment?.stateReturnRequired ? 'YES' : 'NO (Zero State Tax)',
+        sanitizeCSVCell(w.stateAssessment?.summaryMessage || ''),
+        sanitizeCSVCell(w.notes || '')
+      ].join(','));
+    }
+
+    for (const f of target1099s) {
+      rows.push([
+        f.formType === '1099_NEC' ? 'Form 1099-NEC' : 'Form 1099-MISC',
+        sanitizeCSVCell(f.clientName),
+        f.taxYear,
+        sanitizeCSVCell(f.payerName),
+        sanitizeCSVCell(f.payerTin),
+        (f.box1Amount || 0).toFixed(2),
+        (f.box4FedTaxWithheld || 0).toFixed(2),
+        '0.00',
+        '0.00',
+        sanitizeCSVCell(f.box6State || 'N/A'),
+        sanitizeCSVCell(f.stateAssessment?.stateName || ''),
+        (f.box7StateIncome || 0).toFixed(2),
+        (f.box5StateTaxWithheld || 0).toFixed(2),
+        f.stateAssessment?.stateReturnRequired ? 'YES' : 'NO (Zero State Tax)',
+        sanitizeCSVCell(f.stateAssessment?.summaryMessage || ''),
+        sanitizeCSVCell(f.notes || '')
+      ].join(','));
+    }
+
+    const csvContent = rows.join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `Form1040_Selected_Tax_Summary_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    if (onToast) onToast(`Exported ${targetW2s.length + target1099s.length} selected tax documents to CSV`);
+  };
+
+  const handleBatchDelete = () => {
+    const totalCount = selectedDocIds.size;
+    if (totalCount === 0) return;
+    if (!window.confirm(`Are you sure you want to delete ${totalCount} selected tax document(s)?`)) return;
+
+    selectedDocIds.forEach(id => {
+      deleteW2Record(id);
+      delete1099Record(id);
+    });
+    setSelectedDocIds(new Set());
+    refreshData();
+    if (onToast) onToast(`Successfully deleted ${totalCount} tax document(s)`);
+  };
+
+  const exportForm1040Json = (selectedOnly: boolean = false) => {
+    const targetW2s = selectedOnly ? w2s.filter(w => selectedDocIds.has(w.id)) : w2s;
+    const target1099s = selectedOnly ? form1099s.filter(f => selectedDocIds.has(f.id)) : form1099s;
+
+    if (targetW2s.length === 0 && target1099s.length === 0) {
+      if (onToast) onToast('No tax documents available to export.');
+      return;
+    }
+
+    const payload = {
+      generator: 'Centralized W-2, 1099 & State Tax Compliance Hub',
+      exportTimestamp: new Date().toISOString(),
+      complianceStandard: 'IRS Pub 1075 Baseline / Form 1040 Multi-State Reconciled',
+      totals: {
+        totalW2Wages: targetW2s.reduce((a, b) => a + (b.box1Wages || 0), 0),
+        total1099Gross: target1099s.reduce((a, b) => a + (b.box1Amount || 0), 0),
+        totalGrossEarnings: targetW2s.reduce((a, b) => a + (b.box1Wages || 0), 0) + target1099s.reduce((a, b) => a + (b.box1Amount || 0), 0),
+        totalFederalTaxWithheld: targetW2s.reduce((a, b) => a + (b.box2FedTaxWithheld || 0), 0) + target1099s.reduce((a, b) => a + (b.box4FedTaxWithheld || 0), 0),
+        totalStateTaxWithheld: targetW2s.reduce((a, b) => a + (b.box17StateTaxWithheld || 0), 0) + target1099s.reduce((a, b) => a + (b.box5StateTaxWithheld || 0), 0),
+      },
+      w2Statements: targetW2s,
+      form1099Statements: target1099s
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `form1040_tax_schedule_${selectedOnly ? 'selected_' : 'all_'}${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    if (onToast) onToast(`Exported ${targetW2s.length + target1099s.length} tax documents to Form 1040 JSON`);
+  };
+
   const handleToggleVerifyW2 = (w2: W2Record) => {
     saveW2Record({
       ...w2,
@@ -159,6 +347,15 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => exportForm1040Json(false)}
+            disabled={w2s.length === 0 && form1099s.length === 0}
+            className="px-4 py-2.5 rounded-xl bg-purple-650 hover:bg-purple-600 bg-purple-700/80 disabled:opacity-40 text-white font-bold text-xs transition-all flex items-center gap-2 cursor-pointer shadow-md shadow-purple-600/10 border border-purple-500/30"
+          >
+            <FileJson className="w-4 h-4 text-purple-300" />
+            <span>Form 1040 Schedule (JSON)</span>
+          </button>
           <button
             type="button"
             onClick={() => exportTaxDocumentsCSV()}
@@ -379,12 +576,87 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
         </div>
       </div>
 
+      {/* Floating Bulk Action Bar */}
+      {selectedDocIds.size > 0 && (
+        <div className="sticky top-4 z-30 p-3 rounded-xl bg-stone-900 border border-purple-500/40 shadow-2xl flex flex-wrap items-center justify-between gap-3 animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-2.5">
+            <span className="w-6 h-6 rounded-md bg-purple-500/20 border border-purple-500/40 text-purple-300 font-mono font-bold text-xs flex items-center justify-center">
+              {selectedDocIds.size}
+            </span>
+            <span className="text-xs font-semibold text-white">
+              {selectedDocIds.size === 1 ? '1 tax document selected' : `${selectedDocIds.size} tax documents selected`}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <button
+              type="button"
+              onClick={() => handleBatchVerify(true)}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>Verify Selected</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleBatchVerify(false)}
+              className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-medium transition-colors cursor-pointer"
+            >
+              <span>Unverify Selected</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => exportForm1040Json(true)}
+              className="px-3 py-1.5 rounded-lg bg-purple-600 hover:bg-purple-500 text-white font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileJson className="w-3.5 h-3.5" />
+              <span>Export JSON ({selectedDocIds.size})</span>
+            </button>
+            <button
+              type="button"
+              onClick={exportTaxDocumentsSubsetCSV}
+              className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export CSV</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleBatchDelete}
+              className="px-3 py-1.5 rounded-lg bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+              <span>Delete Selected</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedDocIds(new Set())}
+              className="px-2.5 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Table */}
       <div className="rounded-2xl bg-stone-900/90 border border-stone-800 overflow-hidden shadow-lg">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead className="bg-stone-950/80 border-b border-stone-800 text-stone-400 font-mono">
               <tr>
+                <th className="py-3 px-3 text-center w-10">
+                  <input
+                    type="checkbox"
+                    checked={isAllSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = isPartiallySelected;
+                    }}
+                    onChange={handleToggleSelectAll}
+                    aria-label="Select all documents"
+                    className="w-4 h-4 rounded border-stone-700 bg-stone-950 text-purple-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                  />
+                </th>
                 <th className="py-3 px-4">Form</th>
                 <th className="py-3 px-4">Client / Taxpayer</th>
                 <th className="py-3 px-4">Employer / Payer</th>
@@ -403,9 +675,19 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
               {(filterType === 'ALL' || filterType === 'W2') && filteredW2s.map((w) => {
                 const assessment = w.stateAssessment;
                 const isNoTax = assessment?.statusBadge === 'NO_TAX_STATE';
+                const isSelected = selectedDocIds.has(w.id);
 
                 return (
-                  <tr key={w.id} className="hover:bg-stone-850/50 transition-colors">
+                  <tr key={w.id} className={`transition-colors ${isSelected ? 'bg-purple-950/20' : 'hover:bg-stone-850/50'}`}>
+                    <td className="py-3 px-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelect(w.id)}
+                        aria-label={`Select W-2 for ${w.clientName}`}
+                        className="w-4 h-4 rounded border-stone-700 bg-stone-950 text-purple-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                      />
+                    </td>
                     <td className="py-3 px-4">
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/20 font-bold">
                         W-2
@@ -490,10 +772,19 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
               {/* Render 1099s */}
               {(filterType === 'ALL' || filterType === '1099') && filtered1099s.map((f) => {
                 const assessment = f.stateAssessment;
-                const isNoTax = assessment?.statusBadge === 'NO_TAX_STATE';
+                const isSelected = selectedDocIds.has(f.id);
 
                 return (
-                  <tr key={f.id} className="hover:bg-stone-850/50 transition-colors">
+                  <tr key={f.id} className={`transition-colors ${isSelected ? 'bg-purple-950/20' : 'hover:bg-stone-850/50'}`}>
+                    <td className="py-3 px-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelect(f.id)}
+                        aria-label={`Select 1099 for ${f.clientName}`}
+                        className="w-4 h-4 rounded border-stone-700 bg-stone-950 text-purple-600 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                      />
+                    </td>
                     <td className="py-3 px-4">
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-sky-500/10 text-sky-300 border border-sky-500/20 font-bold">
                         {f.formType === '1099_NEC' ? '1099-NEC' : '1099-MISC'}
@@ -549,7 +840,7 @@ export const AdminTaxDocumentsCenter: React.FC<AdminTaxDocumentsCenterProps> = (
 
               {filteredW2s.length === 0 && filtered1099s.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="py-12 text-center text-stone-500 text-xs">
+                  <td colSpan={12} className="py-12 text-center text-stone-500 text-xs">
                     No individual tax documents found matching current filter parameters.
                   </td>
                 </tr>

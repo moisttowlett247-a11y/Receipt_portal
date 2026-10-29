@@ -44,8 +44,11 @@ import {
   Sliders,
   Star,
   CreditCard,
+  BookOpen,
+  ShieldAlert,
   X
 } from 'lucide-react';
+import { AdminTab } from './AdminHamburgerMenu';
 import { LicenseKeyRecord } from '../types';
 import { getClientSubmissions, subscribeToClientSubmissions, ClientSubmission } from '../clientSubmissionService';
 import { getW2Records, get1099Records, subscribeToTaxDocuments } from '../taxDocumentService';
@@ -101,7 +104,7 @@ interface AdminHomeOverviewProps {
   licenseKeys: LicenseKeyRecord[];
   currentVersion: string;
   pendingSubmissionsCount: number;
-  onNavigateTab: (tab: 'scanner' | 'intake' | 'licensing' | 'devices' | 'qbo' | 'tax_hub' | 'updater' | 'code' | 'guide') => void;
+  onNavigateTab: (tab: AdminTab) => void;
   onOpenBundleModal: () => void;
   onOpenAccountModal: () => void;
   onOpenUpdateModal: () => void;
@@ -871,10 +874,14 @@ export function AdminHomeOverview({
   const inUseKeysCount = licenseKeys.filter(k => k.inUse).length;
   const expiredKeysCount = licenseKeys.filter(k => k.status === 'EXPIRED').length;
 
-  const totalWages = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box1Wages || '0')) || 0), 0);
-  const totalFederalWithheld = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box2FederalTaxWithheld || '0')) || 0), 0);
-  const totalStateWithheld = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box17StateTaxWithheld || '0')) || 0), 0);
-  const total1099Income = f1099s.reduce((sum, f) => sum + (parseFloat(String(f.box1NonemployeeCompensation || '0')) || 0), 0);
+  const totalW2Wages = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box1Wages || '0')) || 0), 0);
+  const total1099Gross = f1099s.reduce((sum, f) => sum + (parseFloat(String(f.box1Amount || (f as any).box1NonemployeeCompensation || '0')) || 0), 0);
+  const totalWages = totalW2Wages + total1099Gross;
+  const totalFederalWithheld = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box2FedTaxWithheld || (w as any).box2FederalTaxWithheld || '0')) || 0), 0) +
+    f1099s.reduce((sum, f) => sum + (parseFloat(String(f.box4FedTaxWithheld || '0')) || 0), 0);
+  const totalStateWithheld = w2s.reduce((sum, w) => sum + (parseFloat(String(w.box17StateTaxWithheld || '0')) || 0), 0) +
+    f1099s.reduce((sum, f) => sum + (parseFloat(String(f.box5StateTaxWithheld || '0')) || 0), 0);
+  const total1099Income = total1099Gross;
 
   const statesDetected = Array.from(new Set([
     ...w2s.map(w => w.box15State).filter(Boolean),
@@ -1063,7 +1070,7 @@ export function AdminHomeOverview({
           <span className="text-[11px] text-stone-500 hidden sm:inline">1-Click Jump to Any Console</span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-9 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12 gap-2">
           <button
             onClick={() => onNavigateTab('scanner')}
             className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-emerald-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
@@ -1126,6 +1133,33 @@ export function AdminHomeOverview({
             <Key className="w-5 h-5 text-sky-400 mb-1 group-hover:scale-110 transition-transform" />
             <span className="text-[11px] font-bold text-stone-200 group-hover:text-sky-300">Licensing</span>
             <span className="text-[9px] text-stone-500 font-mono">{activeKeysCount} Active</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('diagnostics')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-sky-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <Activity className="w-5 h-5 text-sky-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-sky-300">Diagnostics</span>
+            <span className="text-[9px] text-stone-500 font-mono">Probes</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('audit_logs')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-rose-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <ShieldAlert className="w-5 h-5 text-rose-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-rose-300">Audit Logs</span>
+            <span className="text-[9px] text-stone-500 font-mono">Trail</span>
+          </button>
+
+          <button
+            onClick={() => onNavigateTab('resources')}
+            className="p-2.5 rounded-xl bg-stone-950/80 hover:bg-stone-800 border border-stone-800/80 hover:border-amber-500/50 flex flex-col items-center text-center transition-all cursor-pointer group"
+          >
+            <BookOpen className="w-5 h-5 text-amber-400 mb-1 group-hover:scale-110 transition-transform" />
+            <span className="text-[11px] font-bold text-stone-200 group-hover:text-amber-300">Resources</span>
+            <span className="text-[9px] text-stone-500 font-mono">IRS Pubs</span>
           </button>
 
           <button

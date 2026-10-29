@@ -679,6 +679,25 @@ export default function App() {
     });
   };
 
+  const handleSetKeyStatus = (id: string, nextStatus: LicenseStatus) => {
+    setLicenseKeys(prev => {
+      const target = prev.find(k => k.id === id);
+      if (!target) return prev;
+      const updatedKey: LicenseKeyRecord = { ...target, status: nextStatus };
+      showToast(`Key ${target.key} status set to: ${nextStatus}`);
+
+      setClientAccountLicenseStatus(target.key, nextStatus);
+      syncKeyToServer(updatedKey, 'UPSERT');
+
+      const ghCfg = getStoredGitHubConfig();
+      if (ghCfg.token && ghCfg.autoSync !== false) {
+        syncSingleKeyToGitHub(updatedKey, 'UPSERT', ghCfg);
+      }
+
+      return prev.map(k => (k.id === id ? updatedKey : k));
+    });
+  };
+
   const handleRevokeKey = (keyString: string) => {
     setLicenseKeys(prev => {
       const cleanKey = keyString.trim().toUpperCase();
@@ -1039,9 +1058,13 @@ export default function App() {
                 <Crown className="w-3 h-3 text-amber-400" />
                 Admin Authenticated
               </span>
+              <span className="hidden sm:inline-flex items-center gap-1.5 text-[11px] font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-800/60 px-2.5 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span>AES-256 Vault Active</span>
+              </span>
             </div>
             <p className="text-xs text-stone-400">
-              Subscription Management, In-Place Auto-Updates & AES-256 Multi-Client Sync
+              Subscription Management, In-Place Auto-Updates &amp; AES-256 Multi-Client Sync
             </p>
           </div>
         </div>
@@ -1209,6 +1232,9 @@ export default function App() {
             { id: 'tax_hub' as AdminTab, label: 'Tax Hub', icon: FileSpreadsheet, shortcut: 'Alt+5' },
             { id: 'licensing' as AdminTab, label: 'Licenses', icon: Key, shortcut: 'Alt+6' },
             { id: 'devices' as AdminTab, label: 'Active IPs', icon: Radio, shortcut: 'Alt+7' },
+            { id: 'diagnostics' as AdminTab, label: 'Diagnostics', icon: Activity, shortcut: 'Alt+8' },
+            { id: 'audit_logs' as AdminTab, label: 'Audit Logs', icon: ShieldAlert, shortcut: 'Alt+9' },
+            { id: 'resources' as AdminTab, label: 'Resources', icon: BookOpen, shortcut: 'Alt+0' },
           ].map(tab => {
             const Icon = tab.icon;
             const isActive = activeTab === tab.id;
@@ -2058,6 +2084,7 @@ export default function App() {
               <LicenseManagerTable
                 keys={licenseKeys}
                 onToggleStatus={handleToggleStatus}
+                onSetStatus={handleSetKeyStatus}
                 onToggleInUse={handleToggleInUse}
                 onDeleteKey={handleDeleteKey}
                 onAddManualKey={handleAddManualKey}

@@ -111,7 +111,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
       // If a session is currently selected in the inspector, keep it up to date
       setSelectedSession(prev => {
         if (!prev) return null;
-        const updated = telemetry.sessions.find(s => s.ip === prev.ip);
+        const updated = telemetry.sessions.find(s => (s.id && s.id === prev.id) || (s.ip === prev.ip && s.machineName === prev.machineName) || s.ip === prev.ip);
         return (updated as any) || prev;
       });
 

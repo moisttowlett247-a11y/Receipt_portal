@@ -153,15 +153,24 @@ export const AdminAuditLogCenter: React.FC<AdminAuditLogCenterProps> = ({ onToas
       return;
     }
 
+    const sanitizeCsvCell = (val: any) => {
+      if (val === undefined || val === null) return '""';
+      let str = String(val).trim();
+      if (/^[=+@\-\t\r]/.test(str)) {
+        str = `'${str}`;
+      }
+      return `"${str.replace(/"/g, '""')}"`;
+    };
+
     const headers = ['Timestamp', 'Action', 'Category', 'Severity', 'Actor', 'IP', 'Details'];
     const rows = logs.map(l => [
-      `"${l.timestamp}"`,
-      `"${l.action.replace(/"/g, '""')}"`,
-      `"${l.category}"`,
-      `"${l.severity}"`,
-      `"${l.actor.replace(/"/g, '""')}"`,
-      `"${l.ip}"`,
-      `"${l.details.replace(/"/g, '""')}"`
+      sanitizeCsvCell(l.timestamp),
+      sanitizeCsvCell(l.action),
+      sanitizeCsvCell(l.category),
+      sanitizeCsvCell(l.severity),
+      sanitizeCsvCell(l.actor),
+      sanitizeCsvCell(l.ip),
+      sanitizeCsvCell(l.details)
     ]);
 
     const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
