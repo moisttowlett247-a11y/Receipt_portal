@@ -1295,6 +1295,7 @@ function recordWebPresenceSession(data: {
   companyName?: string;
   plan?: string;
   licenseKey?: string;
+  hwid?: string;
   browserInfo?: string;
   browserName?: string;
   browserVersion?: string;
@@ -1345,8 +1346,18 @@ function recordWebPresenceSession(data: {
 
   const sessionType = (hasEverAdmin && hasEverClient) ? 'WEB_MULTI' : (hasEverAdmin ? 'WEB_ADMIN' : 'WEB_CLIENT');
   const machineName = data.browserInfo || existing.machineName || (isCurrentAdmin ? 'Admin Web Browser' : 'Client Web Browser');
-  const userTag = (data.username || data.userId || (isCurrentAdmin ? 'ADMIN' : 'GUEST')).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 10);
-  const hwid = existing.hwid && !existing.hwid.includes('GUEST') ? existing.hwid : `WEB-${userTag || 'PORTAL'}-${data.portal}`;
+  
+  const isPlaceholderHwid = (h?: string) => !h || h === 'WEB-CLIENT' || h === 'WEB-HWID-CLIENT' || h === 'WEB-ADMIN-ADMIN' || h.startsWith('WEB-PORTAL') || h.startsWith('WEB-GUEST') || h.includes('GUEST') || h === 'Desktop-HWID';
+  let hwid = data.hwid;
+  if (isPlaceholderHwid(hwid)) {
+    if (!isPlaceholderHwid(existing.hwid)) {
+      hwid = existing.hwid;
+    } else {
+      const seed = `${cleanIp}::${data.browserInfo || ''}::${data.screenResolution || ''}::${data.platform || ''}::${data.timezone || ''}`;
+      const hex = crypto.createHash('sha256').update(seed).digest('hex').slice(0, 12).toUpperCase();
+      hwid = `HWID-WEB-${hex}`;
+    }
+  }
   const key = data.licenseKey || existing.rawKey || (isCurrentAdmin ? 'ADMIN-ACTIVE-CONSOLE' : '');
   const keyMasked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : (key || existing.keyMasked || 'WEB-SESSION');
   const hash = crypto.createHash('sha256').update(rawId).digest('hex');
@@ -1526,10 +1537,12 @@ router.use((req, res, next) => {
       else if (cfCountry) location = cfCountry;
       else if (clientIp === '127.0.0.1' || clientIp.startsWith('192.168.') || clientIp.startsWith('10.')) location = 'Local Development Network';
       
+      const reqHwid = (req.headers['x-hwid'] || req.headers['x-hardware-id'] || req.body?.hwid || req.query?.hwid || '') as string;
       recordWebPresenceSession({
         sessionId: `ip_${clientIp.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
         portal,
         ip: clientIp,
+        hwid: reqHwid || undefined,
         browserInfo,
         location: location || undefined,
         status: 'ACTIVE'
@@ -2370,7 +2383,11 @@ router.get(['/api/licenses/sessions', '/api/devices/sessions'], (req, res) => {
           deviceCategory: mostRecent.deviceCategory || existing.deviceCategory,
           isMobile: mostRecent.isMobile !== undefined ? mostRecent.isMobile : existing.isMobile,
           machineName: mostRecent.machineName || existing.machineName,
-          hwid: (existing.hwid && !existing.hwid.includes('GUEST')) ? existing.hwid : (s.hwid || existing.hwid),
+          hwid: (s.hwid && !s.hwid.includes('GUEST') && s.hwid !== 'WEB-CLIENT' && s.hwid !== 'WEB-ADMIN-ADMIN' && s.hwid !== 'WEB-HWID-CLIENT') 
+            ? s.hwid 
+            : ((existing.hwid && !existing.hwid.includes('GUEST') && existing.hwid !== 'WEB-CLIENT' && existing.hwid !== 'WEB-ADMIN-ADMIN' && existing.hwid !== 'WEB-HWID-CLIENT') 
+              ? existing.hwid 
+              : (s.hwid || existing.hwid)),
           keyMasked: (existing.keyMasked && !existing.keyMasked.includes('WEB')) ? existing.keyMasked : (s.keyMasked || existing.keyMasked),
           screenResolution: mostRecent.screenResolution || existing.screenResolution,
           viewport: mostRecent.viewport || existing.viewport,

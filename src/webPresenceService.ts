@@ -123,25 +123,55 @@ function getOrCreateWebSessionId(): string {
 
 export function getOrCreateHardwareId(): string {
   if (typeof localStorage === 'undefined') {
-    return 'WEB-HWID-CLIENT';
+    return 'HWID-WEB-SERVER';
   }
   let hwid = localStorage.getItem('receipt_portal_hwid');
-  if (!hwid) {
+  const isLegacyPlaceholder = !hwid || 
+    hwid === 'WEB-CLIENT' || 
+    hwid === 'WEB-HWID-CLIENT' || 
+    hwid === 'WEB-ADMIN-ADMIN' || 
+    hwid.startsWith('WEB-PORTAL') || 
+    hwid.startsWith('WEB-GUEST');
+
+  if (isLegacyPlaceholder) {
     const nav: any = typeof navigator !== 'undefined' ? navigator : {};
     const scr: any = typeof window !== 'undefined' ? window.screen : {};
     let tz = 'UTC';
     try {
       tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     } catch {}
+
+    // Canvas fingerprint entropy
+    let canvasFingerprint = '';
+    try {
+      if (typeof document !== 'undefined') {
+        const canvas = document.createElement('canvas');
+        canvas.width = 100;
+        canvas.height = 30;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.textBaseline = 'top';
+          ctx.font = '14px Arial';
+          ctx.fillStyle = '#f60';
+          ctx.fillRect(10, 5, 60, 20);
+          ctx.fillStyle = '#069';
+          ctx.fillText('QuickBooks-HWID', 2, 2);
+          canvasFingerprint = canvas.toDataURL().slice(-50);
+        }
+      }
+    } catch {}
+
     const seed = [
       nav.userAgent || 'Agent',
       scr.width || 1920,
       scr.height || 1080,
       scr.colorDepth || 24,
+      scr.pixelDepth || 24,
       nav.hardwareConcurrency || 8,
       nav.deviceMemory || 8,
       nav.platform || 'Desktop',
-      tz
+      tz,
+      canvasFingerprint
     ].join('::');
 
     let hash = 2166136261;
@@ -149,9 +179,19 @@ export function getOrCreateHardwareId(): string {
       hash ^= seed.charCodeAt(i);
       hash = Math.imul(hash, 16777619);
     }
-    const hex = (hash >>> 0).toString(16).toUpperCase().padStart(8, '0');
-    hwid = `HWID-WEB-${hex}`;
-    localStorage.setItem('receipt_portal_hwid', hwid);
+    const hex1 = (hash >>> 0).toString(16).toUpperCase().padStart(8, '0');
+
+    let hash2 = 16777619;
+    for (let i = seed.length - 1; i >= 0; i--) {
+      hash2 ^= seed.charCodeAt(i);
+      hash2 = Math.imul(hash2, 2166136261);
+    }
+    const hex2 = (hash2 >>> 0).toString(16).toUpperCase().slice(0, 4).padStart(4, '0');
+
+    hwid = `HWID-WEB-${hex1}${hex2}`;
+    try {
+      localStorage.setItem('receipt_portal_hwid', hwid);
+    } catch {}
   }
   return hwid;
 }

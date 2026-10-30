@@ -300,7 +300,11 @@ export async function fetchUnifiedIpTelemetry(): Promise<IpTelemetrySummary> {
       displayName: mostRecent.displayName || existing.displayName,
       email: mostRecent.email || existing.email,
       companyName: mostRecent.companyName || existing.companyName,
-      hwid: (existing.hwid && !existing.hwid.includes('GUEST')) ? existing.hwid : (rawSession.hwid || existing.hwid),
+      hwid: (rawSession.hwid && !rawSession.hwid.includes('GUEST') && rawSession.hwid !== 'WEB-CLIENT' && rawSession.hwid !== 'WEB-ADMIN-ADMIN' && rawSession.hwid !== 'WEB-HWID-CLIENT') 
+        ? rawSession.hwid 
+        : ((existing.hwid && !existing.hwid.includes('GUEST') && existing.hwid !== 'WEB-CLIENT' && existing.hwid !== 'WEB-ADMIN-ADMIN' && existing.hwid !== 'WEB-HWID-CLIENT') 
+          ? existing.hwid 
+          : (rawSession.hwid || existing.hwid)),
       keyMasked: (existing.keyMasked && !existing.keyMasked.includes('WEB')) ? existing.keyMasked : (rawSession.keyMasked || existing.keyMasked),
       rawKey: existing.rawKey || rawSession.rawKey,
       plan: mostRecent.plan || existing.plan,
