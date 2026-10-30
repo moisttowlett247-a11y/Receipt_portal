@@ -46,7 +46,8 @@ import {
   CreditCard,
   BookOpen,
   ShieldAlert,
-  X
+  X,
+  Ban
 } from 'lucide-react';
 import { AdminTab } from './AdminHamburgerMenu';
 import { LicenseKeyRecord } from '../types';
@@ -1916,7 +1917,17 @@ export function AdminHomeOverview({
                           </td>
                           <td className="px-4 py-3 text-stone-300">
                             <div>{sess.machineName || sess.browserInfo || 'Browser Client'}</div>
-                            <div className="text-[10px] text-stone-500 font-mono">{sess.deviceCategory}</div>
+                            <div className="text-[10px] text-stone-500 font-mono flex items-center gap-1.5 mt-0.5">
+                              <span>{sess.deviceCategory}</span>
+                              {sess.hwid && (
+                                <>
+                                  <span>•</span>
+                                  <span className="text-amber-400/90 font-medium" title={sess.hwid}>
+                                    HWID: {sess.hwid.length > 14 ? `${sess.hwid.slice(0, 12)}…` : sess.hwid}
+                                  </span>
+                                </>
+                              )}
+                            </div>
                           </td>
                           <td className="px-4 py-3 font-mono text-stone-400">
                             {sess.pingCount || 1} pings
@@ -1930,13 +1941,68 @@ export function AdminHomeOverview({
                             </div>
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button
-                              onClick={() => onNavigateTab('devices')}
-                              className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-emerald-400 hover:text-emerald-300 font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1"
-                            >
-                              <span>Track</span>
-                              <ArrowRight className="w-3 h-3" />
-                            </button>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => onNavigateTab('devices')}
+                                className="px-2.5 py-1 rounded bg-stone-800 hover:bg-stone-700 text-stone-300 hover:text-stone-100 font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1"
+                                title="Open forensic dossier and live tracker"
+                              >
+                                <span>Track</span>
+                                <ArrowRight className="w-3 h-3 text-stone-400" />
+                              </button>
+                              {sess.isBlocked ? (
+                                <button
+                                  onClick={async () => {
+                                    if (!window.confirm(`Lift security block for IP ${sess.ip} / HWID ${sess.hwid || 'N/A'}?`)) {
+                                      return;
+                                    }
+                                    try {
+                                      await fetch('/api/admin/blocklist/unblock', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ ip: sess.ip, hwid: sess.hwid })
+                                      });
+                                      window.dispatchEvent(new CustomEvent('session-blocked-refresh'));
+                                    } catch {}
+                                  }}
+                                  className="px-2.5 py-1 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1"
+                                  title="Lift security block"
+                                >
+                                  <span>Unblock</span>
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={async () => {
+                                    const reason = window.prompt(
+                                      `Permanently block workstation ${sess.machineName || sess.ip}?\n\nThis will blacklist their IP (${sess.ip}) and Hardware ID (${sess.hwid || 'Web-HWID'}), revoking all access to Client & Admin portals.\n\nEnter reason for block:`,
+                                      'Administrative security enforcement'
+                                    );
+                                    if (reason === null) return;
+                                    try {
+                                      await fetch('/api/admin/blocklist', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          ip: sess.ip,
+                                          hwid: sess.hwid,
+                                          machineName: sess.machineName,
+                                          username: sess.username,
+                                          licenseKey: sess.licenseKey,
+                                          reason: reason || 'Administrative security enforcement',
+                                          blockedBy: 'Master Administrator'
+                                        })
+                                      });
+                                      window.dispatchEvent(new CustomEvent('session-blocked-refresh'));
+                                    } catch {}
+                                  }}
+                                  className="px-2.5 py-1 rounded bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 hover:text-rose-200 border border-rose-500/30 font-semibold text-[11px] transition-colors cursor-pointer inline-flex items-center gap-1"
+                                  title="Permanently block this workstation's IP and Hardware ID"
+                                >
+                                  <Ban className="w-3 h-3 text-rose-400" />
+                                  <span>Block</span>
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );

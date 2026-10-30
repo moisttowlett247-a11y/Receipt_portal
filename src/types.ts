@@ -202,6 +202,9 @@ export interface ActiveDeviceSession {
   isMobile?: boolean;
   deviceCategory?: 'Browser / Web Client' | 'Desktop Python Engine' | 'Mobile Web' | string;
   isCurrentDevice?: boolean;
+  isBlocked?: boolean;
+  blockedAt?: string;
+  blockReason?: string;
 }
 
 export interface ClientUserAccount {
@@ -243,5 +246,21 @@ export interface ClientAccountSession {
 }
 
 export type AdminRole = 'SUPER_ADMIN' | 'SUPPORT_STAFF';
+
+export interface BlockedEntity {
+  id: string;
+  ip?: string;
+  hwid?: string;
+  machineName?: string;
+  username?: string;
+  userId?: string;
+  email?: string;
+  licenseKey?: string;
+  reason: string;
+  blockedAt: string;
+  blockedBy: string;
+  permanent: boolean;
+  scope?: 'ALL_PORTALS' | 'CLIENT_AND_ADMIN';
+}
 
 

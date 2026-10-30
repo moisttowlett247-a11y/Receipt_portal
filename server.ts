@@ -215,6 +215,80 @@ const SUBMISSIONS_FILE = path.join(DATA_DIR, 'client_submissions.json');
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'client_accounts.json');
 const TAX_DOCS_FILE = path.join(DATA_DIR, 'tax_documents.json');
 const AUDIT_LOGS_FILE = path.join(DATA_DIR, 'admin_audit_logs.json');
+const BLOCKLIST_FILE = path.join(DATA_DIR, 'blocked_entities.json');
+
+interface BlockedRecord {
+  id: string;
+  ip?: string;
+  hwid?: string;
+  machineName?: string;
+  username?: string;
+  userId?: string;
+  email?: string;
+  licenseKey?: string;
+  reason: string;
+  blockedAt: string;
+  blockedBy: string;
+  permanent: boolean;
+  scope?: string;
+}
+
+function loadBlocklist(): BlockedRecord[] {
+  if (!fs.existsSync(BLOCKLIST_FILE)) return [];
+  try {
+    const raw = fs.readFileSync(BLOCKLIST_FILE, 'utf-8');
+    return raw.trim() ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveBlocklist(list: BlockedRecord[]): void {
+  atomicWriteJson(BLOCKLIST_FILE, list);
+}
+
+function checkIsBlocked(identifiers: {
+  ip?: string;
+  hwid?: string;
+  machineName?: string;
+  username?: string;
+  userId?: string;
+  email?: string;
+  licenseKey?: string;
+}): { blocked: boolean; record?: BlockedRecord } {
+  const list = loadBlocklist();
+  if (list.length === 0) return { blocked: false };
+
+  const cleanIp = identifiers.ip ? normalizeIp(identifiers.ip) : '';
+  const cleanHwid = identifiers.hwid ? String(identifiers.hwid).trim().toUpperCase() : '';
+  const cleanUser = identifiers.username ? String(identifiers.username).trim().toLowerCase() : '';
+  const cleanUserId = identifiers.userId ? String(identifiers.userId).trim().toLowerCase() : '';
+  const cleanEmail = identifiers.email ? String(identifiers.email).trim().toLowerCase() : '';
+  const cleanKey = identifiers.licenseKey ? String(identifiers.licenseKey).trim().toUpperCase() : '';
+
+  for (const b of list) {
+    if (cleanIp && b.ip && normalizeIp(b.ip) === cleanIp) {
+      return { blocked: true, record: b };
+    }
+    if (cleanHwid && b.hwid && b.hwid.trim().toUpperCase() === cleanHwid) {
+      return { blocked: true, record: b };
+    }
+    if (cleanKey && b.licenseKey && b.licenseKey.trim().toUpperCase() === cleanKey) {
+      return { blocked: true, record: b };
+    }
+    if (cleanUser && b.username && b.username.trim().toLowerCase() === cleanUser) {
+      return { blocked: true, record: b };
+    }
+    if (cleanUserId && b.userId && b.userId.trim().toLowerCase() === cleanUserId) {
+      return { blocked: true, record: b };
+    }
+    if (cleanEmail && b.email && b.email.trim().toLowerCase() === cleanEmail) {
+      return { blocked: true, record: b };
+    }
+  }
+
+  return { blocked: false };
+}
 
 function loadAuditLogs(): any[] {
   if (!fs.existsSync(AUDIT_LOGS_FILE)) return [];
@@ -1378,6 +1452,48 @@ router.use('/api/qbo/config', rateLimiter(45));
 router.use('/api/track-ip', rateLimiter(150));
 
 router.use((req, res, next) => {
+  // Global Workstation, Hardware ID & IP Permanent Blocklist Interceptor
+  const p = (req.path || '').toLowerCase();
+  if (
+    p.startsWith('/api/admin/blocklist') ||
+    p === '/api/check-blocked' ||
+    p === '/api/presence/check-blocked'
+  ) {
+    return next();
+  }
+
+  const clientIp = getClientIp(req);
+  const hwid = (req.headers['x-hwid'] || req.headers['x-hardware-id'] || req.body?.hwid || req.query?.hwid || '') as string;
+  const licenseKey = (req.headers['x-license-key'] || req.body?.licenseKey || req.body?.key || req.query?.key || '') as string;
+  const username = (req.headers['x-username'] || req.body?.username || req.query?.username || '') as string;
+  const userId = (req.headers['x-user-id'] || req.body?.userId || req.query?.userId || '') as string;
+  const email = (req.body?.email || req.body?.clientEmail || '') as string;
+
+  const check = checkIsBlocked({
+    ip: clientIp,
+    hwid,
+    licenseKey,
+    username,
+    userId,
+    email
+  });
+
+  if (check.blocked) {
+    return res.status(403).json({
+      success: false,
+      blocked: true,
+      error: 'ACCESS PERMANENTLY BLOCKED: This workstation, hardware identifier (HWID), and IP address have been banned by system administration.',
+      reason: check.record?.reason || 'Administrative Security Violation',
+      blockedAt: check.record?.blockedAt,
+      ip: clientIp,
+      hwid: check.record?.hwid || hwid
+    });
+  }
+
+  next();
+});
+
+router.use((req, res, next) => {
   // Automatically record presence for any API request to track client and admin IPs in real time
   try {
     const path = req.path || '';
@@ -2289,14 +2405,36 @@ router.get(['/api/licenses/sessions', '/api/devices/sessions'], (req, res) => {
       return (b.lastPingMs || 0) - (a.lastPingMs || 0);
     });
 
+    const blocklist = loadBlocklist();
+    const mappedSessions = uniqueIpList.map(s => {
+      const matchBlock = blocklist.find(b => 
+        (b.ip && normalizeIp(b.ip) === normalizeIp(s.ip)) ||
+        (b.hwid && s.hwid && b.hwid.trim().toUpperCase() === s.hwid.trim().toUpperCase())
+      );
+      if (matchBlock) {
+        return {
+          ...s,
+          isBlocked: true,
+          status: 'BLOCKED',
+          onlineState: 'OFFLINE' as const,
+          blockedAt: matchBlock.blockedAt,
+          blockReason: matchBlock.reason || 'Permanently Blocked'
+        };
+      }
+      return {
+        ...s,
+        isBlocked: false
+      };
+    });
+
     return res.json({
       success: true,
-      totalSessions: uniqueIpList.length,
-      onlineCount: uniqueIpList.filter(s => s.onlineState === 'ONLINE').length,
-      idleCount: uniqueIpList.filter(s => s.onlineState === 'IDLE').length,
-      offlineCount: uniqueIpList.filter(s => s.onlineState === 'OFFLINE').length,
-      uniqueIps: uniqueIpList.length,
-      sessions: uniqueIpList,
+      totalSessions: mappedSessions.length,
+      onlineCount: mappedSessions.filter(s => s.onlineState === 'ONLINE').length,
+      idleCount: mappedSessions.filter(s => s.onlineState === 'IDLE').length,
+      offlineCount: mappedSessions.filter(s => s.onlineState === 'OFFLINE').length,
+      uniqueIps: mappedSessions.length,
+      sessions: mappedSessions,
       serverTime: new Date().toISOString()
     });
   } catch (err: any) {
@@ -2338,6 +2476,238 @@ router.route(['/api/licenses/sessions/clear', '/api/devices/sessions/clear', '/a
       return res.status(500).json({ success: false, error: err.message });
     }
   });
+
+// =========================================================================
+// Workstation, IP Address & Hardware ID (HWID) Permanent Blocklist Engine
+// =========================================================================
+router.get('/api/admin/blocklist', (req, res) => {
+  try {
+    const list = loadBlocklist();
+    return res.json({
+      success: true,
+      count: list.length,
+      blockedEntities: list
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/api/admin/blocklist', rateLimiter(40, 60000), (req, res) => {
+  try {
+    const body = req.body || {};
+    const { ip, hwid, machineName, username, userId, email, licenseKey, reason } = body;
+    if (!ip && !hwid && !username && !licenseKey && !userId) {
+      return res.status(400).json({ success: false, error: 'At least one target identifier (IP, Hardware ID, username, or license key) is required to block.' });
+    }
+
+    const cleanIp = ip ? normalizeIp(ip) : undefined;
+    const cleanHwid = hwid ? String(hwid).trim() : undefined;
+    const cleanMachine = machineName ? String(machineName).trim() : undefined;
+    const cleanUser = username ? String(username).trim() : undefined;
+    const cleanUserId = userId ? String(userId).trim() : undefined;
+    const cleanEmail = email ? String(email).trim().toLowerCase() : undefined;
+    const cleanKey = licenseKey ? String(licenseKey).trim().toUpperCase() : undefined;
+    const blockReason = String(reason || 'Unauthorized Access / Administrative Security Violation').slice(0, 500);
+
+    const list = loadBlocklist();
+    const newRecord: BlockedRecord = {
+      id: `block_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      ip: cleanIp,
+      hwid: cleanHwid,
+      machineName: cleanMachine,
+      username: cleanUser,
+      userId: cleanUserId,
+      email: cleanEmail,
+      licenseKey: cleanKey,
+      reason: blockReason,
+      blockedAt: new Date().toISOString(),
+      blockedBy: 'Security Administrator',
+      permanent: true,
+      scope: 'CLIENT_AND_ADMIN'
+    };
+
+    // Replace or deduplicate existing entry
+    const filtered = list.filter(b => {
+      if (cleanIp && b.ip && normalizeIp(b.ip) === cleanIp) return false;
+      if (cleanHwid && b.hwid && b.hwid === cleanHwid) return false;
+      return true;
+    });
+
+    filtered.unshift(newRecord);
+    saveBlocklist(filtered);
+
+    // Update active sessions to BLOCKED
+    const sessions = loadSessions();
+    let sessionUpdated = false;
+    for (const [id, s] of Object.entries(sessions) as [string, any][]) {
+      const matchIp = cleanIp && s.ip && normalizeIp(s.ip) === cleanIp;
+      const matchHwid = cleanHwid && s.hwid && s.hwid === cleanHwid;
+      const matchKey = cleanKey && s.rawKey && s.rawKey.toUpperCase() === cleanKey;
+      if (matchIp || matchHwid || matchKey) {
+        sessions[id] = {
+          ...s,
+          status: 'BLOCKED',
+          onlineState: 'OFFLINE',
+          blockedAt: newRecord.blockedAt,
+          blockReason
+        };
+        sessionUpdated = true;
+      }
+    }
+    if (sessionUpdated) {
+      saveSessions(sessions);
+    }
+
+    // Revoke license key if matching
+    if (cleanKey) {
+      const hash = crypto.createHash('sha256').update(cleanKey).digest('hex');
+      const targetFile = path.join(LICENSES_DIR, `${hash}.json`);
+      if (fs.existsSync(targetFile)) {
+        try {
+          const lData = JSON.parse(fs.readFileSync(targetFile, 'utf-8'));
+          lData.status = 'REVOKED';
+          lData.inUse = false;
+          lData.blocked = true;
+          lData.blockedAt = newRecord.blockedAt;
+          fs.writeFileSync(targetFile, JSON.stringify(lData, null, 2), 'utf-8');
+        } catch {}
+      }
+    }
+
+    // Audit log
+    recordAuditEntry({
+      action: 'WORKSTATION_PERMANENTLY_BLOCKED',
+      category: 'SYSTEM',
+      actor: 'Security Administrator',
+      severity: 'CRITICAL',
+      details: `Permanently blocked IP: ${cleanIp || 'N/A'}, HWID: ${cleanHwid || 'N/A'}, Machine: ${cleanMachine || 'N/A'}. Reason: ${blockReason}`,
+      ip: cleanIp || '127.0.0.1'
+    });
+
+    return res.json({
+      success: true,
+      message: 'Workstation, IP address, and Hardware ID permanently blocked across all portals.',
+      blockedRecord: newRecord
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post(['/api/admin/blocklist/unblock', '/api/admin/unblock'], (req, res) => {
+  try {
+    const { id, ip, hwid } = req.body || {};
+    const list = loadBlocklist();
+    const cleanIp = ip ? normalizeIp(ip) : undefined;
+    const cleanHwid = hwid ? String(hwid).trim() : undefined;
+
+    const remaining = list.filter(b => {
+      if (id && b.id === id) return false;
+      if (cleanIp && b.ip && normalizeIp(b.ip) === cleanIp) return false;
+      if (cleanHwid && b.hwid && b.hwid === cleanHwid) return false;
+      return true;
+    });
+
+    const unblockedCount = list.length - remaining.length;
+    saveBlocklist(remaining);
+
+    // Restore sessions if present
+    const sessions = loadSessions();
+    let sessionRestored = false;
+    for (const [sId, s] of Object.entries(sessions) as [string, any][]) {
+      const matchIp = cleanIp && s.ip && normalizeIp(s.ip) === cleanIp;
+      const matchHwid = cleanHwid && s.hwid && s.hwid === cleanHwid;
+      if (matchIp || matchHwid) {
+        if (s.status === 'BLOCKED') {
+          sessions[sId] = {
+            ...s,
+            status: 'ACTIVE',
+            blockedAt: undefined,
+            blockReason: undefined
+          };
+          sessionRestored = true;
+        }
+      }
+    }
+    if (sessionRestored) {
+      saveSessions(sessions);
+    }
+
+    recordAuditEntry({
+      action: 'WORKSTATION_UNBLOCKED',
+      category: 'SYSTEM',
+      actor: 'Security Administrator',
+      severity: 'INFO',
+      details: `Unblocked ID: ${id || 'N/A'}, IP: ${cleanIp || 'N/A'}, HWID: ${cleanHwid || 'N/A'}`
+    });
+
+    return res.json({
+      success: true,
+      message: `Successfully unblocked ${unblockedCount > 0 ? unblockedCount : 1} entity record(s).`,
+      remainingCount: remaining.length
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete('/api/admin/blocklist/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    const list = loadBlocklist();
+    const remaining = list.filter(b => b.id !== id);
+    saveBlocklist(remaining);
+
+    recordAuditEntry({
+      action: 'WORKSTATION_UNBLOCKED',
+      category: 'SYSTEM',
+      actor: 'Security Administrator',
+      severity: 'INFO',
+      details: `Deleted block record: ${id}`
+    });
+
+    return res.json({
+      success: true,
+      message: `Unblocked record ${id}`,
+      remainingCount: remaining.length
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get(['/api/check-blocked', '/api/presence/check-blocked'], (req, res) => {
+  try {
+    const clientIp = getClientIp(req);
+    const hwid = (req.headers['x-hwid'] || req.headers['x-hardware-id'] || req.query.hwid || '') as string;
+    const licenseKey = (req.headers['x-license-key'] || req.query.key || '') as string;
+    const userId = (req.headers['x-user-id'] || req.query.userId || '') as string;
+    const username = (req.headers['x-username'] || req.query.username || '') as string;
+
+    const check = checkIsBlocked({
+      ip: clientIp,
+      hwid,
+      licenseKey,
+      userId,
+      username
+    });
+
+    if (check.blocked) {
+      return res.json({
+        blocked: true,
+        reason: check.record?.reason || 'Workstation permanently blocked',
+        blockedAt: check.record?.blockedAt,
+        ip: clientIp,
+        hwid: check.record?.hwid || hwid
+      });
+    }
+
+    return res.json({ blocked: false, ip: clientIp });
+  } catch (err: any) {
+    return res.json({ blocked: false });
+  }
+});
 
 router.route('/api/inquiries')
   .get((req, res) => {

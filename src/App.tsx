@@ -76,7 +76,8 @@ import { syncKeyToServer, batchSyncKeysToServer, fetchAllServerLicenses, fetchCl
 import { buildPortalUrl, isCurrentRouteAdmin } from './urlUtils';
 import { getClientSubmissions, subscribeToClientSubmissions } from './clientSubmissionService';
 import { syncClientAccountsWithServer, getDeletedAccountKeys, recordAccountDeleted, unrecordAccountDeleted, setClientAccountLicenseStatus } from './clientAccountService';
-import { startPresenceTracker } from './webPresenceService';
+import { startPresenceTracker, checkWorkstationBlockStatus } from './webPresenceService';
+import { BlockedWorkstationView } from './components/BlockedWorkstationView';
 
 // No hardcoded client keys or private emails committed to repository
 const INITIAL_KEYS: LicenseKeyRecord[] = [];
@@ -89,6 +90,13 @@ export default function App() {
   const [legalModalOpen, setLegalModalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<'privacy' | 'terms' | 'security' | 'support'>('privacy');
   const [isInquiriesModalOpen, setIsInquiriesModalOpen] = useState(false);
+  const [blockedWorkstationState, setBlockedWorkstationState] = useState<{
+    blocked: boolean;
+    reason?: string;
+    blockedAt?: string;
+    ip?: string;
+    hwid?: string;
+  } | null>(null);
   
   // Persistent License Keys registry state
   const [licenseKeys, setLicenseKeys] = useState<LicenseKeyRecord[]>(() => {
@@ -362,10 +370,39 @@ export default function App() {
       setIsCommandPaletteOpen(true);
     };
 
+    const handleWorkstationBlocked = (e: any) => {
+      if (e.detail && e.detail.blocked) {
+        setBlockedWorkstationState(e.detail);
+      } else {
+        checkWorkstationBlockStatus().then(res => {
+          if (res && res.blocked) setBlockedWorkstationState(res);
+        });
+      }
+    };
+
+    const handleBlockRefresh = () => {
+      checkWorkstationBlockStatus().then(res => {
+        if (res && res.blocked) {
+          setBlockedWorkstationState(res);
+        } else {
+          setBlockedWorkstationState(null);
+        }
+      });
+    };
+
+    // Perform initial hardware ID & IP block check
+    checkWorkstationBlockStatus().then(res => {
+      if (res && res.blocked) {
+        setBlockedWorkstationState(res);
+      }
+    });
+
     window.addEventListener('popstate', handleLocationChange);
     window.addEventListener('hashchange', handleLocationChange);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('open_admin_command_palette', handleOpenPalette);
+    window.addEventListener('workstation-blocked', handleWorkstationBlocked);
+    window.addEventListener('session-blocked-refresh', handleBlockRefresh);
 
     // Periodic background synchronization for client accounts and submissions
     const syncInterval = setInterval(() => {
@@ -416,6 +453,8 @@ export default function App() {
       window.removeEventListener('hashchange', handleLocationChange);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('open_admin_command_palette', handleOpenPalette);
+      window.removeEventListener('workstation-blocked', handleWorkstationBlocked);
+      window.removeEventListener('session-blocked-refresh', handleBlockRefresh);
       clearInterval(syncInterval);
     };
   }, []);
@@ -961,6 +1000,25 @@ export default function App() {
       showToast('File downloaded below!');
     }
   };
+
+  // 0. Permanent Security Quarantine & Workstation Blockout
+  // Intercepts ALL access to both Client Intake Portal and Admin Console permanently
+  if (blockedWorkstationState?.blocked) {
+    return (
+      <BlockedWorkstationView
+        blockedData={blockedWorkstationState}
+        onRetryCheck={async () => {
+          const res = await checkWorkstationBlockStatus();
+          if (res && res.blocked) {
+            setBlockedWorkstationState(res);
+          } else {
+            setBlockedWorkstationState(null);
+            showToast('Workstation clearance verified. Access restored.');
+          }
+        }}
+      />
+    );
+  }
 
   // 1. Client Facing Portal (Separate URL: `/`)
   if (!isAdminRoute) {

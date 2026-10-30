@@ -35,7 +35,7 @@ import {
   X,
   ExternalLink
 } from 'lucide-react';
-import { ActiveDeviceSession, LicenseKeyRecord, AdminRole } from '../types';
+import { ActiveDeviceSession, LicenseKeyRecord, AdminRole, BlockedEntity } from '../types';
 import { getBackendApiUrl } from '../urlUtils';
 import {
   fetchCloudflareLicenses,
@@ -89,6 +89,125 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   });
   const [cfError, setCfError] = useState<string | null>(null);
 
+  // Permanent Security Blocklist State
+  const [activeMonitorTab, setActiveMonitorTab] = useState<'devices' | 'blocklist'>('devices');
+  const [blockedEntities, setBlockedEntities] = useState<BlockedEntity[]>([]);
+  const [blockingSession, setBlockingSession] = useState<ActiveDeviceSession | null>(null);
+  const [blockReasonInput, setBlockReasonInput] = useState<string>('Unauthorized Access / Forensic Security Policy Enforcement');
+  const [isSubmittingBlock, setIsSubmittingBlock] = useState<boolean>(false);
+  const [manualBlockIp, setManualBlockIp] = useState<string>('');
+  const [manualBlockHwid, setManualBlockHwid] = useState<string>('');
+  const [manualBlockReason, setManualBlockReason] = useState<string>('');
+
+  const fetchBlocklist = useCallback(async () => {
+    try {
+      const backendBase = getBackendApiUrl();
+      const res = await fetch(`${backendBase}/api/admin/blocklist`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && Array.isArray(data.blockedEntities)) {
+          setBlockedEntities(data.blockedEntities);
+        }
+      }
+    } catch {}
+  }, []);
+
+  const handleConfirmBlock = async () => {
+    if (!blockingSession) return;
+    setIsSubmittingBlock(true);
+    try {
+      const backendBase = getBackendApiUrl();
+      const res = await fetch(`${backendBase}/api/admin/blocklist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: blockingSession.ip,
+          hwid: blockingSession.hwid,
+          machineName: blockingSession.machineName,
+          username: blockingSession.username,
+          licenseKey: blockingSession.rawKey,
+          reason: blockReasonInput.trim() || 'Administrative Security Violation'
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (showToast) showToast(`Workstation permanently blocked: ${blockingSession.ip} / ${blockingSession.hwid}`);
+        setBlockingSession(null);
+        await fetchSessions(true);
+        await fetchBlocklist();
+        if (selectedSession && selectedSession.id === blockingSession.id) {
+          setSelectedSession(prev => prev ? { ...prev, isBlocked: true, status: 'BLOCKED' } : null);
+        }
+      } else {
+        if (showToast) showToast(`Block failed: ${data.error || 'Server error'}`);
+      }
+    } catch (err: any) {
+      if (showToast) showToast(`Network error: ${err.message}`);
+    } finally {
+      setIsSubmittingBlock(false);
+    }
+  };
+
+  const handleUnblockEntity = async (target: { id?: string; ip?: string; hwid?: string }) => {
+    try {
+      const backendBase = getBackendApiUrl();
+      const res = await fetch(`${backendBase}/api/admin/blocklist/unblock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(target)
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (showToast) showToast(`Unblocked ${target.ip || target.hwid || 'workstation'}`);
+        await fetchBlocklist();
+        await fetchSessions(true);
+        if (selectedSession && (selectedSession.ip === target.ip || selectedSession.hwid === target.hwid)) {
+          setSelectedSession(prev => prev ? { ...prev, isBlocked: false, status: 'ACTIVE' } : null);
+        }
+      } else {
+        if (showToast) showToast(`Unblock failed: ${data.error || 'Server error'}`);
+      }
+    } catch (err: any) {
+      if (showToast) showToast(`Error: ${err.message}`);
+    }
+  };
+
+  const handleManualBlock = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualBlockIp.trim() && !manualBlockHwid.trim()) {
+      if (showToast) showToast('Please enter an IP address or Hardware ID to block.');
+      return;
+    }
+    setIsSubmittingBlock(true);
+    try {
+      const backendBase = getBackendApiUrl();
+      const res = await fetch(`${backendBase}/api/admin/blocklist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ip: manualBlockIp.trim() || undefined,
+          hwid: manualBlockHwid.trim() || undefined,
+          reason: manualBlockReason.trim() || 'Manual Security Blacklist Entry'
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        if (showToast) showToast('Successfully added to permanent blocklist.');
+        setManualBlockIp('');
+        setManualBlockHwid('');
+        setManualBlockReason('');
+        await fetchBlocklist();
+        await fetchSessions(true);
+      } else {
+        if (showToast) showToast(`Failed: ${data.error || 'Server error'}`);
+      }
+    } catch (err: any) {
+      if (showToast) showToast(`Error: ${err.message}`);
+    } finally {
+      setIsSubmittingBlock(false);
+    }
+  };
+
   // Fetch unified active sessions from Edge KV and backend
   const fetchSessions = useCallback(async (silent = false) => {
     if (!silent) {
@@ -133,6 +252,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
   // Polling effect
   useEffect(() => {
     fetchSessions(true);
+    fetchBlocklist();
 
     if (autoRefreshInterval <= 0) return;
 
@@ -141,10 +261,11 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
         return;
       }
       fetchSessions(true);
+      fetchBlocklist();
     }, autoRefreshInterval * 1000);
 
     return () => clearInterval(timer);
-  }, [autoRefreshInterval, fetchSessions]);
+  }, [autoRefreshInterval, fetchSessions, fetchBlocklist]);
 
   // Copy helper
   const handleCopy = (text: string, fieldId: string, label = 'Copied') => {
@@ -668,7 +789,7 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
         </div>
 
         {/* Telemetry KPI Overview Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mt-6 pt-6 border-t border-stone-800/80">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 mt-6 pt-6 border-t border-stone-800/80">
           {/* 1. Online Count */}
           <div className="bg-stone-950/70 border border-emerald-900/30 rounded-xl p-3.5">
             <div className="flex items-center justify-between">
@@ -768,6 +889,29 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
               </span>
             </div>
           </div>
+
+          {/* 7. Permanent Blocklist Count */}
+          <div 
+            onClick={() => setActiveMonitorTab(activeMonitorTab === 'blocklist' ? 'devices' : 'blocklist')}
+            className={`rounded-xl p-3.5 border transition-all cursor-pointer ${
+              activeMonitorTab === 'blocklist' 
+                ? 'bg-rose-950/80 border-rose-600 shadow-md shadow-rose-950/50' 
+                : 'bg-stone-950/70 border-rose-900/30 hover:border-rose-700/60'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-rose-300 font-medium">Banned Devices</span>
+              <ShieldAlert className="w-4 h-4 text-rose-400" />
+            </div>
+            <div className="mt-2 flex items-baseline gap-2">
+              <span className="text-2xl font-extrabold text-rose-400 font-mono">
+                {blockedEntities.length}
+              </span>
+              <span className="text-[11px] text-rose-400/80 font-medium">
+                {blockedEntities.length === 1 ? '1 Blocked' : `${blockedEntities.length} Blocked`}
+              </span>
+            </div>
+          </div>
         </div>
 
         {/* Informational Expandable Banner */}
@@ -810,8 +954,42 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
         )}
       </div>
 
-      {/* Filter and Search Bar */}
-      <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-stone-900/60 border border-stone-800/80 p-3 rounded-xl">
+      {/* View Switcher: Active Devices vs Security Blocklist */}
+      <div className="flex items-center gap-2 border-b border-stone-800 pb-2">
+        <button
+          onClick={() => setActiveMonitorTab('devices')}
+          className={`px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 ${
+            activeMonitorTab === 'devices'
+              ? 'bg-stone-800 text-stone-100 border border-stone-700 shadow-sm'
+              : 'text-stone-400 hover:text-stone-200 hover:bg-stone-850'
+          }`}
+        >
+          <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+          <span>Active Connected Telemetry ({sessions.length})</span>
+        </button>
+
+        <button
+          onClick={() => setActiveMonitorTab('blocklist')}
+          className={`px-4 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-2 ${
+            activeMonitorTab === 'blocklist'
+              ? 'bg-rose-950/90 text-rose-200 border border-rose-800 shadow-sm'
+              : 'text-stone-400 hover:text-rose-300 hover:bg-stone-850'
+          }`}
+        >
+          <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+          <span>Permanent Security Blocklist ({blockedEntities.length})</span>
+          {blockedEntities.length > 0 && (
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-rose-500/20 text-rose-300 border border-rose-500/30">
+              {blockedEntities.length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {activeMonitorTab === 'devices' && (
+        <>
+          {/* Filter and Search Bar */}
+          <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3 bg-stone-900/60 border border-stone-800/80 p-3 rounded-xl">
         <div className="flex flex-wrap items-center gap-2 flex-1">
           {/* Search Box */}
           <div className="relative flex-1 min-w-[260px]">
@@ -981,7 +1159,12 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                       {/* Live Status & Ping Cadence */}
                       <td className="py-3.5 px-4 whitespace-nowrap">
                         <div className="flex items-center gap-2">
-                          {isOnline ? (
+                          {session.isBlocked ? (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-950 text-rose-300 border border-rose-800 shadow-sm">
+                              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                              <span>PERMANENTLY BLOCKED</span>
+                            </span>
+                          ) : isOnline ? (
                             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-950/90 text-emerald-300 border border-emerald-800 shadow-sm">
                               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                               <span>ONLINE</span>
@@ -1098,6 +1281,28 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                                 </>
                               )}
                             </div>
+                            {session.hwid && (
+                              <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono">
+                                <span className="text-amber-400/90 font-medium">HWID:</span>
+                                <span className="text-stone-300 truncate max-w-[130px]" title={session.hwid}>
+                                  {session.hwid}
+                                </span>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCopy(session.hwid, `table-hwid-${session.id}`, 'Hardware ID');
+                                  }}
+                                  className="p-0.5 text-stone-500 hover:text-stone-300 transition-colors cursor-pointer"
+                                  title="Copy HWID"
+                                >
+                                  {copiedField === `table-hwid-${session.id}` ? (
+                                    <Check className="w-2.5 h-2.5 text-emerald-400" />
+                                  ) : (
+                                    <Copy className="w-2.5 h-2.5" />
+                                  )}
+                                </button>
+                              </div>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -1194,12 +1399,33 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                           <button
                             onClick={() => handleInstantRevoke(session)}
                             disabled={isRevokingKey === session.id}
-                            className="px-2 py-1 text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 border border-rose-800/80 text-rose-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                            className="px-2 py-1 text-xs font-semibold bg-stone-800 hover:bg-stone-700 border border-stone-700 text-rose-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
                             title="Instantly revoke this license key across Edge KV & Portal"
                           >
                             <Ban className="w-3 h-3 text-rose-400" />
                             <span>{isRevokingKey === session.id ? 'Revoking...' : 'Revoke'}</span>
                           </button>
+
+                          {/* Block / Unblock Workstation & IP */}
+                          {session.isBlocked ? (
+                            <button
+                              onClick={() => handleUnblockEntity({ ip: session.ip, hwid: session.hwid })}
+                              className="px-2.5 py-1 text-xs font-semibold bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                              title="Unblock this Workstation, IP & HWID"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Unblock</span>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => setBlockingSession(session)}
+                              className="px-2.5 py-1 text-xs font-semibold bg-rose-950/80 hover:bg-rose-900 border border-rose-800/80 text-rose-300 rounded-lg transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                              title="Permanently block both Hardware ID, IP address, and credentials"
+                            >
+                              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Block</span>
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1241,6 +1467,137 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
           )}
         </div>
       </div>
+        </>
+      )}
+
+      {/* Permanent Security Blocklist Tab */}
+      {activeMonitorTab === 'blocklist' && (
+        <div className="space-y-4">
+          {/* Manual Block Registration Card */}
+          <div className="bg-stone-900/90 border border-stone-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <h3 className="text-xs font-bold text-stone-200 uppercase tracking-wider font-mono">
+                  Manual Blacklist Entry (IP / Hardware ID)
+                </h3>
+              </div>
+              <span className="text-[10px] font-mono text-stone-500">
+                Permanent Multi-Portal Interceptor
+              </span>
+            </div>
+
+            <form onSubmit={handleManualBlock} className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="text-[11px] font-mono text-stone-400 block mb-1">Target IP Address</label>
+                <input
+                  type="text"
+                  value={manualBlockIp}
+                  onChange={(e) => setManualBlockIp(e.target.value)}
+                  placeholder="e.g. 198.51.100.24"
+                  className="w-full text-xs font-mono p-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-mono text-stone-400 block mb-1">Target Hardware ID (HWID)</label>
+                <input
+                  type="text"
+                  value={manualBlockHwid}
+                  onChange={(e) => setManualBlockHwid(e.target.value)}
+                  placeholder="e.g. HWID-WEB-A1B2C3D4"
+                  className="w-full text-xs font-mono p-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-rose-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] font-mono text-stone-400 block mb-1">Ban Rationale / Reason</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={manualBlockReason}
+                    onChange={(e) => setManualBlockReason(e.target.value)}
+                    placeholder="Policy violation, suspicious scans..."
+                    className="flex-1 text-xs p-2.5 bg-stone-950 border border-stone-800 rounded-xl text-stone-200 focus:outline-none focus:border-rose-500"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSubmittingBlock}
+                    className="px-4 py-2.5 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shrink-0 flex items-center gap-1.5 shadow-md shadow-rose-950/40"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <span>Block</span>
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+
+          {/* Blocklist Table */}
+          <div className="bg-stone-900/90 border border-stone-800 rounded-2xl overflow-hidden shadow-xl">
+            {blockedEntities.length === 0 ? (
+              <div className="p-12 text-center space-y-3">
+                <div className="w-14 h-14 rounded-2xl bg-emerald-950/40 border border-emerald-800/40 flex items-center justify-center text-emerald-400 mx-auto">
+                  <ShieldCheck className="w-7 h-7" />
+                </div>
+                <h3 className="text-sm font-bold text-stone-200">
+                  Zero Blocked Workstations or Networks
+                </h3>
+                <p className="text-xs text-stone-400 max-w-md mx-auto leading-relaxed">
+                  No IP addresses or hardware identifiers are currently barred. Use the &quot;Block&quot; button in the active device table or enter an identifier above to permanently revoke access.
+                </p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead>
+                    <tr className="bg-stone-950/80 text-stone-400 border-b border-stone-800 font-mono text-[11px] uppercase tracking-wider">
+                      <th className="py-3 px-4">Blocked IP Address</th>
+                      <th className="py-3 px-4">Hardware ID (HWID)</th>
+                      <th className="py-3 px-4">Enforcement Reason</th>
+                      <th className="py-3 px-4">Date Blocked</th>
+                      <th className="py-3 px-4">Scope</th>
+                      <th className="py-3 px-4 text-right">Administrative Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-800/60 font-sans">
+                    {blockedEntities.map((entity) => (
+                      <tr key={entity.id} className="hover:bg-stone-800/40 transition-colors">
+                        <td className="py-3.5 px-4 font-mono font-bold text-stone-100">
+                          {entity.ip || 'All Associated IPs'}
+                        </td>
+                        <td className="py-3.5 px-4 font-mono text-amber-300">
+                          {entity.hwid || 'N/A'}
+                        </td>
+                        <td className="py-3.5 px-4 text-stone-300 max-w-xs truncate" title={entity.reason}>
+                          {entity.reason}
+                        </td>
+                        <td className="py-3.5 px-4 font-mono text-stone-400 text-[11px]">
+                          {new Date(entity.blockedAt).toLocaleString()}
+                        </td>
+                        <td className="py-3.5 px-4">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-950 text-rose-300 border border-rose-800">
+                            CLIENT &amp; ADMIN PORTALS
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-right">
+                          <button
+                            onClick={() => handleUnblockEntity({ id: entity.id, ip: entity.ip, hwid: entity.hwid })}
+                            className="px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-emerald-400 hover:text-emerald-300 text-xs font-semibold rounded-lg border border-stone-700 transition-colors cursor-pointer inline-flex items-center gap-1.5 shadow-sm"
+                          >
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>Unblock Workstation</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Forensic IP Inspection Dossier Modal */}
       {selectedSession && (
@@ -1280,9 +1637,25 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                       {selectedSession.networkScope || 'Public WAN Network'}
                     </span>
                   </div>
-                  <p className="text-xs text-stone-400 mt-1 font-mono">
-                    Session Identifier: {selectedSession.id}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-xs text-stone-400 font-mono">
+                    <span>Session: {selectedSession.id}</span>
+                    <span className="text-stone-700">•</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-amber-400/90 font-medium">Hardware ID (HWID):</span>
+                      <code className="text-xs font-mono font-bold text-amber-300 bg-stone-900 px-2 py-0.5 rounded border border-stone-800 select-all">
+                        {selectedSession.hwid || 'NOT_ASSIGNED'}
+                      </code>
+                      {selectedSession.hwid && (
+                        <button
+                          onClick={() => handleCopy(selectedSession.hwid, 'header-hwid', 'Hardware ID')}
+                          className="p-1 text-stone-400 hover:text-stone-200 bg-stone-900 hover:bg-stone-800 rounded border border-stone-800 transition-colors cursor-pointer"
+                          title="Copy Hardware ID"
+                        >
+                          {copiedField === 'header-hwid' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1382,10 +1755,58 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
 
               {/* Section 3: Hardware, Display & Runtime Fingerprint */}
               <div className="bg-stone-950/60 border border-stone-800 rounded-xl p-4">
-                <div className="flex items-center gap-2 font-bold text-amber-400 text-xs uppercase tracking-wider mb-3">
-                  <Cpu className="w-4 h-4" />
-                  <span>3. Client Hardware, Display & Runtime Fingerprint</span>
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2 font-bold text-amber-400 text-xs uppercase tracking-wider">
+                    <Cpu className="w-4 h-4" />
+                    <span>3. Client Hardware, Display & Runtime Fingerprint</span>
+                  </div>
+                  {selectedSession.hwid && !selectedSession.hwid.includes('GUEST') && selectedSession.hwid !== 'Desktop-PC' && (
+                    <button
+                      onClick={() => handleUnlockHwid(selectedSession)}
+                      className="px-2.5 py-1 text-[11px] font-semibold bg-amber-950/70 hover:bg-amber-900 text-amber-300 border border-amber-800 rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Unlock className="w-3 h-3 text-amber-400" />
+                      <span>Unlock Hardware Lock</span>
+                    </button>
+                  )}
                 </div>
+
+                {/* Primary Hardware ID (HWID) Device Fingerprint Card */}
+                <div className="p-3.5 mb-3 bg-stone-900/90 border border-amber-500/30 rounded-lg">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-400">
+                          Hardware ID Fingerprint (HWID)
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                          Anti-Account Sharing Anchor
+                        </span>
+                      </div>
+                      <div className="mt-1 flex items-center gap-2">
+                        <code className="text-xs sm:text-sm font-mono font-bold text-amber-200 select-all break-all">
+                          {selectedSession.hwid || 'NOT_ASSIGNED'}
+                        </code>
+                      </div>
+                      {selectedSession.machineName && (
+                        <div className="mt-1 text-[11px] text-stone-400 font-mono">
+                          Registered Device Hostname: <span className="text-stone-200 font-semibold">{selectedSession.machineName}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => handleCopy(selectedSession.hwid, 'sec3-hwid', 'Hardware ID')}
+                        className="px-2.5 py-1.5 text-xs font-mono bg-stone-800 hover:bg-stone-700 text-stone-200 rounded-lg border border-stone-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                        title="Copy HWID"
+                      >
+                        {copiedField === 'sec3-hwid' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>Copy HWID</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
                   <div className="p-3 bg-stone-900/80 border border-stone-800/80 rounded-lg">
                     <span className="text-stone-500 block text-[11px] mb-1">Operating System</span>
@@ -1519,6 +1940,27 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
               </div>
 
               <div className="flex items-center gap-2">
+                {selectedSession.isBlocked ? (
+                  <button
+                    onClick={() => {
+                      handleUnblockEntity({ ip: selectedSession.ip, hwid: selectedSession.hwid });
+                      setSelectedSession(prev => prev ? { ...prev, isBlocked: false, status: 'ACTIVE' } : null);
+                    }}
+                    className="px-3.5 py-2 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800 text-emerald-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Unblock Workstation</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setBlockingSession(selectedSession)}
+                    className="px-3.5 py-2 bg-rose-950/90 hover:bg-rose-900 border border-rose-700/80 text-rose-200 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-lg shadow-rose-950/50"
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Permanently Block Workstation</span>
+                  </button>
+                )}
+
                 {selectedSession.hwid && !selectedSession.hwid.includes('GUEST') && selectedSession.hwid !== 'Desktop-PC' && (
                   <button
                     onClick={() => handleUnlockHwid(selectedSession)}
@@ -1535,6 +1977,91 @@ export const ActiveDevicesMonitor: React.FC<ActiveDevicesMonitorProps> = ({
                   Close Dossier
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Permanent Block Confirmation Modal */}
+      {blockingSession && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-stone-900 border border-rose-800 rounded-2xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3 border-b border-stone-800 pb-4">
+              <div className="w-10 h-10 rounded-xl bg-rose-950 border border-rose-800 flex items-center justify-center text-rose-400 shadow-md">
+                <ShieldAlert className="w-5 h-5 animate-pulse" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-stone-100">
+                  Permanently Block Workstation &amp; Network
+                </h3>
+                <p className="text-xs text-stone-400">
+                  Completely revokes access to Client and Admin portals.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-stone-950/80 border border-stone-800 rounded-xl p-4 space-y-2 text-xs font-mono">
+              <div className="flex items-center justify-between">
+                <span className="text-stone-400">Target IP Address:</span>
+                <span className="text-stone-100 font-bold">{blockingSession.ip}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-stone-400">Hardware ID (HWID):</span>
+                <span className="text-amber-300 font-bold select-all break-all">{blockingSession.hwid}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-stone-400">Device Hostname:</span>
+                <span className="text-stone-200">{blockingSession.machineName}</span>
+              </div>
+              {blockingSession.username && (
+                <div className="flex items-center justify-between">
+                  <span className="text-stone-400">Associated User:</span>
+                  <span className="text-stone-200">@{blockingSession.username}</span>
+                </div>
+              )}
+              {blockingSession.rawKey && (
+                <div className="flex items-center justify-between">
+                  <span className="text-stone-400">License Key:</span>
+                  <span className="text-rose-300">{blockingSession.rawKey}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-stone-300 block">
+                Administrative Reason for Permanent Ban:
+              </label>
+              <textarea
+                value={blockReasonInput}
+                onChange={(e) => setBlockReasonInput(e.target.value)}
+                rows={2}
+                placeholder="Enter security enforcement rationale..."
+                className="w-full text-xs p-3 rounded-xl bg-stone-950 border border-stone-800 text-stone-200 focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="p-3 bg-rose-950/40 border border-rose-900/50 rounded-xl text-xs text-rose-300 leading-relaxed">
+              <strong>Security Protocol Warning:</strong> This will terminate active desktop and web sessions immediately. Incoming API requests, OCR processing, and client logins from this Hardware ID or IP will be permanently rejected.
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => setBlockingSession(null)}
+                disabled={isSubmittingBlock}
+                className="px-4 py-2 bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBlock}
+                disabled={isSubmittingBlock}
+                className="px-4 py-2 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1.5 shadow-lg shadow-rose-900/50"
+              >
+                <ShieldAlert className="w-4 h-4" />
+                <span>{isSubmittingBlock ? 'Enforcing Permanent Ban...' : 'Confirm Permanent Block'}</span>
+              </button>
             </div>
           </div>
         </div>

@@ -121,8 +121,80 @@ function getOrCreateWebSessionId(): string {
   return sid;
 }
 
-let activeInterval: any = null;
-let lastPayload: WebPresencePayload | null = null;
+export function getOrCreateHardwareId(): string {
+  if (typeof localStorage === 'undefined') {
+    return 'WEB-HWID-CLIENT';
+  }
+  let hwid = localStorage.getItem('receipt_portal_hwid');
+  if (!hwid) {
+    const nav: any = typeof navigator !== 'undefined' ? navigator : {};
+    const scr: any = typeof window !== 'undefined' ? window.screen : {};
+    let tz = 'UTC';
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch {}
+    const seed = [
+      nav.userAgent || 'Agent',
+      scr.width || 1920,
+      scr.height || 1080,
+      scr.colorDepth || 24,
+      nav.hardwareConcurrency || 8,
+      nav.deviceMemory || 8,
+      nav.platform || 'Desktop',
+      tz
+    ].join('::');
+
+    let hash = 2166136261;
+    for (let i = 0; i < seed.length; i++) {
+      hash ^= seed.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    const hex = (hash >>> 0).toString(16).toUpperCase().padStart(8, '0');
+    hwid = `HWID-WEB-${hex}`;
+    localStorage.setItem('receipt_portal_hwid', hwid);
+  }
+  return hwid;
+}
+
+export async function checkWorkstationBlockStatus(): Promise<{
+  blocked: boolean;
+  reason?: string;
+  blockedAt?: string;
+  ip?: string;
+  hwid?: string;
+}> {
+  try {
+    const hwid = getOrCreateHardwareId();
+    const backendBase = getBackendApiUrl();
+    const res = await fetch(`${backendBase}/api/check-blocked?hwid=${encodeURIComponent(hwid)}`, {
+      headers: {
+        'x-hwid': hwid,
+        'Cache-Control': 'no-cache'
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.blocked) {
+        localStorage.setItem('receipt_portal_blocked', JSON.stringify(data));
+        return data;
+      } else {
+        localStorage.removeItem('receipt_portal_blocked');
+      }
+    }
+  } catch {}
+
+  try {
+    const saved = localStorage.getItem('receipt_portal_blocked');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed && parsed.blocked) {
+        return parsed;
+      }
+    }
+  } catch {}
+
+  return { blocked: false };
+}
 
 let cachedIp: string | null = null;
 
@@ -165,11 +237,15 @@ export async function fetchPublicIp(): Promise<string | null> {
   return null;
 }
 
+let activeInterval: any = null;
+let lastPayload: WebPresencePayload | null = null;
+
 export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promise<void> {
   lastPayload = payload;
   const sys = getBrowserAndOsInfo();
   const sessionId = getOrCreateWebSessionId();
   const clientIp = await fetchPublicIp();
+  const hwid = getOrCreateHardwareId();
 
   const body = {
     sessionId,
@@ -182,6 +258,7 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
     plan: payload.plan || (payload.portal === 'ADMIN' ? 'System Administrator' : 'Guest / Visitor'),
     licenseKey: payload.licenseKey || '',
     ip: clientIp || '', // Pass detected IP to worker
+    hwid,
     browserInfo: sys.summary,
     browserName: sys.browser,
     browserVersion: sys.browserVersion,
@@ -219,9 +296,22 @@ export async function sendPresenceHeartbeat(payload: WebPresencePayload): Promis
     const backendBase = getBackendApiUrl();
     fetch(`${backendBase}/api/presence/heartbeat`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'x-hwid': hwid
+      },
       body: JSON.stringify(body),
       keepalive: true
+    }).then(async (res) => {
+      if (res.status === 403) {
+        const data = await res.json().catch(() => null);
+        if (data && data.blocked) {
+          localStorage.setItem('receipt_portal_blocked', JSON.stringify(data));
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('workstation-blocked', { detail: data }));
+          }
+        }
+      }
     }).catch(() => {});
   } catch {}
 }
