@@ -704,6 +704,15 @@ export function AdminHomeOverview({
     return () => clearInterval(interval);
   }, [fetchLiveTelemetry]);
 
+  // Immediate refresh when a workstation is blocked or unblocked
+  useEffect(() => {
+    const handleBlockRefresh = () => {
+      fetchLiveTelemetry();
+    };
+    window.addEventListener('session-blocked-refresh', handleBlockRefresh);
+    return () => window.removeEventListener('session-blocked-refresh', handleBlockRefresh);
+  }, [fetchLiveTelemetry]);
+
   // Subscribe to live client submissions events
   useEffect(() => {
     const unsub = subscribeToClientSubmissions((newSubs) => {

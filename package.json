@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "node tests/test_deep_security_e2e.js && node tests/test_company_security_e2e.js && node tests/test_quickbooks_e2e.js && node tests/test_system_e2e.js && node tests/test_website_e2e.js && node tests/test_vulnerability_stress_e2e.js && node tests/test_advanced_audit_e2e.js"
+    "test": "node tests/test_deep_security_e2e.js && node tests/test_company_security_e2e.js && node tests/test_quickbooks_e2e.js && node tests/test_system_e2e.js && node tests/test_website_e2e.js && node tests/test_vulnerability_stress_e2e.js && node tests/test_advanced_audit_e2e.js && node tests/test_full_developer_master_suite.js"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

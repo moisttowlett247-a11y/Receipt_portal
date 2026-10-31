@@ -123,17 +123,16 @@ export const AdminLoginView: React.FC<AdminLoginViewProps> = ({
         return;
       }
 
-      // 2. Offline fallback: Check saved credential hash if Cloudflare was unreachable
-      if (savedHash) {
-        const inputHash = await computeCredentialsHash(cleanUser.toLowerCase(), cleanPass);
-        if (inputHash === savedHash) {
-          clearFailedAttempts();
-          try {
-            sessionStorage.setItem('receipt_admin_role', selectedRole);
-          } catch {}
-          onUnlock(selectedRole);
-          return;
-        }
+      // 2. Offline fallback: Check saved credential hash or default credentials if Cloudflare was unreachable
+      const inputHash = await computeCredentialsHash(cleanUser.toLowerCase(), cleanPass);
+      const defaultHash = await computeCredentialsHash('admin', '1995');
+      if ((savedHash && inputHash === savedHash) || (!savedHash && inputHash === defaultHash)) {
+        clearFailedAttempts();
+        try {
+          sessionStorage.setItem('receipt_admin_role', selectedRole);
+        } catch {}
+        onUnlock(selectedRole);
+        return;
       }
 
       triggerError(cfRes.error || 'Invalid administrator credentials. Access Denied.');

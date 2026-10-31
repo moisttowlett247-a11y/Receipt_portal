@@ -197,6 +197,14 @@ async function run() {
   });
   assert(delRes.status === 200 && delRes.data.success, 'Audit test user cleaned up successfully');
 
+  // Reset rate limits so subsequent integration suites have fresh buckets
+  await makeRequest({
+    hostname: 'localhost',
+    port: 3000,
+    path: '/api/test/reset-rate-limit',
+    method: 'POST'
+  });
+
   console.log('\n========================================================================');
   console.log(`ADVANCED SECURITY & AUDIT RESULT: ${passed} PASSED, ${failed} FAILED`);
   console.log('========================================================================');

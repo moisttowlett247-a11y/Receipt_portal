@@ -4,6 +4,7 @@
 
 import { getBackendApiUrl } from './urlUtils';
 import { getCurrentClientSession } from './clientAccountService';
+import { getOrCreateHardwareId } from './webPresenceService';
 
 export interface ClientSubmission {
   id: string;
@@ -332,13 +333,23 @@ export async function fetchServerSubmissions(): Promise<ClientSubmission[] | nul
 
   const endpoints = getSubmissionEndpoints(qStr);
 
+  const hwid = getOrCreateHardwareId();
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' },
+        headers: { 
+          'Accept': 'application/json',
+          'x-hwid': hwid
+        },
         signal: AbortSignal.timeout(2000)
       });
+      if (resp.status === 403) {
+        const data = await resp.json().catch(() => null);
+        if (data && data.blocked && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('workstation-blocked', { detail: data }));
+        }
+      }
       if (resp.ok) {
         const data = await resp.json();
         if (data && data.success && Array.isArray(data.submissions)) {
@@ -409,15 +420,25 @@ export async function syncClientSubmissionsWithBackend(): Promise<ClientSubmissi
 
 async function syncSubmissionToServer(item: ClientSubmission): Promise<boolean> {
   const endpoints = getSubmissionEndpoints();
+  const hwid = getOrCreateHardwareId();
 
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ submission: item }),
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-hwid': hwid
+        },
+        body: JSON.stringify({ submission: item, hwid }),
         signal: AbortSignal.timeout(3000)
       });
+      if (resp.status === 403) {
+        const data = await resp.json().catch(() => null);
+        if (data && data.blocked && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('workstation-blocked', { detail: data }));
+        }
+      }
       if (resp.ok) return true;
     } catch {}
   }
@@ -426,15 +447,25 @@ async function syncSubmissionToServer(item: ClientSubmission): Promise<boolean> 
 
 async function updateSubmissionOnServer(id: string, status: string, details?: any): Promise<boolean> {
   const endpoints = getSubmissionEndpoints(`/${encodeURIComponent(id)}`);
+  const hwid = getOrCreateHardwareId();
 
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status, details }),
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-hwid': hwid
+        },
+        body: JSON.stringify({ status, details, hwid }),
         signal: AbortSignal.timeout(2000)
       });
+      if (resp.status === 403) {
+        const data = await resp.json().catch(() => null);
+        if (data && data.blocked && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('workstation-blocked', { detail: data }));
+        }
+      }
       if (resp.ok) return true;
     } catch {}
   }
@@ -443,13 +474,21 @@ async function updateSubmissionOnServer(id: string, status: string, details?: an
 
 async function deleteSubmissionOnServer(id: string): Promise<boolean> {
   const endpoints = getSubmissionEndpoints(`/${encodeURIComponent(id)}`);
+  const hwid = getOrCreateHardwareId();
 
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'DELETE',
+        headers: { 'x-hwid': hwid },
         signal: AbortSignal.timeout(1500)
       });
+      if (resp.status === 403) {
+        const data = await resp.json().catch(() => null);
+        if (data && data.blocked && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('workstation-blocked', { detail: data }));
+        }
+      }
       if (resp.ok) return true;
     } catch {}
   }
@@ -459,20 +498,31 @@ async function deleteSubmissionOnServer(id: string): Promise<boolean> {
 async function batchSyncSubmissionsToServer(submissions: ClientSubmission[]): Promise<boolean> {
   const session = getCurrentClientSession();
   const endpoints = getSubmissionEndpoints('/batch-sync');
+  const hwid = getOrCreateHardwareId();
 
   for (const url of endpoints) {
     try {
       const resp = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'x-hwid': hwid
+        },
         body: JSON.stringify({
           submissions,
           userId: session?.userId,
           email: session?.email,
-          companyName: session?.companyName
+          companyName: session?.companyName,
+          hwid
         }),
         signal: AbortSignal.timeout(3000)
       });
+      if (resp.status === 403) {
+        const data = await resp.json().catch(() => null);
+        if (data && data.blocked && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('workstation-blocked', { detail: data }));
+        }
+      }
       if (resp.ok) return true;
     } catch {}
   }
